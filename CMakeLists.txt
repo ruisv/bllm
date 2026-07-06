@@ -61,8 +61,10 @@ if(BLLM_BUILD_EXAMPLES AND BLLM_HAVE_RUNTIME)
 endif()
 
 if(BLLM_BUILD_PYTHON)
-  message(STATUS "BLLM: Python bindings requested (M3 — not yet implemented)")
-  # add_subdirectory(python)   # TODO(M3): nanobind module
+  if(NOT BLLM_HAVE_RUNTIME)
+    message(FATAL_ERROR "BLLM_BUILD_PYTHON needs the OE-LLM SDK (board only).")
+  endif()
+  add_subdirectory(python)
 endif()
 
 # ── install / export (downstream: find_package(bllm)) ────────────────────────

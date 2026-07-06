@@ -54,6 +54,24 @@ llm.reset();                              // start a fresh conversation
 
 A ready REPL is in [`examples/chat.cc`](examples/chat.cc) (built as `bllm_chat`).
 
+### Python
+
+```python
+import bllm
+
+llm = bllm.LlmSession(
+    "Qwen2.5_1.5B_Instruct_1024.hbm",
+    "Qwen2.5_1.5B_Instruct_config/",      # model_type + template auto-detected
+)
+for chunk in llm.stream("你好"):           # streaming generator
+    print(chunk, end="", flush=True)
+print(llm.last_stats.decode_tps)
+llm.reset()
+```
+
+Build the module with `scripts/board_build.sh --python` (needs `nanobind` in the
+env), then `export PYTHONPATH=<repo>/python`. REPL: `python examples/chat.py`.
+
 ## Supported models (official pre-compiled `.hbm`)
 
 All official **text** LLMs run through one config-free path — BLLM infers the

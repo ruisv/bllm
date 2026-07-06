@@ -65,8 +65,15 @@ if(OELLM_FOUND AND NOT TARGET oellm::xlm)
   set_target_properties(oellm::xlm PROPERTIES
     IMPORTED_LOCATION "${OELLM_XLM_LIBRARY}"
     INTERFACE_INCLUDE_DIRECTORIES "${OELLM_INCLUDE_DIR}"
-    # libxlm resolves its own bundled deps at runtime from OELLM_LIB_DIR.
-    INTERFACE_LINK_OPTIONS "-Wl,-rpath,${OELLM_LIB_DIR};-Wl,-unresolved-symbols=ignore-in-shared-libs")
+    # libxlm resolves its own bundled deps (libdnn/libhbucp/...) at runtime from
+    # OELLM_LIB_DIR — rpath so the loader finds them.
+    INTERFACE_LINK_OPTIONS "-Wl,-rpath,${OELLM_LIB_DIR}")
+  # NOTE: libxlm.so references symbols from its sibling .so's without declaring
+  # them NEEDED, so anything linking it must relax unresolved-symbol checking.
+  # That is left to each consumer (executables: ignore-in-shared-libs; the
+  # Python module: ignore-all, which also covers its undefined CPython symbols)
+  # so the flag never leaks into a static-archive/module link where it would
+  # wrongly reject legitimately-deferred symbols.
 endif()
 
 mark_as_advanced(OELLM_INCLUDE_DIR OELLM_XLM_LIBRARY)
