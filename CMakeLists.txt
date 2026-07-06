@@ -27,14 +27,16 @@ set(BLLM_PUBLIC_HEADERS
   include/bllm/bllm.h
   include/bllm/common.h
   include/bllm/types.h
-  include/bllm/llm_session.h)
+  include/bllm/llm_session.h
+  include/bllm/omni_session.h)
 
 if(OELLM_FOUND)
   message(STATUS "BLLM: OE-LLM SDK ${OELLM_VERSION} at ${OELLM_LIB_DIR} — building full library")
   add_library(bllm
     src/common.cc
     src/types.cc
-    src/llm_session.cc)
+    src/llm_session.cc
+    src/omni_session.cc)
   target_include_directories(bllm PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)

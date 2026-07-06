@@ -72,6 +72,19 @@ llm.reset()
 Build the module with `scripts/board_build.sh --python` (needs `nanobind` in the
 env), then `export PYTHONPATH=<repo>/python`. REPL: `python examples/chat.py`.
 
+### Multimodal (Qwen2.5-Omni)
+
+```python
+omni = bllm.OmniSession(text_hbm, visual_hbm, audio_hbm, embed_bin, config_dir)
+reply = omni.generate([
+    bllm.Content.image("scene.jpg"),
+    bllm.Content.text("这张图里有什么？"),
+])                                        # also .video(...), .audio(...)
+```
+
+C++: `bllm::OmniSession` + `bllm::Content` (`bllm/omni_session.h`); CLI:
+`bllm_omni`. Handles text / image / audio / video files (offline path).
+
 ## Supported models (official pre-compiled `.hbm`)
 
 All official **text** LLMs run through one config-free path — BLLM infers the

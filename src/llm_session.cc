@@ -1,62 +1,31 @@
 #include "bllm/llm_session.h"
 
-#include <chrono>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <mutex>
-#include <sstream>
 #include <utility>
 
-#include "xlm.h"  // OE-LLM runtime C API (board SDK only; located by CMake)
+#include "xlm_internal.h"  // shared: xlm.h + enum maps + Trampoline + stats
 
 namespace bllm {
 namespace {
 
-// ── enum mapping: BLLM public types -> xlm.h runtime enums ──────────────────
-xlm_model_type ToXlm(ModelType t) {
-  return static_cast<xlm_model_type>(static_cast<int>(t));
-}
-xlm_infer_backend ToXlm(Backend b) {
-  return static_cast<xlm_infer_backend>(static_cast<int>(b));
-}
-xlm_priority_type_t ToXlm(Priority p) {
-  return static_cast<xlm_priority_type_t>(static_cast<int>(p));
-}
-
-common_params_sampling_t ToXlm(const SamplingParams& s) {
-  common_params_sampling_t o;
-  std::memset(&o, 0, sizeof(o));
-  o.top_k = s.top_k;
-  o.top_p = s.top_p;
-  o.min_p = s.min_p;
-  o.temp = s.temp;
-  o.typ_p = s.typ_p;
-  o.min_keep = s.min_keep;
-  o.penalty_last_n = s.penalty_last_n;
-  o.penalty_repeat = s.penalty_repeat;
-  o.penalty_freq = s.penalty_freq;
-  o.penalty_present = s.penalty_present;
-  return o;
-}
+using detail::CallContext;
+using detail::Clock;
+using detail::ComputeStats;
+using detail::ReadFile;
+using detail::ToXlm;
+using detail::Trampoline;
 
 // Per-model quirks the official demos / docs hardcode — encoded once here.
 bool NeedsInt8KCache(ModelType t) { return t == ModelType::InternLM2; }
 bool RequiresChatTemplate(ModelType t) { return t == ModelType::DeepSeek; }
 
-// Multimodal families take image/audio/video through the xlm_omni*/multimodal
-// input path, not the text prompt path this class drives. Guarded until M5.
+// Multimodal families take image/audio/video through the OmniSession path, not
+// the text prompt path this class drives.
 bool IsMultimodal(ModelType t) {
   return t == ModelType::Omni || t == ModelType::InternVL ||
          t == ModelType::QwenVL;
-}
-
-std::string ReadFile(const std::string& path) {
-  std::ifstream f(path, std::ios::binary);
-  BLLM_CHECK(f.good(), "cannot open chat template: " + path);
-  std::ostringstream ss;
-  ss << f.rdbuf();
-  return ss.str();
 }
 
 // The official config dirs hold exactly one *.jinja for chat models (Base /
@@ -75,72 +44,6 @@ std::string FindSingleJinja(const std::string& dir) {
     }
   }
   return found;
-}
-
-using Clock = std::chrono::steady_clock;
-
-// Routed per-generate() through xlm's userdata. The C callback (registered once
-// at init) casts userdata back to this and accumulates the stream.
-//
-// The runtime does NOT expose its perf counters via the callback
-// (result->performance is always zero here — it prints them internally), so we
-// measure timing ourselves with a wall clock: TTFT to the first chunk, decode
-// rate over the rest of the stream.
-struct CallContext {
-  const LlmSession::TokenCallback* on_token = nullptr;
-  std::string accum;
-  bool error = false;
-
-  Clock::time_point t_start;   // set in generate() before xlm_infer
-  Clock::time_point t_first;   // first non-empty chunk
-  Clock::time_point t_end;     // XLM_STATE_END
-  int32_t chunk_count = 0;     // ~= decoded tokens (one chunk per token here)
-  bool have_first = false;
-};
-
-// The single C callback for every session. `userdata` selects the live call.
-void Trampoline(xlm_result_t* result, xlm_state_t state, void* userdata) {
-  auto* ctx = static_cast<CallContext*>(userdata);
-  if (!ctx) return;
-  switch (state) {
-    case XLM_STATE_START:
-    case XLM_STATE_RUNNING:
-      if (result && result->text && result->text[0] != '\0') {
-        if (!ctx->have_first) {
-          ctx->have_first = true;
-          ctx->t_first = Clock::now();
-        }
-        ++ctx->chunk_count;
-        ctx->accum += result->text;
-        if (ctx->on_token && *ctx->on_token) (*ctx->on_token)(result->text);
-      }
-      break;
-    case XLM_STATE_END:
-      ctx->t_end = Clock::now();
-      break;
-    case XLM_STATE_ERROR:
-      ctx->error = true;
-      ctx->t_end = Clock::now();
-      break;
-  }
-}
-
-// Derive wall-clock stats from a finished CallContext.
-GenerationStats ComputeStats(const CallContext& ctx) {
-  GenerationStats s;
-  if (!ctx.have_first) return s;
-  auto ms = [](Clock::duration d) {
-    return std::chrono::duration<double, std::milli>(d).count();
-  };
-  s.ttft_ms = ms(ctx.t_first - ctx.t_start);
-  s.decode_tokens = ctx.chunk_count;
-  const double decode_ms = ms(ctx.t_end - ctx.t_first);
-  if (ctx.chunk_count > 1 && decode_ms > 0.0) {
-    // First token is attributed to prefill (TTFT); the rest to decode.
-    s.decode_tps = (ctx.chunk_count - 1) * 1000.0 / decode_ms;
-    s.tpot_ms = decode_ms / (ctx.chunk_count - 1);
-  }
-  return s;
 }
 
 }  // namespace
@@ -179,7 +82,7 @@ LlmSession::LlmSession(SessionOptions options)
   BLLM_CHECK(!IsMultimodal(s.opts.model_type),
              std::string("model_type '") + ToString(s.opts.model_type) +
                  "' is multimodal (image/audio/video); LlmSession is text-only. "
-                 "The multimodal API lands in M5 — see docs/PLAN.md");
+                 "Use bllm::OmniSession (bllm/omni_session.h) instead.");
 
   // Per-model default: InternLM2 requires int8 KV-cache.
   if (NeedsInt8KCache(s.opts.model_type)) s.opts.k_cache_int8 = true;

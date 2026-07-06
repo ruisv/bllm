@@ -6,14 +6,38 @@
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/string_view.h>
+#include <nanobind/stl/vector.h>
 
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "bllm/bllm.h"
 
 namespace nb = nanobind;
 using namespace nb::literals;
+
+// Wrap a Python token callback as a bllm streaming callback (GIL re-acquired for
+// the call; the surrounding generate() runs with the GIL released).
+namespace {
+template <typename Session, typename Arg>
+std::string StreamGenerate(Session& self, Arg&& arg, nb::object on_token) {
+  std::string out;
+  if (on_token.is_none()) {
+    nb::gil_scoped_release rel;
+    out = self.generate(std::forward<Arg>(arg));
+    return out;
+  }
+  auto cb = [&on_token](std::string_view chunk) {
+    nb::gil_scoped_acquire acq;
+    on_token(nb::str(chunk.data(), chunk.size()));
+  };
+  nb::gil_scoped_release rel;
+  out = self.generate(std::forward<Arg>(arg), cb);
+  return out;
+}
+}  // namespace
 
 NB_MODULE(_bllm, m) {
   m.doc() = "BPU LLM runtime (OE-LLM/libxlm) — Python bindings";
@@ -58,20 +82,8 @@ NB_MODULE(_bllm, m) {
       .def(
           "generate",
           [](bllm::LlmSession& self, std::string_view prompt,
-             nb::object on_token) -> std::string {
-            std::string out;
-            if (on_token.is_none()) {
-              nb::gil_scoped_release rel;
-              out = self.generate(prompt);
-              return out;
-            }
-            auto cb = [&on_token](std::string_view chunk) {
-              nb::gil_scoped_acquire acq;
-              on_token(nb::str(chunk.data(), chunk.size()));
-            };
-            nb::gil_scoped_release rel;
-            out = self.generate(prompt, cb);
-            return out;
+             nb::object on_token) {
+            return StreamGenerate(self, prompt, on_token);
           },
           "prompt"_a, "on_token"_a = nb::none(),
           "Generate a reply (blocking). If on_token is given, it is called with "
@@ -82,4 +94,61 @@ NB_MODULE(_bllm, m) {
       .def_prop_ro("model_type", [](const bllm::LlmSession& self) {
         return std::string(bllm::ToString(self.options().model_type));
       });
+
+  // ── Multimodal (Omni) ──────────────────────────────────────────────────────
+  nb::class_<bllm::Content>(m, "Content")
+      .def_static("text", &bllm::Content::Text, "text"_a)
+      .def_static(
+          "image",
+          [](std::string p, int w, int h) {
+            return bllm::Content::Image(std::move(p), w, h);
+          },
+          "path"_a, "width"_a = 448, "height"_a = 448)
+      .def_static("audio", &bllm::Content::Audio, "path"_a)
+      .def_static(
+          "video",
+          [](std::string p, int w, int h) {
+            return bllm::Content::Video(std::move(p), w, h);
+          },
+          "path"_a, "width"_a = 448, "height"_a = 448);
+
+  nb::class_<bllm::OmniSession>(m, "OmniSession")
+      .def(
+          "__init__",
+          [](bllm::OmniSession* self, const std::string& text_model,
+             const std::string& visual_model, const std::string& audio_model,
+             const std::string& embed_tokens, const std::string& tokenizer_dir,
+             const std::string& system_prompt, int context_size) {
+            bllm::OmniOptions o;
+            o.text_model_path = text_model;
+            o.visual_model_path = visual_model;
+            o.audio_model_path = audio_model;
+            o.embed_tokens_path = embed_tokens;
+            o.tokenizer_dir = tokenizer_dir;
+            if (!system_prompt.empty()) o.system_prompt = system_prompt;
+            o.context_size = context_size;
+            nb::gil_scoped_release rel;
+            new (self) bllm::OmniSession(std::move(o));
+          },
+          "text_model"_a, "visual_model"_a, "audio_model"_a, "embed_tokens"_a,
+          "tokenizer_dir"_a, "system_prompt"_a = "", "context_size"_a = 0)
+      .def(
+          "generate",
+          [](bllm::OmniSession& self, std::vector<bllm::Content> content,
+             nb::object on_token) {
+            return StreamGenerate(self, content, on_token);
+          },
+          "content"_a, "on_token"_a = nb::none(),
+          "Generate a reply from a list of Content parts (text/image/audio/"
+          "video). Streams to on_token if given; returns the full reply.")
+      .def(
+          "ask",
+          [](bllm::OmniSession& self, const std::string& text,
+             nb::object on_token) {
+            std::vector<bllm::Content> parts{bllm::Content::Text(text)};
+            return StreamGenerate(self, parts, on_token);
+          },
+          "text"_a, "on_token"_a = nb::none(), "Convenience: a text-only turn.")
+      .def("reset", &bllm::OmniSession::reset)
+      .def_prop_ro("last_stats", &bllm::OmniSession::last_stats);
 }

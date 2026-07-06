@@ -19,6 +19,7 @@
 
 #include "bllm/common.h"
 #include "bllm/llm_session.h"
+#include "bllm/omni_session.h"
 #include "bllm/types.h"
 
 #endif  // BLLM_BLLM_H_
