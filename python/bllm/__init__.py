@@ -23,6 +23,7 @@ from ._bllm import (
     GenerationStats,
     LlmSession as _LlmSession,
     OmniSession as _OmniSession,
+    SamplingParams,
     VlmSession as _VlmSession,
     __version__,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "OmniSession",
     "VlmSession",
     "Content",
+    "SamplingParams",
     "GenerationStats",
     "__version__",
 ]
@@ -81,6 +83,9 @@ class LlmSession:
         system_prompt: str = "",
         config_path: str = "",
         context_size: int = 0,
+        sampling: "SamplingParams | None" = None,
+        backend: str = "any",
+        priority: str = "normal",
     ) -> None:
         self._s = _LlmSession(
             model_path,
@@ -90,6 +95,9 @@ class LlmSession:
             system_prompt=system_prompt,
             config_path=config_path,
             context_size=context_size,
+            sampling=sampling,
+            backend=backend,
+            priority=priority,
         )
 
     def generate(
@@ -138,10 +146,14 @@ class OmniSession:
         *,
         system_prompt: str = "",
         context_size: int = 0,
+        sampling: "SamplingParams | None" = None,
+        backend: str = "any",
+        priority: str = "normal",
     ) -> None:
         self._s = _OmniSession(
             text_model, visual_model, audio_model, embed_tokens, tokenizer_dir,
             system_prompt=system_prompt, context_size=context_size,
+            sampling=sampling, backend=backend, priority=priority,
         )
 
     def generate(self, content, on_token=None) -> str:
@@ -160,6 +172,10 @@ class OmniSession:
     @property
     def last_stats(self) -> GenerationStats:
         return self._s.last_stats
+
+    @property
+    def model_type(self) -> str:
+        return self._s.model_type
 
 
 class VlmSession:
@@ -181,11 +197,15 @@ class VlmSession:
         model_type: str = "auto",
         system_prompt: str = "",
         context_size: int = 0,
+        sampling: "SamplingParams | None" = None,
+        backend: str = "any",
+        priority: str = "normal",
     ) -> None:
         self._s = _VlmSession(
             model_path, tokenizer_dir, config_path=config_path,
             model_type=model_type, system_prompt=system_prompt,
             context_size=context_size,
+            sampling=sampling, backend=backend, priority=priority,
         )
 
     def generate(self, images, prompt: str, on_token=None) -> str:
@@ -204,3 +224,7 @@ class VlmSession:
     @property
     def last_stats(self) -> GenerationStats:
         return self._s.last_stats
+
+    @property
+    def model_type(self) -> str:
+        return self._s.model_type
