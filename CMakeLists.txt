@@ -3,23 +3,74 @@ project(bllm LANGUAGES CXX VERSION 0.1.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
+if(NOT DEFINED CMAKE_POSITION_INDEPENDENT_CODE)
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
 
-# ── Umbrella interface target (header-only for now) ──────────────────────────
-# The real library (bllm::LlmSession wrapping libxlm.so) lands in M1. Until the
-# OE-LLM SDK path is wired into the build, this exposes only the public headers.
-add_library(bllm INTERFACE)
-target_include_directories(bllm INTERFACE
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-# ── OE-LLM SDK (board-only) ──────────────────────────────────────────────────
-# TODO(M1): locate the OE-LLM runtime (libxlm.so + xlm.h) from the SDK, e.g.
-#   set(OELLM_SDK "$ENV{HOME}/llm_s100/D-Robotics_LLM_S100_1.0.0_SDK/oellm_runtime")
-#   target_include_directories(bllm INTERFACE ${OELLM_SDK}/include)
-#   target_link_libraries(bllm INTERFACE ${OELLM_SDK}/lib/libxlm.so)
-# then build src/ into a real (non-INTERFACE) bllm target and add examples/.
+option(BLLM_BUILD_EXAMPLES "Build the example programs" ON)
+option(BLLM_BUILD_PYTHON   "Build the nanobind Python bindings (M3)" OFF)
 
-# add_subdirectory(examples)   # enable once the M1 wrapper exists
+# ── OE-LLM runtime (board-only) ──────────────────────────────────────────────
+# When the SDK is present we build the real library (src/ linked against
+# libxlm.so). On a host without the SDK (e.g. a Mac checkout) we degrade to a
+# header-only INTERFACE target so `cmake` still configures for tooling.
+find_package(OELLM QUIET)
+
+set(BLLM_PUBLIC_HEADERS
+  include/bllm/bllm.h
+  include/bllm/common.h
+  include/bllm/types.h
+  include/bllm/llm_session.h)
+
+if(OELLM_FOUND)
+  message(STATUS "BLLM: OE-LLM SDK ${OELLM_VERSION} at ${OELLM_LIB_DIR} — building full library")
+  add_library(bllm
+    src/common.cc
+    src/types.cc
+    src/llm_session.cc)
+  target_include_directories(bllm PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+  # xlm.h is an implementation detail — link it PRIVATE so downstream users of
+  # bllm's headers never need the OE-LLM SDK.
+  target_link_libraries(bllm PRIVATE oellm::xlm)
+  set(BLLM_HAVE_RUNTIME ON)
+else()
+  message(WARNING
+    "BLLM: OE-LLM SDK not found — configuring headers-only INTERFACE target.\n"
+    "      Set -DBLLM_OELLM_SDK=<...>/oellm_runtime (or env OELLM_SDK) on the board\n"
+    "      to build the real libxlm-backed library. See docs/LLM_ONBOARD.md.")
+  add_library(bllm INTERFACE)
+  target_include_directories(bllm INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+  set(BLLM_HAVE_RUNTIME OFF)
+endif()
+
+add_library(bllm::bllm ALIAS bllm)
+
+if(BLLM_BUILD_EXAMPLES AND BLLM_HAVE_RUNTIME)
+  add_subdirectory(examples)
+endif()
+
+if(BLLM_BUILD_PYTHON)
+  message(STATUS "BLLM: Python bindings requested (M3 — not yet implemented)")
+  # add_subdirectory(python)   # TODO(M3): nanobind module
+endif()
+
+# ── install / export (downstream: find_package(bllm)) ────────────────────────
+include(GNUInstallDirs)
+install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(TARGETS bllm EXPORT bllmTargets
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(EXPORT bllmTargets
+  NAMESPACE bllm::
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/bllm)

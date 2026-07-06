@@ -4,25 +4,21 @@
 // C++ API, mirroring the bcdl / ccdl family. Autoregressive LLM decode runs on
 // libxlm's prefill/decode dual-graph + KV-cache — NOT bcdl's hbDNNInferV2 path.
 //
-// Status: scaffold. The LlmSession wrapper lands in M1 (see docs/PLAN.md).
+// Include this to pull in the whole public surface:
+//
+//   #include "bllm/bllm.h"
+//   bllm::SessionOptions o;
+//   o.model_path = "Qwen2.5_1.5B_Instruct_1024.hbm";
+//   o.tokenizer_dir = "Qwen2.5_1.5B_Instruct_config/";
+//   o.chat_template_path = "Qwen2.5_1.5B_Instruct_config/Qwen2.5_1.5B_Instruct.jinja";
+//   bllm::LlmSession llm(o);                 // model_type auto-detected as Qwen2.5
+//   std::string reply = llm.generate("你好", [](std::string_view t){ std::cout << t; });
 
 #ifndef BLLM_BLLM_H_
 #define BLLM_BLLM_H_
 
-#define BLLM_VERSION_MAJOR 0
-#define BLLM_VERSION_MINOR 1
-#define BLLM_VERSION_PATCH 0
-
-namespace bllm {
-
-constexpr const char* kVersion = "0.1.0";
-
-// TODO(M1): LlmSession — RAII wrapper over xlm_handle_t.
-//   - load(.hbm + tokenizer_dir + chat template + model_type)
-//   - chat(prompt) -> streaming tokens via callback
-//   - reset() / stop()
-// See docs/LLM_ONBOARD.md for the xlm.h C API surface this wraps.
-
-}  // namespace bllm
+#include "bllm/common.h"
+#include "bllm/llm_session.h"
+#include "bllm/types.h"
 
 #endif  // BLLM_BLLM_H_

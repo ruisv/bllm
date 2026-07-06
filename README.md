@@ -24,20 +24,50 @@ on one board, but they are two different runtimes at the API layer.
 
 ## Status
 
-Early scaffold. The on-board LLM path is **validated**: the official OE-LLM SDK
-runs `Qwen2.5-1.5B-Instruct` on the S100P BPU at **decode 24.5 tok/s / prefill
-1969 tok/s** (matches the official benchmark). See
-[`docs/LLM_ONBOARD.md`](docs/LLM_ONBOARD.md) for the full bring-up, reproduce
-steps, gotchas (ION carveout, performance-mode registers), and API notes.
+The **`bllm::LlmSession` C++ wrapper is live and on-board validated** (M1). It
+loads a `.hbm` + tokenizer, streams tokens, keeps multi-turn history, and
+auto-detects the model type — running `Qwen2.5-1.5B-Instruct` on the S100P BPU at
+**decode ~24 tok/s** (matching the official benchmark). The underlying path was
+validated in M0; see [`docs/LLM_ONBOARD.md`](docs/LLM_ONBOARD.md) for the
+bring-up, gotchas (ION carveout, performance-mode registers), and raw API notes.
 
-Next: wrap `libxlm` behind a `tasks/llm` C++ facade + Python bindings. Roadmap in
-[`docs/PLAN.md`](docs/PLAN.md).
+Design + layering: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Roadmap
+(async/batch, VLM, Python bindings, packaging): [`docs/PLAN.md`](docs/PLAN.md).
+
+## Usage
+
+```cpp
+#include "bllm/bllm.h"
+
+bllm::SessionOptions o;
+o.model_path         = "Qwen2.5_1.5B_Instruct_1024.hbm";
+o.tokenizer_dir      = "Qwen2.5_1.5B_Instruct_config/";
+o.chat_template_path = "Qwen2.5_1.5B_Instruct_config/Qwen2.5_1.5B_Instruct.jinja";
+// model_type auto-detected from the path; set o.model_type to be explicit.
+
+bllm::LlmSession llm(o);
+std::string reply = llm.generate("你好", [](std::string_view t) {
+  std::cout << t << std::flush;          // stream tokens as they decode
+});
+llm.reset();                              // start a fresh conversation
+```
+
+A ready REPL is in [`examples/chat.cc`](examples/chat.cc) (built as `bllm_chat`).
 
 ## Supported models (official pre-compiled `.hbm`)
 
-DeepSeek-R1-Distill-Qwen 1.5B/7B · Qwen2.5 1.5B/7B (Base + Instruct) ·
-InternLM2-1.8B · Qwen2.5-Omni-3B (multimodal), in q8/q4 × ctx 1024/4096 variants.
-Custom architectures are converted offline with the `oellm_build` toolchain.
+All official **text** LLMs run through one config-free path — BLLM infers the
+`model_type`, auto-discovers the chat template, and applies each model's quirks
+(int8 KV-cache, template-required) itself:
+
+- **Qwen2.5** 1.5B / 7B (Base + Instruct) — validated
+- **DeepSeek-R1-Distill-Qwen** 1.5B / 7B — validated
+- **InternLM2-1.8B**
+
+in q8/q4 × ctx 1024/4096 variants. **Multimodal** samples (Qwen2.5-Omni-3B,
+InternVL/Qwen-VL) are guarded pending the M5 multimodal facade. Full matrix +
+per-model notes: [`docs/MODELS.md`](docs/MODELS.md). Custom architectures are
+converted offline with the `oellm_build` toolchain.
 
 ## Build
 
