@@ -1,0 +1,61 @@
+# =============================================================================
+# PRIVATE / LOCAL DEV CONTEXT — never commit (open-source repo; keep infra &
+# agent config out of history). See CLAUDE.md -> "Private files" note.
+# NOTE: gitignore has NO inline comments — a '#' after a pattern is literal.
+# =============================================================================
+
+# RDK skills mirror + agent settings (local editing aid)
+.claude/
+# agent runtime config
+.agents/
+# agent instructions
+AGENTS.md
+# machine table / ssh aliases / server + board usage (private)
+CLAUDE.local.md
+# infra topology: hostnames, IPs, convert-host workflow (private)
+docs/INFRA.md
+# any *.local override files
+*.local
+
+# =============================================================================
+# SDK / models / large binaries — pulled per-machine, too large / licensed
+# =============================================================================
+D-Robotics_LLM_*/
+*.tar.gz
+*.zip
+*.hbm
+*.gguf
+*.bin
+*.onnx
+*.safetensors
+models/
+oellm_runtime/
+
+# =============================================================================
+# SDK mirror for IntelliSense (mirror of board /usr/include/hobot)
+# =============================================================================
+third_party/
+
+# =============================================================================
+# build artifacts
+# =============================================================================
+build/
+*.so
+*.o
+*.a
+compile_commands.json
+
+# =============================================================================
+# python
+# =============================================================================
+__pycache__/
+*.egg-info/
+.pytest_cache/
+*.pyc
+
+# =============================================================================
+# editor / os
+# =============================================================================
+.vscode/
+.cache/
+.DS_Store
