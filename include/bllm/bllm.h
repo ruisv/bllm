@@ -21,5 +21,6 @@
 #include "bllm/llm_session.h"
 #include "bllm/omni_session.h"
 #include "bllm/types.h"
+#include "bllm/vlm_session.h"
 
 #endif  // BLLM_BLLM_H_

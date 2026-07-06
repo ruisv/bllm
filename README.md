@@ -85,6 +85,10 @@ reply = omni.generate([
 C++: `bllm::OmniSession` + `bllm::Content` (`bllm/omni_session.h`); CLI:
 `bllm_omni`. Handles text / image / audio / video files (offline path).
 
+For image VLMs (InternVL / Qwen-VL) there's `bllm::VlmSession` /
+`bllm.VlmSession` (`vlm.describe("img.jpg", "...")`, CLI `bllm_vlm`) — API-ready,
+but SDK 1.0.0 ships no such model yet, so it's compile/guard-validated only.
+
 ## Supported models (official pre-compiled `.hbm`)
 
 All official **text** LLMs run through one config-free path — BLLM infers the

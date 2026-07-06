@@ -21,11 +21,15 @@ using detail::Trampoline;
 bool NeedsInt8KCache(ModelType t) { return t == ModelType::InternLM2; }
 bool RequiresChatTemplate(ModelType t) { return t == ModelType::DeepSeek; }
 
-// Multimodal families take image/audio/video through the OmniSession path, not
-// the text prompt path this class drives.
+// Multimodal families take image/audio/video through their own facades, not the
+// text prompt path this class drives.
 bool IsMultimodal(ModelType t) {
   return t == ModelType::Omni || t == ModelType::InternVL ||
          t == ModelType::QwenVL;
+}
+const char* MultimodalFacade(ModelType t) {
+  return t == ModelType::Omni ? "bllm::OmniSession (bllm/omni_session.h)"
+                              : "bllm::VlmSession (bllm/vlm_session.h)";
 }
 
 // The official config dirs hold exactly one *.jinja for chat models (Base /
@@ -82,7 +86,7 @@ LlmSession::LlmSession(SessionOptions options)
   BLLM_CHECK(!IsMultimodal(s.opts.model_type),
              std::string("model_type '") + ToString(s.opts.model_type) +
                  "' is multimodal (image/audio/video); LlmSession is text-only. "
-                 "Use bllm::OmniSession (bllm/omni_session.h) instead.");
+                 "Use " + MultimodalFacade(s.opts.model_type) + " instead.");
 
   // Per-model default: InternLM2 requires int8 KV-cache.
   if (NeedsInt8KCache(s.opts.model_type)) s.opts.k_cache_int8 = true;

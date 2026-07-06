@@ -23,12 +23,14 @@ from ._bllm import (
     GenerationStats,
     LlmSession as _LlmSession,
     OmniSession as _OmniSession,
+    VlmSession as _VlmSession,
     __version__,
 )
 
 __all__ = [
     "LlmSession",
     "OmniSession",
+    "VlmSession",
     "Content",
     "GenerationStats",
     "__version__",
@@ -151,6 +153,50 @@ class OmniSession:
     def stream(self, content) -> Iterator[str]:
         parts = list(content)
         return _stream(lambda on_token: self._s.generate(parts, on_token))
+
+    def reset(self) -> None:
+        self._s.reset()
+
+    @property
+    def last_stats(self) -> GenerationStats:
+        return self._s.last_stats
+
+
+class VlmSession:
+    """Image + text vision-language session (InternVL / Qwen-VL).
+
+        vlm = bllm.VlmSession(hbm, tokenizer_dir, config_path=cfg)
+        print(vlm.describe("cat.jpg", "这是什么动物？"))
+
+    Note: the SDK 1.0.0 ships no pre-compiled InternVL/Qwen-VL model — this is
+    API-ready but not yet board-validated end to end (see docs/MODELS.md).
+    """
+
+    def __init__(
+        self,
+        model_path: str,
+        tokenizer_dir: str,
+        *,
+        config_path: str = "",
+        model_type: str = "auto",
+        system_prompt: str = "",
+        context_size: int = 0,
+    ) -> None:
+        self._s = _VlmSession(
+            model_path, tokenizer_dir, config_path=config_path,
+            model_type=model_type, system_prompt=system_prompt,
+            context_size=context_size,
+        )
+
+    def generate(self, images, prompt: str, on_token=None) -> str:
+        return self._s.generate(list(images), prompt, on_token)
+
+    def describe(self, image_path: str, prompt: str, on_token=None) -> str:
+        return self._s.describe(image_path, prompt, on_token)
+
+    def stream(self, images, prompt: str) -> Iterator[str]:
+        paths = list(images)
+        return _stream(lambda on_token: self._s.generate(paths, prompt, on_token))
 
     def reset(self) -> None:
         self._s.reset()

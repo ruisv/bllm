@@ -151,4 +151,65 @@ NB_MODULE(_bllm, m) {
           "text"_a, "on_token"_a = nb::none(), "Convenience: a text-only turn.")
       .def("reset", &bllm::OmniSession::reset)
       .def_prop_ro("last_stats", &bllm::OmniSession::last_stats);
+
+  // ── Image VLM (InternVL / Qwen-VL) ─────────────────────────────────────────
+  nb::class_<bllm::VlmSession>(m, "VlmSession")
+      .def(
+          "__init__",
+          [](bllm::VlmSession* self, const std::string& model_path,
+             const std::string& tokenizer_dir, const std::string& config_path,
+             const std::string& model_type, const std::string& system_prompt,
+             int context_size) {
+            bllm::VlmOptions o;
+            o.model_path = model_path;
+            o.tokenizer_dir = tokenizer_dir;
+            o.config_path = config_path;
+            o.model_type = bllm::ModelTypeFromString(model_type);
+            o.system_prompt = system_prompt;
+            o.context_size = context_size;
+            nb::gil_scoped_release rel;
+            new (self) bllm::VlmSession(std::move(o));
+          },
+          "model_path"_a, "tokenizer_dir"_a, "config_path"_a = "",
+          "model_type"_a = "auto", "system_prompt"_a = "", "context_size"_a = 0)
+      .def(
+          "generate",
+          [](bllm::VlmSession& self, std::vector<std::string> image_paths,
+             std::string_view prompt, nb::object on_token) -> std::string {
+            std::vector<bllm::VlmImage> imgs;
+            imgs.reserve(image_paths.size());
+            for (auto& p : image_paths)
+              imgs.push_back(bllm::VlmImage::File(std::move(p)));
+            std::string out;
+            if (on_token.is_none()) {
+              nb::gil_scoped_release rel;
+              return self.generate(imgs, prompt);
+            }
+            auto cb = [&on_token](std::string_view c) {
+              nb::gil_scoped_acquire acq;
+              on_token(nb::str(c.data(), c.size()));
+            };
+            nb::gil_scoped_release rel;
+            return self.generate(imgs, prompt, cb);
+          },
+          "images"_a, "prompt"_a, "on_token"_a = nb::none(),
+          "Ask about one or more image files. Streams to on_token if given.")
+      .def(
+          "describe",
+          [](bllm::VlmSession& self, const std::string& image_path,
+             std::string_view prompt, nb::object on_token) -> std::string {
+            if (on_token.is_none()) {
+              nb::gil_scoped_release rel;
+              return self.describe(image_path, prompt);
+            }
+            auto cb = [&on_token](std::string_view c) {
+              nb::gil_scoped_acquire acq;
+              on_token(nb::str(c.data(), c.size()));
+            };
+            nb::gil_scoped_release rel;
+            return self.describe(image_path, prompt, cb);
+          },
+          "image_path"_a, "prompt"_a, "on_token"_a = nb::none())
+      .def("reset", &bllm::VlmSession::reset)
+      .def_prop_ro("last_stats", &bllm::VlmSession::last_stats);
 }

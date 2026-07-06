@@ -7,3 +7,7 @@ target_link_options(bllm_chat PRIVATE -Wl,-unresolved-symbols=ignore-in-shared-l
 add_executable(bllm_omni omni.cc)
 target_link_libraries(bllm_omni PRIVATE bllm::bllm)
 target_link_options(bllm_omni PRIVATE -Wl,-unresolved-symbols=ignore-in-shared-libs)
+
+add_executable(bllm_vlm vlm.cc)
+target_link_libraries(bllm_vlm PRIVATE bllm::bllm)
+target_link_options(bllm_vlm PRIVATE -Wl,-unresolved-symbols=ignore-in-shared-libs)

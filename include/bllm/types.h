@@ -43,6 +43,11 @@ enum class Backend : int {
 // `xlm_priority_type_t`.
 enum class Priority : int { Normal = 0, High = 1, Urgent = 2 };
 
+// Image preprocessing for the image-VLM path. Mirrors
+// `xlm_img_preprocess_type`. Dynamic = the model's native dynamic-resolution
+// tiling (default); None = feed as-is.
+enum class ImgPreprocess : int { Dynamic = 0, None = 1 };
+
 // Sampling knobs. Defaults reproduce the official `oellm_run` demo settings
 // (validated on S100P), so a caller who touches nothing gets known-good output.
 struct SamplingParams {
