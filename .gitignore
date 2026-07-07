@@ -59,3 +59,6 @@ __pycache__/
 .vscode/
 .cache/
 .DS_Store
+
+# model-conversion method — CLOSED (we publish finished .hbm, not the how-to)
+host_toolchain/convert/

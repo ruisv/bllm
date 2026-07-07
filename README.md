@@ -101,8 +101,13 @@ All official **text** LLMs run through one config-free path — BLLM infers the
 
 in q8/q4 × ctx 1024/4096 variants. **Multimodal** samples (Qwen2.5-Omni-3B,
 InternVL/Qwen-VL) are guarded pending the M5 multimodal facade. Full matrix +
-per-model notes: [`docs/MODELS.md`](docs/MODELS.md). Custom architectures are
-converted offline with the `oellm_build` toolchain.
+per-model notes: [`docs/MODELS.md`](docs/MODELS.md).
+
+Beyond the official set, we also publish a growing list of **pre-compiled `.hbm`
+for select community models** — e.g. **Microsoft Phi-4-mini** and **GLM-Edge-1.5B**,
+both running on the S100P BPU. You download the finished `.hbm` package and run it;
+the offline conversion pipeline is not part of this repo. Deployment guide:
+[`host_toolchain/README.md`](host_toolchain/README.md).
 
 ## Build
 
