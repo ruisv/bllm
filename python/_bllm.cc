@@ -121,7 +121,7 @@ NB_MODULE(_bllm, m) {
             nb::gil_scoped_release rel;  // xlm_init can be slow (loads .hbm)
             new (self) bllm::LlmSession(std::move(o));
           },
-          "model_path"_a, "tokenizer_dir"_a, "model_type"_a = "auto",
+          "model_path"_a, "tokenizer_dir"_a = "", "model_type"_a = "auto",
           "chat_template_path"_a = "", "system_prompt"_a = "",
           "config_path"_a = "", "context_size"_a = 0,
           "sampling"_a = nb::none(), "backend"_a = "any", "priority"_a = "normal")

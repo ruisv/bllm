@@ -2,8 +2,13 @@
 
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <mutex>
+#include <string>
 #include <utility>
+
+#include "bllm/package.h"
 
 #include "xlm_internal.h"  // shared: xlm.h + enum maps + Trampoline + stats
 
@@ -70,16 +75,37 @@ LlmSession::LlmSession(SessionOptions options)
   s.opts = std::move(options);
 
   BLLM_CHECK(!s.opts.model_path.empty(), "SessionOptions.model_path is required");
-  BLLM_CHECK(!s.opts.tokenizer_dir.empty(),
-             "SessionOptions.tokenizer_dir is required");
 
-  // Resolve model type (Auto -> infer from path).
+  // Accept a package (.tar.gz / directory) as model_path — extract on first use
+  // and fill in the tokenizer dir from it if the caller didn't set one.
+  {
+    ModelPackage pkg = ResolvePackage(s.opts.model_path);
+    s.opts.model_path = pkg.hbm_path;
+    if (s.opts.tokenizer_dir.empty() && !pkg.tokenizer_dir.empty())
+      s.opts.tokenizer_dir = pkg.tokenizer_dir;
+  }
+  BLLM_CHECK(!s.opts.tokenizer_dir.empty(),
+             "tokenizer_dir is required (or pass a package with a config/ dir)");
+
+  // Resolve model type (Auto -> infer from path, else from the config.json arch
+  // so a downloaded package "just works" without --model-type).
   if (s.opts.model_type == ModelType::Auto) {
     s.opts.model_type = ModelTypeFromPath(s.opts.model_path);
     if (s.opts.model_type == ModelType::Auto)
       s.opts.model_type = ModelTypeFromPath(s.opts.tokenizer_dir);
+    if (s.opts.model_type == ModelType::Auto) {
+      // Read <tokenizer_dir>/config.json; our converted packages are Qwen2-layout.
+      std::ifstream cf(s.opts.tokenizer_dir + "/config.json");
+      if (cf) {
+        const std::string cj((std::istreambuf_iterator<char>(cf)),
+                             std::istreambuf_iterator<char>());
+        if (cj.find("Qwen2ForCausalLM") != std::string::npos ||
+            cj.find("\"qwen2\"") != std::string::npos)
+          s.opts.model_type = ModelType::Qwen2_5;
+      }
+    }
     BLLM_CHECK(s.opts.model_type != ModelType::Auto,
-               "could not infer model_type from paths; set it explicitly");
+               "could not infer model_type; set it explicitly (e.g. qwen2.5)");
   }
   BLLM_CHECK(s.opts.model_type != ModelType::Llama,
              "llama model_type is not supported by the runtime yet");

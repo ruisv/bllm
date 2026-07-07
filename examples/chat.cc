@@ -17,9 +17,10 @@ namespace {
 
 void PrintUsage() {
   std::cout <<
-      "Usage: bllm_chat --hbm <model.hbm> --tokenizer <dir> [options]\n"
-      "  --hbm <path>         compiled .hbm model (required)\n"
-      "  --tokenizer <dir>    tokenizer config directory (required)\n"
+      "Usage: bllm_chat --hbm <model.hbm|package.tar.gz|package_dir> [options]\n"
+      "  --hbm <path>         .hbm model, OR a package (.tar.gz / dir) that holds\n"
+      "                       the .hbm + config/ — auto-extracted on first launch\n"
+      "  --tokenizer <dir>    tokenizer config dir (optional; auto-found in a package)\n"
       "  --template <path>    .jinja chat template (auto-found in tokenizer dir\n"
       "                       if present; omit for Base/InternLM2 models)\n"
       "  --config <path>      model config (required for InternVL)\n"

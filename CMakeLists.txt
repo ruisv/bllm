@@ -29,13 +29,15 @@ set(BLLM_PUBLIC_HEADERS
   include/bllm/types.h
   include/bllm/llm_session.h
   include/bllm/omni_session.h
-  include/bllm/vlm_session.h)
+  include/bllm/vlm_session.h
+  include/bllm/package.h)
 
 if(OELLM_FOUND)
   message(STATUS "BLLM: OE-LLM SDK ${OELLM_VERSION} at ${OELLM_LIB_DIR} — building full library")
   add_library(bllm
     src/common.cc
     src/types.cc
+    src/package.cc
     src/llm_session.cc
     src/omni_session.cc
     src/vlm_session.cc)

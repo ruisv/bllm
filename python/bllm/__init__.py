@@ -76,7 +76,7 @@ class LlmSession:
     def __init__(
         self,
         model_path: str,
-        tokenizer_dir: str,
+        tokenizer_dir: str = "",
         *,
         model_type: str = "auto",
         chat_template_path: str = "",

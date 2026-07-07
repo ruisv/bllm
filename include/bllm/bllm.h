@@ -20,6 +20,7 @@
 #include "bllm/common.h"
 #include "bllm/llm_session.h"
 #include "bllm/omni_session.h"
+#include "bllm/package.h"
 #include "bllm/types.h"
 #include "bllm/vlm_session.h"
 
