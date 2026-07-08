@@ -29,3 +29,19 @@ target_link_options(_bllm PRIVATE -Wl,--unresolved-symbols=ignore-all)
 # PYTHONPATH=<repo>/python without an install step.
 set_target_properties(_bllm PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bllm")
+
+# The NATIVE engine binding — its own module linking only the generic hobot
+# runtime (no libxlm), so `bllm._bllm_native.NativeEngine` runs a .hbm on hbDNN.
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+find_package(Hobot QUIET)
+if(Hobot_FOUND)
+  nanobind_add_module(_bllm_native STABLE_ABI NB_STATIC _bllm_native.cc)
+  target_link_libraries(_bllm_native PRIVATE hobot::dnn)
+  target_include_directories(_bllm_native PRIVATE "${CMAKE_SOURCE_DIR}/include")
+  target_link_options(_bllm_native PRIVATE -Wl,--unresolved-symbols=ignore-all)
+  set_target_properties(_bllm_native PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bllm")
+  message(STATUS "_bllm_native: native hbDNN engine binding (no libxlm)")
+else()
+  message(STATUS "_bllm_native: skipped (hobot runtime not found)")
+endif()
