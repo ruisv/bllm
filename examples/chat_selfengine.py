@@ -52,11 +52,20 @@ def main():
     tok = Tokenizer.from_file(os.path.join(args.config, "tokenizer.json"))
     think = args.think
 
+    # eos ids from the model's config.json (model-agnostic; the engine stops on them)
+    eos = []
+    cfg_path = os.path.join(args.config, "config.json")
+    if os.path.exists(cfg_path):
+        with open(cfg_path) as f:
+            e = json.load(f).get("eos_token_id")
+        eos = e if isinstance(e, list) else ([e] if e is not None else [])
+    eos_arg = ",".join(map(str, eos)) if eos else "151645,151643"
+
     env = dict(os.environ)
     env["LD_LIBRARY_PATH"] = "/usr/hobot/lib:" + env.get("LD_LIBRARY_PATH", "")
     cmd = [args.engine, "--hbm", args.hbm, "--serve", "--max-new", str(args.max_new),
            "--temp", str(args.temp), "--top-k", str(args.top_k),
-           "--top-p", str(args.top_p), "--seed", str(args.seed)]
+           "--top-p", str(args.top_p), "--seed", str(args.seed), "--eos", eos_arg]
     eng = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                            env=env, text=True, bufsize=1)
 
