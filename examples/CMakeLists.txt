@@ -11,3 +11,16 @@ target_link_options(bllm_omni PRIVATE -Wl,-unresolved-symbols=ignore-in-shared-l
 add_executable(bllm_vlm vlm.cc)
 target_link_libraries(bllm_vlm PRIVATE bllm::bllm)
 target_link_options(bllm_vlm PRIVATE -Wl,-unresolved-symbols=ignore-in-shared-libs)
+
+# The NATIVE engine — drives a .hbm directly on hbDNN/hbUCP, no libxlm. It links
+# only the generic hobot runtime, so it is gated on FindHobot rather than the
+# OE-LLM SDK.
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+find_package(Hobot QUIET)
+if(Hobot_FOUND)
+  add_executable(bllm_selfengine selfengine.cc)
+  target_link_libraries(bllm_selfengine PRIVATE hobot::dnn)
+  message(STATUS "bllm_selfengine: native hbDNN engine (no libxlm)")
+else()
+  message(STATUS "bllm_selfengine: skipped (hobot runtime not found)")
+endif()
