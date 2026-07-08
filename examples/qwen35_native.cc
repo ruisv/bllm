@@ -10,6 +10,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,7 @@ std::vector<int> parseIds(const std::string& s) {
 int main(int argc, char** argv) {
   std::string hbm, embed, ids_str, eos_str = "248044", name = "qwen35";
   int max_new = 20;
+  bool serve = false;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     auto val = [&]() { return std::string(argv[++i]); };
@@ -37,17 +39,41 @@ int main(int argc, char** argv) {
     else if (a == "--max-new") max_new = std::atoi(val().c_str());
     else if (a == "--eos") eos_str = val();
     else if (a == "--name") name = val();
+    else if (a == "--serve") serve = true;
   }
-  if (hbm.empty() || embed.empty() || ids_str.empty()) {
-    std::fprintf(stderr, "usage: %s --hbm m.hbm --embed embed_fp16.bin --ids \"id,..\""
-                 " [--max-new N] [--eos \"id,..\"]\n", argv[0]);
+  if (hbm.empty() || embed.empty() || (!serve && ids_str.empty())) {
+    std::fprintf(stderr, "usage: %s --hbm m.hbm --embed embed_fp16.bin"
+                 " (--ids \"id,..\" | --serve) [--max-new N] [--eos \"id,..\"]\n", argv[0]);
     return 1;
   }
-  std::vector<int> ids = parseIds(ids_str), eos = parseIds(eos_str);
+  std::vector<int> eos = parseIds(eos_str);
 
   bllm::NativeHybridEngine eng(hbm, embed, name);
   std::fprintf(stderr, "[loaded] hidden=%d vocab=%d caches=%d cache_len=%d\n",
                eng.hidden(), eng.vocab(), eng.n_cache(), eng.cache_len());
+
+  // Serve mode: keep the model resident, read requests on stdin. Protocol (one
+  // line per message): "R" resets the conversation; "M:<n>" sets max-new for the
+  // next request; a bare "id,id,.." feeds those tokens (continuing the running
+  // context) and streams the reply as "T <id>" lines, then "E". The Python
+  // front-end (chat_qwen35.py) does tokenization + chat template.
+  if (serve) {
+    std::string line;
+    std::printf("READY\n"); std::fflush(stdout);
+    int req_max = max_new;
+    while (std::getline(std::cin, line)) {
+      if (line == "R") { eng.reset(); std::printf("E\n"); std::fflush(stdout); continue; }
+      if (line.rfind("M:", 0) == 0) { req_max = std::atoi(line.c_str() + 2); std::printf("E\n"); std::fflush(stdout); continue; }
+      std::vector<int> req = parseIds(line);
+      if (req.empty()) { std::printf("E\n"); std::fflush(stdout); continue; }
+      for (int id : req) eng.step(id);   // feed the whole turn; last step sets logits
+      eng.generate(req_max, eos, [](int id) { std::printf("T %d\n", id); std::fflush(stdout); });
+      std::printf("E\n"); std::fflush(stdout);
+    }
+    return 0;
+  }
+
+  std::vector<int> ids = parseIds(ids_str);
 
   // prefill (all but last token), timing separately
   using clk = std::chrono::steady_clock;
