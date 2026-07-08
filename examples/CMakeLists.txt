@@ -22,6 +22,13 @@ if(Hobot_FOUND)
   target_link_libraries(bllm_selfengine PRIVATE hobot::dnn)
   target_include_directories(bllm_selfengine PRIVATE "${CMAKE_SOURCE_DIR}/include")
   message(STATUS "bllm_selfengine: native hbDNN engine (no libxlm)")
+
+  # The hybrid (Gated-DeltaNet + attention) engine — Qwen3.5 on hbDNN, no libxlm.
+  add_executable(bllm_qwen35 qwen35_native.cc)
+  target_link_libraries(bllm_qwen35 PRIVATE hobot::dnn)
+  target_include_directories(bllm_qwen35 PRIVATE "${CMAKE_SOURCE_DIR}/include")
+  target_compile_options(bllm_qwen35 PRIVATE -march=armv8.2-a+fp16)
+  message(STATUS "bllm_qwen35: native hybrid-SSM engine (no libxlm)")
 else()
   message(STATUS "bllm_selfengine: skipped (hobot runtime not found)")
 endif()
