@@ -31,6 +31,7 @@
 #include <hobot/hb_ucp_sys.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -404,8 +405,20 @@ int main(int argc, char** argv) {
       }
       std::vector<int> ids = parseIds(line);
       if (ids.empty()) { std::printf("END\n"); std::fflush(stdout); continue; }
+      using clk = std::chrono::steady_clock;
+      auto t0 = clk::now();
+      double t_first = -1;
+      int ntok = 0;
       eng.feed(ids);
-      eng.generate(max_new, sampler, [](int t) { std::printf("TOK %d\n", t); std::fflush(stdout); });
+      eng.generate(max_new, sampler, [&](int t) {
+        if (t_first < 0) t_first = std::chrono::duration<double>(clk::now() - t0).count();
+        ++ntok;
+        std::printf("TOK %d\n", t); std::fflush(stdout);
+      });
+      double t_last = std::chrono::duration<double>(clk::now() - t0).count();
+      double ttft_ms = (t_first < 0 ? 0 : t_first) * 1000.0;
+      double dtps = (ntok > 1 && t_last > t_first) ? (ntok - 1) / (t_last - t_first) : 0.0;
+      std::printf("STATS ttft_ms=%.1f decode_tps=%.2f ntok=%d\n", ttft_ms, dtps, ntok);
       std::printf("END\n"); std::fflush(stdout);
     }
   } else {
