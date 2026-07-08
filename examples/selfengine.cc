@@ -403,6 +403,13 @@ int main(int argc, char** argv) {
         eng.reset(); sampler.reset();
         std::printf("OK\n"); std::fflush(stdout); continue;
       }
+      // optional per-request cap: "M:id,id,..." overrides the default max_new
+      int req_max = max_new;
+      size_t colon = line.find(':');
+      if (colon != std::string::npos && line.find_first_not_of("0123456789") == colon) {
+        req_max = std::atoi(line.substr(0, colon).c_str());
+        line = line.substr(colon + 1);
+      }
       std::vector<int> ids = parseIds(line);
       if (ids.empty()) { std::printf("END\n"); std::fflush(stdout); continue; }
       using clk = std::chrono::steady_clock;
@@ -410,7 +417,7 @@ int main(int argc, char** argv) {
       double t_first = -1;
       int ntok = 0;
       eng.feed(ids);
-      eng.generate(max_new, sampler, [&](int t) {
+      eng.generate(req_max, sampler, [&](int t) {
         if (t_first < 0) t_first = std::chrono::duration<double>(clk::now() - t0).count();
         ++ntok;
         std::printf("TOK %d\n", t); std::fflush(stdout);

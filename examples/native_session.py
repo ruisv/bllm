@@ -58,8 +58,9 @@ class NativeSession:
         self._wait("OK")
         self._first = True
 
-    def _run(self, ids, on_token=None):
-        self.p.stdin.write(",".join(map(str, ids)) + "\n")
+    def _run(self, ids, on_token=None, max_new=None):
+        prefix = f"{int(max_new)}:" if max_new else ""
+        self.p.stdin.write(prefix + ",".join(map(str, ids)) + "\n")
         self.p.stdin.flush()
         out, shown = [], ""
         for line in self.p.stdout:
@@ -89,11 +90,11 @@ class NativeSession:
     def generate(self, prompt, max_new=None, on_token=None):
         """Raw completion of `prompt` from a fresh context."""
         self.reset()
-        return self._run(self.tok.encode(prompt).ids, on_token)
+        return self._run(self.tok.encode(prompt).ids, on_token, max_new)
 
-    def chat(self, msg, think=False, on_token=None):
+    def chat(self, msg, think=False, on_token=None, max_new=None):
         """One multi-turn chat turn; context persists across calls until reset()."""
-        return self._run(self._chat_delta(msg, think), on_token)
+        return self._run(self._chat_delta(msg, think), on_token, max_new)
 
     def stream_chat(self, msg, think=False):
         """Generator yielding text pieces for a chat turn."""
