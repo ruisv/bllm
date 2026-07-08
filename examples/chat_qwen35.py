@@ -17,10 +17,10 @@ ENGINE = os.path.expanduser("~/projects/bllm/build/examples/bllm_qwen35")
 IM_START, IM_END, EOT = 248045, 248046, 248044   # <|im_start|>, <|im_end|>, <|endoftext|>
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--hbm", default=f"{HOME}/qwen35_0.8b_bpu.hbm")
+ap.add_argument("--hbm", default=f"{HOME}/qwen35_0.8b_ctx2k.hbm")  # cache_len 2048, nkv=2
 ap.add_argument("--embed", default=f"{HOME}/embed_fp16.bin")
 ap.add_argument("--tok", default=f"{HOME}/qwen35_tok/tokenizer.json")
-ap.add_argument("--max-new", type=int, default=200)
+ap.add_argument("--max-new", type=int, default=400)
 ap.add_argument("--raw", action="store_true", help="raw completion instead of ChatML chat")
 ap.add_argument("--system", default="You are a helpful assistant.")
 args = ap.parse_args()
@@ -84,7 +84,10 @@ try:
             ids = parts
         first = False
         print("\033[1mBot:\033[0m ", end="", flush=True)
-        send(ids)
+        out = send(ids)
+        if len(out) >= args.max_new:
+            print(f"\n\033[33m[…truncated: hit --max-new={args.max_new}; the model didn't emit "
+                  f"<|im_end|>. Re-run with a larger --max-new (bounded by cache_len=2048).]\033[0m", end="")
         print("\n")
 finally:
     try:
