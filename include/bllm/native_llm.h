@@ -28,6 +28,9 @@ class NativeLlm {
   explicit NativeLlm(const std::string& model_dir) : NativeLlm(loadModelConfig(model_dir)) {}
   explicit NativeLlm(ModelConfig cfg)
       : cfg_(std::move(cfg)), tk_(Tokenizer::fromFile(cfg_.tokenizer)) {
+    if (cfg_.is_omni())
+      throw std::runtime_error("[bllm] '" + cfg_.name + "' is arch=\"omni\" (multimodal); "
+                               "load it with bllm::NativeVlm / bllm.NativeVlmSession");
     if (cfg_.is_hybrid())
       hybrid_ = std::make_unique<NativeHybridEngine>(cfg_.hbm, cfg_.embed, cfg_.graph, cfg_.rope_theta);
     else
@@ -50,6 +53,9 @@ class NativeLlm {
     s.priority = priority;
     if (hybrid_) hybrid_->set_sched(s); else dense_->set_sched(s);
   }
+
+  // Tokens that still fit in this conversation's KV window.
+  int context_left() const { return hybrid_ ? hybrid_->context_left() : dense_->context_left(); }
 
   double last_decode_tps() const {
     return hybrid_ ? hybrid_->last_stats().decode_tps : dense_->last_stats().decode_tps;

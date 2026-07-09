@@ -112,6 +112,10 @@ class NativeHybridEngine {
   int n_cache() const { return nCache_; }
   int cache_len() const { return CL_; }
   int position() const { return P_; }
+  // Tokens that still fit. The attention layers hold a cache_len window (the GDN
+  // layers are O(1) in length), and rolling past it evicts the earliest tokens —
+  // which turns a full-attention model into gibberish. Refuse rather than degrade.
+  int context_left() const { return CL_ - P_; }
   const HybridStats& last_stats() const { return stats_; }
 
   void reset() {
@@ -123,7 +127,14 @@ class NativeHybridEngine {
   }
 
   // ingest prompt tokens (updates caches; keeps the last logits for sampling).
-  void feed(const std::vector<int>& ids) { for (int id : ids) step(id); }
+  void feed(const std::vector<int>& ids) {
+    if ((int)ids.size() > context_left())
+      throw std::runtime_error("[hybrid] context overflow: " + std::to_string(ids.size()) +
+                               " tokens do not fit in the remaining " + std::to_string(context_left()) +
+                               " of " + std::to_string(CL_) +
+                               " cache slots. reset(), shorten the turn, or use a longer-context build.");
+    for (int id : ids) step(id);
+  }
 
   // greedy-generate up to max_new; stop on any eos; call on_token(id) per token.
   std::vector<int> generate(int max_new, const std::vector<int>& eos,
@@ -131,7 +142,7 @@ class NativeHybridEngine {
     std::vector<int> gen;
     using clk = std::chrono::steady_clock;
     auto t0 = clk::now();
-    for (int i = 0; i < max_new && curLogits_valid_; ++i) {
+    for (int i = 0; i < max_new && curLogits_valid_ && P_ < CL_; ++i) {
       int tok = argmax();
       bool stop = false; for (int e : eos) if (e == tok) { stop = true; break; }
       if (stop) break;
@@ -158,7 +169,7 @@ class NativeHybridEngine {
     std::vector<int> gen;
     using clk = std::chrono::steady_clock;
     auto t0 = clk::now();
-    for (int i = 0; i < p.max_new && curLogits_valid_; ++i) {
+    for (int i = 0; i < p.max_new && curLogits_valid_ && P_ < CL_; ++i) {
       int tok = s.pick(logit, vocab_);
       if (eos.count(tok)) break;
       gen.push_back(tok);
