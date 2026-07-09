@@ -32,3 +32,15 @@ if(Hobot_FOUND)
 else()
   message(STATUS "bllm_selfengine: skipped (hobot runtime not found)")
 endif()
+
+# Pure-C++ tokenizer (HuggingFace tokenizers via mlc-ai/tokenizers-cpp) — the seam
+# that lets the native engine speak strings. Gated on a local tokenizers-cpp build.
+find_package(Tokenizers QUIET)
+if(Tokenizers_FOUND)
+  add_executable(bllm_tokenizer_probe tokenizer_probe.cc)
+  target_link_libraries(bllm_tokenizer_probe PRIVATE tokenizers::tokenizers)
+  target_include_directories(bllm_tokenizer_probe PRIVATE "${CMAKE_SOURCE_DIR}/include")
+  message(STATUS "bllm_tokenizer_probe: C++ tokenizer (HF tokenizers)")
+else()
+  message(STATUS "bllm_tokenizer_probe: skipped (tokenizers-cpp not found; set -DTOKENIZERS_ROOT)")
+endif()
