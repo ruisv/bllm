@@ -1,5 +1,8 @@
-# nanobind extension module `_bllm`, placed next to the pure-Python package so
-# `python/` is importable in-tree (PYTHONPATH=.../python) and installable later.
+# nanobind extension modules, placed next to the pure-Python package so `python/`
+# is importable in-tree (PYTHONPATH=.../python) and installable later.
+#
+# The two backends are separate modules on purpose: `import bllm` works with only
+# one of them present (see python/bllm/__init__.py, which imports each in a try).
 
 find_package(Python 3.8 REQUIRED COMPONENTS Interpreter Development.Module)
 
@@ -17,45 +20,33 @@ endif()
 list(APPEND CMAKE_PREFIX_PATH "${NB_CMAKE_DIR}")
 find_package(nanobind CONFIG REQUIRED)
 
-nanobind_add_module(_bllm STABLE_ABI NB_STATIC _bllm.cc)
-target_link_libraries(_bllm PRIVATE bllm::bllm oellm::xlm)
-# The module has legitimately-undefined symbols from two sources resolved at
-# load time: CPython (provided by the interpreter) and libxlm's sibling libs.
-# ignore-all covers both (the -shared default would too, but we must override
-# any stricter flag inherited transitively).
-target_link_options(_bllm PRIVATE -Wl,--unresolved-symbols=ignore-all)
-
-# Drop the built module into the in-tree package dir so `import bllm` works with
+# Drop built modules into the in-tree package dir so `import bllm` works with
 # PYTHONPATH=<repo>/python without an install step.
-set_target_properties(_bllm PROPERTIES
-  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bllm")
+set(BLLM_PY_PKG "${CMAKE_CURRENT_SOURCE_DIR}/bllm")
 
-# The NATIVE engine binding — its own module linking only the generic hobot
-# runtime (no libxlm), so `bllm._bllm_native.NativeEngine` runs a .hbm on hbDNN.
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
-find_package(Hobot QUIET)
-find_package(Tokenizers QUIET)
-if(Hobot_FOUND)
-  # With the C++ tokenizer, the module also exposes the unified string-in NativeLlm.
-  if(Tokenizers_FOUND)
-    nanobind_add_module(_bllm_native STABLE_ABI NB_STATIC
-      _bllm_native.cc "${CMAKE_SOURCE_DIR}/src/model_config.cc")
-    target_link_libraries(_bllm_native PRIVATE hobot::dnn tokenizers::tokenizers)
-    target_compile_definitions(_bllm_native PRIVATE BLLM_HAVE_TOKENIZERS)
-    target_compile_options(_bllm_native PRIVATE -march=armv8.2-a+fp16)
-    # vendored stb_image + dr_wav back NativeVlm's "media path" convenience overloads
+# ── libxlm backend module ────────────────────────────────────────────────────
+if(BLLM_HAVE_RUNTIME)
+  nanobind_add_module(_bllm STABLE_ABI NB_STATIC _bllm.cc)
+  target_link_libraries(_bllm PRIVATE bllm::bllm oellm::xlm)
+  # The module has legitimately-undefined symbols from two sources resolved at
+  # load time: CPython (provided by the interpreter) and libxlm's sibling libs.
+  target_link_options(_bllm PRIVATE -Wl,--unresolved-symbols=ignore-all)
+  set_target_properties(_bllm PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${BLLM_PY_PKG}")
+  message(STATUS "_bllm: libxlm sessions")
+endif()
+
+# ── native backend module ────────────────────────────────────────────────────
+if(BLLM_HAVE_NATIVE)
+  nanobind_add_module(_bllm_native STABLE_ABI NB_STATIC _bllm_native.cc)
+  target_link_libraries(_bllm_native PRIVATE bllm::native)
+  if(BLLM_HAVE_TOKENIZERS)
+    # NativeVlm's convenience overloads decode media files with the vendored headers.
     target_include_directories(_bllm_native PRIVATE
       "${CMAKE_SOURCE_DIR}/vendor/stb" "${CMAKE_SOURCE_DIR}/vendor/dr_libs")
     message(STATUS "_bllm_native: native engine + NativeLlm + NativeVlm (no libxlm)")
   else()
-    nanobind_add_module(_bllm_native STABLE_ABI NB_STATIC _bllm_native.cc)
-    target_link_libraries(_bllm_native PRIVATE hobot::dnn)
-    message(STATUS "_bllm_native: native engine binding (no NativeLlm — tokenizers not found)")
+    message(STATUS "_bllm_native: native engine only (no tokenizer -> no NativeLlm/NativeVlm)")
   endif()
-  target_include_directories(_bllm_native PRIVATE "${CMAKE_SOURCE_DIR}/include")
   target_link_options(_bllm_native PRIVATE -Wl,--unresolved-symbols=ignore-all)
-  set_target_properties(_bllm_native PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bllm")
-else()
-  message(STATUS "_bllm_native: skipped (hobot runtime not found)")
+  set_target_properties(_bllm_native PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${BLLM_PY_PKG}")
 endif()

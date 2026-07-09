@@ -46,18 +46,10 @@ try:
 except ImportError:
     _HAVE_NATIVE = False
 
-__all__ = [
-    "NativeSession",
-    "NativeVlmSession",
-    "load_video",
-    "LlmSession",
-    "OmniSession",
-    "VlmSession",
-    "Content",
-    "SamplingParams",
-    "GenerationStats",
-    "__version__",
-]
+# `__all__` is built from what actually imported: an install may carry either backend,
+# both, or (on a dev host) neither. Advertising a name that does not exist would make
+# `from bllm import *` fail on exactly the machines where it should degrade quietly.
+__all__ = ["__version__"]
 
 
 def _stream(generate_call) -> "Iterator[str]":
@@ -473,3 +465,16 @@ if _HAVE_NATIVE:
         @property
         def video_tokens_per_second(self) -> float:
             return self._vlm.video_tokens_per_second
+
+
+# ── public surface, per backend actually present ─────────────────────────────
+if _HAVE_LIBXLM:
+    __all__ += ["LlmSession", "OmniSession", "VlmSession",
+                "Content", "SamplingParams", "GenerationStats"]
+if _HAVE_NATIVE:
+    __all__ += ["NativeSession", "NativeVlmSession", "load_video"]
+
+
+def available_backends() -> "tuple[str, ...]":
+    """Which runtimes this install can actually drive: "libxlm" and/or "native"."""
+    return tuple(n for n, ok in (("libxlm", _HAVE_LIBXLM), ("native", _HAVE_NATIVE)) if ok)

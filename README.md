@@ -229,14 +229,49 @@ both running on the S100P BPU. You download the finished `.hbm` package and run 
 the offline conversion pipeline is not part of this repo. Deployment guide:
 [`host_toolchain/README.md`](host_toolchain/README.md).
 
-## Build
+## Build, test, and consume
 
-Develop on a host, build & run on the board (the OE-LLM SDK exists only there):
+Develop on a host, build & run on the board — both runtimes exist only there:
 
 ```bash
-scripts/sync.sh          # rsync working tree to the board (set BOARD ssh alias)
-scripts/board_build.sh   # cmake + ninja on the board
+scripts/sync.sh                    # rsync working tree to the board (set BOARD ssh alias)
+scripts/board_build.sh [--python]  # cmake + ninja on the board
+scripts/board_test.sh              # sync, build, set BPU performance mode, pytest
 ```
+
+The two backends are independent CMake targets, and either builds without the other:
+
+| target | needs | gives |
+|---|---|---|
+| `bllm::bllm` | the OE-LLM SDK | `LlmSession` / `OmniSession` / `VlmSession` |
+| `bllm::native` | the hobot runtime (+ tokenizers-cpp for strings) | `NativeLlm` / `NativeVlm`, no libxlm |
+
+Downstream consumers get them through `find_package`; the config reports which
+backends the install actually carries, and pulls in the runtimes they need:
+
+```cmake
+find_package(bllm REQUIRED)          # sets BLLM_HAVE_NATIVE / BLLM_HAVE_LIBXLM
+target_link_libraries(app PRIVATE bllm::native)
+```
+
+In Python, `import bllm` works with either backend, both, or neither (a dev host);
+`bllm.available_backends()` says which.
+
+### Making a model directory
+
+A native model is a directory with a `model.json` manifest. Never hand-write one —
+`scripts/make_model_dir.py` is the only writer, and it resolves stop tokens from the
+tokenizer's own `generation_config.json` rather than guessing (Qwen2.5's vocabulary
+contains a literal `</s>` that would make the model never stop):
+
+```bash
+scripts/make_model_dir.py dense ~/models/qwen2.5-1.5b \
+    --hbm Qwen2.5_1.5B_Instruct_1024.hbm \
+    --tokenizer Qwen2.5_1.5B_Instruct_config/tokenizer.json --cache-len 1024
+# -> [ok] ~/models/qwen2.5-1.5b/model.json   (eos from generation_config.json)
+```
+
+`hybrid` (Qwen3.5 SSM) and `omni` (multimodal) take their extra towers as flags.
 
 ## License
 

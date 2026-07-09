@@ -1,67 +1,41 @@
-# Each executable links libxlm.so, which has undefined refs to its
-# (runtime-loaded) sibling libs — relax the unresolved-symbol check.
-add_executable(bllm_chat chat.cc)
-target_link_libraries(bllm_chat PRIVATE bllm::bllm)
-target_link_options(bllm_chat PRIVATE -Wl,-unresolved-symbols=ignore-in-shared-libs)
+# Demos for both backends. Each is gated on what its backend actually needs, so a
+# board with only the hobot runtime (no OE-LLM SDK) still builds the native ones.
 
-add_executable(bllm_omni omni.cc)
-target_link_libraries(bllm_omni PRIVATE bllm::bllm)
-target_link_options(bllm_omni PRIVATE -Wl,-unresolved-symbols=ignore-in-shared-libs)
-
-add_executable(bllm_vlm vlm.cc)
-target_link_libraries(bllm_vlm PRIVATE bllm::bllm)
-target_link_options(bllm_vlm PRIVATE -Wl,-unresolved-symbols=ignore-in-shared-libs)
-
-# The NATIVE engine — drives a .hbm directly on hbDNN/hbUCP, no libxlm. It links
-# only the generic hobot runtime, so it is gated on FindHobot rather than the
-# OE-LLM SDK.
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
-find_package(Hobot QUIET)
-if(Hobot_FOUND)
-  add_executable(bllm_selfengine selfengine.cc)
-  target_link_libraries(bllm_selfengine PRIVATE hobot::dnn)
-  target_include_directories(bllm_selfengine PRIVATE "${CMAKE_SOURCE_DIR}/include")
-  message(STATUS "bllm_selfengine: native hbDNN engine (no libxlm)")
-
-  # The hybrid (Gated-DeltaNet + attention) engine — Qwen3.5 on hbDNN, no libxlm.
-  add_executable(bllm_qwen35 qwen35_native.cc)
-  target_link_libraries(bllm_qwen35 PRIVATE hobot::dnn)
-  target_include_directories(bllm_qwen35 PRIVATE "${CMAKE_SOURCE_DIR}/include")
-  target_compile_options(bllm_qwen35 PRIVATE -march=armv8.2-a+fp16)
-  message(STATUS "bllm_qwen35: native hybrid-SSM engine (no libxlm)")
-else()
-  message(STATUS "bllm_selfengine: skipped (hobot runtime not found)")
+# ── libxlm backend ───────────────────────────────────────────────────────────
+if(BLLM_HAVE_RUNTIME)
+  # Each executable links libxlm.so, which has undefined refs to its
+  # (runtime-loaded) sibling libs — relax the unresolved-symbol check.
+  foreach(demo chat omni vlm)
+    add_executable(bllm_${demo} ${demo}.cc)
+    target_link_libraries(bllm_${demo} PRIVATE bllm::bllm)
+    target_link_options(bllm_${demo} PRIVATE -Wl,-unresolved-symbols=ignore-in-shared-libs)
+  endforeach()
 endif()
 
-# Pure-C++ tokenizer (HuggingFace tokenizers via mlc-ai/tokenizers-cpp) — the seam
-# that lets the native engine speak strings. Gated on a local tokenizers-cpp build.
-find_package(Tokenizers QUIET)
-if(Tokenizers_FOUND)
+# ── native backend (no libxlm) ───────────────────────────────────────────────
+# bllm::native carries the include dirs, hobot::dnn, the tokenizer and the fp16 flag.
+if(BLLM_HAVE_NATIVE)
+  add_executable(bllm_selfengine selfengine.cc)          # token ids in/out
+  target_link_libraries(bllm_selfengine PRIVATE bllm::native)
+
+  add_executable(bllm_qwen35 qwen35_native.cc)           # hybrid Gated-DeltaNet
+  target_link_libraries(bllm_qwen35 PRIVATE bllm::native)
+endif()
+
+if(BLLM_HAVE_NATIVE AND BLLM_HAVE_TOKENIZERS)
   add_executable(bllm_tokenizer_probe tokenizer_probe.cc)
-  target_link_libraries(bllm_tokenizer_probe PRIVATE tokenizers::tokenizers)
-  target_include_directories(bllm_tokenizer_probe PRIVATE "${CMAKE_SOURCE_DIR}/include")
-  message(STATUS "bllm_tokenizer_probe: C++ tokenizer (HF tokenizers)")
-else()
-  message(STATUS "bllm_tokenizer_probe: skipped (tokenizers-cpp not found; set -DTOKENIZERS_ROOT)")
-endif()
+  target_link_libraries(bllm_tokenizer_probe PRIVATE bllm::native)
 
-# Unified native session (bllm::NativeLlm): model dir in, streaming chat out, pure
-# C++ (native engine + C++ tokenizer + ChatML, no libxlm, no Python). Needs both the
-# hobot runtime and the C++ tokenizer.
-if(Hobot_FOUND AND Tokenizers_FOUND)
-  add_executable(bllm_chat_native chat_native.cc "${CMAKE_SOURCE_DIR}/src/model_config.cc")
-  target_link_libraries(bllm_chat_native PRIVATE hobot::dnn tokenizers::tokenizers)
-  target_include_directories(bllm_chat_native PRIVATE "${CMAKE_SOURCE_DIR}/include")
-  target_compile_options(bllm_chat_native PRIVATE -march=armv8.2-a+fp16)
-  message(STATUS "bllm_chat_native: unified native session (no libxlm, no Python)")
+  # Unified native session (bllm::NativeLlm): model dir in, streaming chat out.
+  add_executable(bllm_chat_native chat_native.cc)
+  target_link_libraries(bllm_chat_native PRIVATE bllm::native)
 
-  # Native VLM (bllm::NativeVlm): image/audio + text -> streamed reply, all on hbDNN.
-  # Media file decoding comes from vendored stb_image + dr_wav (no OpenCV/ffmpeg dep).
-  add_executable(bllm_vlm_native vlm_native.cc "${CMAKE_SOURCE_DIR}/src/model_config.cc")
-  target_link_libraries(bllm_vlm_native PRIVATE hobot::dnn tokenizers::tokenizers)
+  # Native VLM (bllm::NativeVlm): image/audio/video + text -> streamed reply.
+  # File decoding is vendored (stb_image + dr_wav); video frame sampling
+  # (video_io.h) shells out to ffmpeg and is example-only, never in the library.
+  add_executable(bllm_vlm_native vlm_native.cc)
+  target_link_libraries(bllm_vlm_native PRIVATE bllm::native)
   target_include_directories(bllm_vlm_native PRIVATE
-    "${CMAKE_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_SOURCE_DIR}/vendor/stb" "${CMAKE_SOURCE_DIR}/vendor/dr_libs")
-  target_compile_options(bllm_vlm_native PRIVATE -march=armv8.2-a+fp16)
-  message(STATUS "bllm_vlm_native: native multimodal session (no libxlm)")
 endif()

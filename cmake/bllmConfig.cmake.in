@@ -1,0 +1,27 @@
+@PACKAGE_INIT@
+
+# BLLM ships two independent backends; a given install may carry either or both.
+#   bllm::bllm    — the libxlm (OE-LLM SDK) sessions
+#   bllm::native  — the self-built hbDNN runtime (no libxlm)
+# These flags let a consumer branch on what is actually available.
+set(BLLM_HAVE_LIBXLM     @BLLM_HAVE_RUNTIME@)
+set(BLLM_HAVE_NATIVE     @BLLM_HAVE_NATIVE@)
+set(BLLM_HAVE_TOKENIZERS @BLLM_HAVE_TOKENIZERS@)
+
+include(CMakeFindDependencyMacro)
+# The Find modules we install alongside this config resolve the board's runtimes.
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}")
+
+if(BLLM_HAVE_LIBXLM)
+  find_dependency(OELLM)          # oellm::xlm appears in bllm's link interface
+endif()
+if(BLLM_HAVE_NATIVE)
+  find_dependency(Hobot)          # hobot::dnn — hbDNN / hbUCP / HBRT
+  if(BLLM_HAVE_TOKENIZERS)
+    find_dependency(Tokenizers)   # tokenizers::tokenizers — HF tokenizers (Rust)
+  endif()
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/bllmTargets.cmake")
+
+check_required_components(bllm)
