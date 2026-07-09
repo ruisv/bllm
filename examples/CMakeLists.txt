@@ -44,3 +44,14 @@ if(Tokenizers_FOUND)
 else()
   message(STATUS "bllm_tokenizer_probe: skipped (tokenizers-cpp not found; set -DTOKENIZERS_ROOT)")
 endif()
+
+# Unified native session (bllm::NativeLlm): model dir in, streaming chat out, pure
+# C++ (native engine + C++ tokenizer + ChatML, no libxlm, no Python). Needs both the
+# hobot runtime and the C++ tokenizer.
+if(Hobot_FOUND AND Tokenizers_FOUND)
+  add_executable(bllm_chat_native chat_native.cc "${CMAKE_SOURCE_DIR}/src/model_config.cc")
+  target_link_libraries(bllm_chat_native PRIVATE hobot::dnn tokenizers::tokenizers)
+  target_include_directories(bllm_chat_native PRIVATE "${CMAKE_SOURCE_DIR}/include")
+  target_compile_options(bllm_chat_native PRIVATE -march=armv8.2-a+fp16)
+  message(STATUS "bllm_chat_native: unified native session (no libxlm, no Python)")
+endif()
