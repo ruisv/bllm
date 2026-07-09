@@ -66,6 +66,10 @@ inline Coeffs makeCoeffs(int inLen, int outLen) {
 
 }  // namespace vision_detail
 
+// The square side the tower was compiled for is not a constant of the model — it is
+// baked into the graph when the vision recipe is exported (the official Omni tower is
+// 448², but a re-export at 224² costs 4x fewer decoder tokens per frame). So derive it
+// from the graph's patch count instead of hardcoding it.
 struct VisionSpec {
   int image_size = 448;   // square side the graph was compiled for
   int patch = 14;
@@ -75,10 +79,10 @@ struct VisionSpec {
   float mean[3] = {0.48145466f, 0.4578275f, 0.40821073f};
   float std[3]  = {0.26862954f, 0.26130258f, 0.27577711f};
 
-  int grid() const { return image_size / patch; }          // 32
-  int llm_grid() const { return grid() / merge; }          // 16
-  int n_patch() const { return grid() * grid(); }          // 1024
-  int n_token() const { return llm_grid() * llm_grid(); }  // 256
+  int grid() const { return image_size / patch; }          // 448 -> 32
+  int llm_grid() const { return grid() / merge; }          // 448 -> 16
+  int n_patch() const { return grid() * grid(); }          // 448 -> 1024
+  int n_token() const { return llm_grid() * llm_grid(); }  // 448 -> 256
   int row_len() const { return channels * temporal * patch * patch; }  // 1176
 };
 
@@ -160,14 +164,24 @@ class VisionTower {
     hidden_ = os.dimensionSize[os.numDimensions - 1];
     if (g_.inType(0) != HB_DNN_TENSOR_TYPE_F32)
       throw std::runtime_error("[vision] expected an f32 patch input");
-    if (nPatch_ != spec_.n_patch() || rowLen_ != spec_.row_len() || nToken_ != spec_.n_token())
-      throw std::runtime_error("[vision] graph shape does not match the 448×448 spec");
+
+    // grid² = n_patch, and the merger turns each merge² block into one token.
+    const int grid = (int)std::lround(std::sqrt((double)nPatch_));
+    if (grid * grid != nPatch_)
+      throw std::runtime_error("[vision] non-square patch grid: " + std::to_string(nPatch_));
+    spec_.image_size = grid * spec_.patch;
+    if (rowLen_ != spec_.row_len() || nToken_ != spec_.n_token())
+      throw std::runtime_error("[vision] graph shape is inconsistent: " + std::to_string(nPatch_) +
+                               "x" + std::to_string(rowLen_) + " -> " + std::to_string(nToken_) +
+                               " (derived " + std::to_string(spec_.image_size) + "px, expected " +
+                               std::to_string(spec_.n_token()) + " tokens)");
   }
   ~VisionTower() { if (packed_) hbDNNRelease(packed_); }
   VisionTower(const VisionTower&) = delete;
   VisionTower& operator=(const VisionTower&) = delete;
 
   const VisionSpec& spec() const { return spec_; }
+  int image_size() const { return spec_.image_size; }
   int n_token() const { return nToken_; }
   int hidden() const { return hidden_; }
 
