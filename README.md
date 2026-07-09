@@ -147,18 +147,37 @@ while capturing:
 print(vlm.stream_ask("刚才发生了什么？"))
 ```
 
-The KV window **is** the context, and it is the binding constraint: a frame-pair costs
-256 tokens and a second of audio 25, so a 2048-slot model holds ~3.5 s of video at
-2 fps — but ~80 s of audio alone. `vlm.context_left` tracks it, and pushing past it
-raises rather than silently evicting (evicting the earliest tokens turns these
-full-attention models into gibberish).
+The KV window **is** the context, and it is the binding constraint. A frame-pair spans
+two frames, so at 2 fps video costs `vision_tokens` per second and audio costs 25:
+a 2048-slot model holds **8 s of video** with the stock 448px tower, **32 s** with a
+224px re-export (see below), or ~80 s of audio alone. `vlm.context_left` tracks it,
+and pushing past it raises rather than silently evicting (evicting the earliest tokens
+turns these full-attention models into gibberish).
 
 C++: `bllm::NativeVlm` (`bllm/native_vlm.h`); CLI: `bllm_vlm_native --model <dir>
-[--image f] [--audio f.wav] [--video f.mp4] --prompt <text>`. The vision tower is
-fixed at 448×448 → 256 tokens per frame-pair, the audio tower at 50 tokens per 2 s;
-both are spliced into the decoder's embedding stream with 3-D **mrope**/TMRoPE
+[--image f] [--audio f.wav] [--video f.mp4] --prompt <text>`. The audio tower emits
+50 tokens per 2 s; the vision tower's cost depends on the resolution it was compiled
+at. Both are spliced into the decoder's embedding stream with 3-D **mrope**/TMRoPE
 positions, and a video's soundtrack interleaves with its frames in 2-second chunks.
-See [`docs/NATIVE_RUNTIME.md`](docs/NATIVE_RUNTIME.md) SE5.
+
+### Choosing a vision tower
+
+The tower's square side is baked in at export time, and it sets the whole video
+context budget. We re-export it offline; the runtime reads the resolution from the
+graph, so a model directory just points `visual` at the tower you want. Measured on
+S100P (image TTFT, and how much video fits in 2048 slots at 2 fps):
+
+| tower | tokens / frame-pair | video reach | image TTFT | coarse Q&A | small text in the image |
+|---|---|---|---|---|---|
+| 448px (official) | 256 | 8 s | 871 ms | ✅ | ✅ reads "cero emisiones" |
+| 224px (re-export) | 64 | **32 s** | **381 ms** | ✅ | ❌ hallucinates |
+
+224px is inside the model's training distribution (the processor's `min_pixels` is
+56×56), so coarse scene understanding, counting and video description are unchanged —
+only fine detail like text in the image is lost. Pick 448 for OCR-ish work, 224 for
+long video. Any side that is a multiple of 28 with `side/28` divisible by 4 works
+(336 → 144 tokens → 14 s of video, not yet measured for quality).
+See [`docs/NATIVE_RUNTIME.md`](docs/NATIVE_RUNTIME.md) SE5/SE8.
 
 ## Supported models (official pre-compiled `.hbm`)
 

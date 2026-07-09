@@ -416,7 +416,9 @@ if _HAVE_NATIVE:
         #
         # The KV window IS the context, so budget matters: a frame-pair costs
         # `vision_tokens` (256) and a second of audio costs 25. At 2 fps a
-        # 2048-slot model holds ~3.5 s of video, but ~80 s of audio alone.
+        # frame-pair spans 2 frames, so at 2 fps video costs `vision_tokens` per
+        # second: a 2048-slot model holds 8 s of 448px video (32 s at 224px), or
+        # ~80 s of audio alone.
         # Pushing past that raises rather than silently evicting — evicting the
         # earliest tokens collapses these full-attention models into gibberish.
 

@@ -15,7 +15,7 @@ bllm.load_video (ffmpeg) and feeds the soundtrack too unless --mute.
 --stream replays the video as a LIVE capture: frames and PCM are pushed as they
 arrive and encoded into the KV cache every 2 seconds, so the question at the end
 answers in a fraction of the offline TTFT. Watch `context_left`: the KV window is
-the whole context, and at 2 fps 2048 slots hold only ~3.5 s of video.
+the whole context, and at 2 fps 2048 slots hold 8 s of 448px video (32 s at 224px).
 """
 
 from __future__ import annotations

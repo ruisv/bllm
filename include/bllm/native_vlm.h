@@ -132,10 +132,11 @@ class NativeVlm {
   // so by the time the question arrives most of the prefill is already paid for.
   //
   // BUDGET: the KV window is the whole context (see NativeEngine::context_left).
-  // A frame-pair costs vision_tokens() (256) and a second of audio costs 25, so at
-  // 2 fps a 2048-slot model holds only ~3.5 s of video — but ~80 s of audio alone.
-  // stream_frame/stream_audio throw once the budget is spent rather than evict, and
-  // context_left() lets a caller see it coming.
+  // A frame-pair spans temporal_patch_size (2) frames, so at 2 fps video costs
+  // vision_tokens() per second of wall-clock and audio costs 25. A 2048-slot model
+  // therefore holds 8 s of video with the stock 448px tower (32 s with a 224px
+  // re-export), or ~80 s of audio alone. stream_frame/stream_audio throw once the
+  // budget is spent rather than evict; context_left() lets a caller see it coming.
 
   // fps <= 0 means audio only (no video block).
   void stream_begin(double fps = 2.0, bool with_audio = true) {
