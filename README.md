@@ -118,6 +118,24 @@ For image VLMs (InternVL / Qwen-VL) there's `bllm::VlmSession` /
 `bllm.VlmSession` (`vlm.describe("img.jpg", "...")`, CLI `bllm_vlm`) — API-ready,
 but SDK 1.0.0 ships no such model yet, so it's compile/guard-validated only.
 
+### Multimodal on the native runtime (no libxlm)
+
+The self-built engine also does image+text, driving the Omni towers on plain
+hbDNN. Images may be file paths **or raw `HxWx3` uint8 frames**, so a camera
+pipeline needs no file round-trip:
+
+```python
+vlm = bllm.NativeVlmSession("/models/qwen2.5-omni-3b")   # model.json, arch="omni"
+for chunk in vlm.stream_chat("描述这张图片。", ["bus.jpg"]):
+    print(chunk, end="", flush=True)
+print(vlm.last_ttft_ms, vlm.last_decode_tps)             # ttft includes vision encode
+```
+
+C++: `bllm::NativeVlm` (`bllm/native_vlm.h`); CLI: `bllm_vlm_native --model <dir>
+--image <file> --prompt <text>`. The vision tower runs at a fixed 448×448 → 256
+vision tokens, which are spliced into the decoder's embedding stream with 3-D
+**mrope** positions. See [`docs/NATIVE_RUNTIME.md`](docs/NATIVE_RUNTIME.md) SE5.
+
 ## Supported models (official pre-compiled `.hbm`)
 
 All official **text** LLMs run through one config-free path — BLLM infers the

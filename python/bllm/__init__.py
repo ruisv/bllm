@@ -37,13 +37,18 @@ except ImportError:
     _HAVE_LIBXLM = False
 
 try:
-    from ._bllm_native import NativeLlm as _NativeLlm, NativeEngine  # noqa: F401
+    from ._bllm_native import (  # noqa: F401
+        NativeEngine,
+        NativeLlm as _NativeLlm,
+        NativeVlm as _NativeVlm,
+    )
     _HAVE_NATIVE = True
 except ImportError:
     _HAVE_NATIVE = False
 
 __all__ = [
     "NativeSession",
+    "NativeVlmSession",
     "LlmSession",
     "OmniSession",
     "VlmSession",
@@ -306,3 +311,55 @@ if _HAVE_NATIVE:
         def stream(self, prompt: str, max_new: int = 256) -> "Iterator[str]":
             """Raw completion as a lazy generator of decoded text chunks."""
             return _stream(lambda cb: self._llm.generate(prompt, max_new, cb))
+
+    class NativeVlmSession:
+        """Unified native multimodal session — image + text, no libxlm.
+
+        Load an ``arch="omni"`` model directory. Images are file paths or HxWx3
+        uint8 arrays (what a camera pipeline already has), so no file round-trip.
+
+            import bllm
+            vlm = bllm.NativeVlmSession("/path/to/qwen2.5-omni-3b")
+            for chunk in vlm.stream_chat("描述这张图片。", ["bus.jpg"]):
+                print(chunk, end="", flush=True)
+        """
+
+        def __init__(self, model_dir: str) -> None:
+            self._vlm = _NativeVlm(model_dir)
+
+        @property
+        def name(self) -> str:
+            return self._vlm.name
+
+        @property
+        def vision_tokens(self) -> int:
+            """How many decoder tokens one image occupies."""
+            return self._vlm.vision_tokens
+
+        @property
+        def last_decode_tps(self) -> float:
+            return self._vlm.last_decode_tps
+
+        @property
+        def last_ttft_ms(self) -> float:
+            """Time to first token, including the vision encode."""
+            return self._vlm.last_ttft_ms
+
+        def reset(self) -> None:
+            """Start a fresh conversation."""
+            self._vlm.reset()
+
+        def set_sampling(self, temp: float = 0.0, top_p: float = 1.0, top_k: int = 0,
+                         rep_pen: float = 1.0, seed: int = 1234) -> "NativeVlmSession":
+            self._vlm.set_sampling(temp, top_p, top_k, rep_pen, seed)
+            return self
+
+        def chat(self, text: str, images=(), max_new: int = 256,
+                 on_text: "Optional[Callable[[str], None]]" = None) -> str:
+            """Answer a turn of text + images; returns the full reply."""
+            return self._vlm.chat(text, list(images), max_new, on_text)
+
+        def stream_chat(self, text: str, images=(), max_new: int = 256) -> "Iterator[str]":
+            """The same turn as a lazy generator of decoded text chunks."""
+            imgs = list(images)
+            return _stream(lambda cb: self._vlm.chat(text, imgs, max_new, cb))

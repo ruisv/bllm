@@ -3,13 +3,16 @@
 // generic hobot runtime (no OE-LLM SDK), so it is independent of the libxlm-based
 // `_bllm` module. Speaks token ids; tokenization stays in Python.
 #include <nanobind/nanobind.h>
+#include <nanobind/ndarray.h>
 #include <nanobind/stl/function.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 
 #include "bllm/native_engine.h"
 #ifdef BLLM_HAVE_TOKENIZERS
+#include "bllm/image_io.h"     // stb-backed decode, for image paths
 #include "bllm/native_llm.h"   // unified string-in/out session (needs the C++ tokenizer)
+#include "bllm/native_vlm.h"   // multimodal session (Qwen2.5-Omni)
 #endif
 
 namespace nb = nanobind;
@@ -105,5 +108,50 @@ NB_MODULE(_bllm_native, m) {
       .def_prop_ro("vocab_size", [](bllm::NativeLlm& l) { return l.tokenizer().vocab_size(); })
       .def("encode", [](bllm::NativeLlm& l, const std::string& s) { return l.tokenizer().encode(s); }, "text"_a)
       .def("decode", [](bllm::NativeLlm& l, const std::vector<int>& ids) { return l.tokenizer().decode(ids); }, "ids"_a);
+
+  // The multimodal session. Images arrive either as a path (decoded by stb) or as
+  // an HxWx3 uint8 array, which is what a camera pipeline already holds.
+  using RgbArray = nb::ndarray<const uint8_t, nb::ndim<3>, nb::c_contig, nb::device::cpu>;
+  nb::class_<bllm::NativeVlm>(m, "NativeVlm")
+      .def(nb::init<const std::string&>(), "model_dir"_a,
+           "Load an omni model directory (model.json: text + visual towers + embed table).")
+      .def(
+          "chat",
+          [](bllm::NativeVlm& vlm, const std::string& text, nb::list images, int max_new,
+             nb::object on_text) {
+            std::vector<bllm::OwnedImage> owned;   // keeps decoded pixels alive
+            std::vector<bllm::ImageRGB> refs;
+            for (nb::handle h : images) {
+              if (nb::isinstance<nb::str>(h)) {
+                owned.push_back(bllm::loadImageRGB(nb::cast<std::string>(h)));
+                refs.push_back({nullptr, owned.back().width, owned.back().height});
+              } else {
+                RgbArray a = nb::cast<RgbArray>(h);
+                if (a.shape(2) != 3) throw std::runtime_error("[bllm] image array must be HxWx3 uint8");
+                refs.push_back({a.data(), (int)a.shape(1), (int)a.shape(0)});
+              }
+            }
+            // Paths were decoded into `owned`, whose buffers may have moved while
+            // the vector grew — bind those pointers only now.
+            size_t k = 0;
+            for (size_t i = 0; i < refs.size(); ++i)
+              if (!refs[i].rgb) refs[i].rgb = owned[k++].rgb.data();
+
+            std::function<void(const std::string&)> cb;
+            if (!on_text.is_none())
+              cb = [&on_text](const std::string& s) { nb::gil_scoped_acquire g; on_text(s); };
+            std::string out;
+            { nb::gil_scoped_release r; out = vlm.chat(text, refs, max_new, cb); }
+            return out;
+          },
+          "text"_a, "images"_a = nb::list(), "max_new"_a = 256, "on_text"_a = nb::none(),
+          "Answer a turn of text + images (paths or HxWx3 uint8 arrays); on_text(str) streams.")
+      .def("reset", &bllm::NativeVlm::reset, "Start a fresh conversation.")
+      .def("set_sampling", &bllm::NativeVlm::set_sampling,
+           "temp"_a = 0.0f, "top_p"_a = 1.0f, "top_k"_a = 0, "rep_pen"_a = 1.0f, "seed"_a = 1234)
+      .def_prop_ro("vision_tokens", &bllm::NativeVlm::vision_tokens)
+      .def_prop_ro("last_decode_tps", &bllm::NativeVlm::last_decode_tps)
+      .def_prop_ro("last_ttft_ms", &bllm::NativeVlm::last_ttft_ms)
+      .def_prop_ro("name", [](bllm::NativeVlm& v) { return v.config().name; });
 #endif
 }

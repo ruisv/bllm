@@ -5,8 +5,17 @@
 //
 // Stateful: the KV cache lives in the decode graph's input buffers and persists
 // across feed()/generate(), giving multi-turn chat + chunked prefill. Every model
-// shape is introspected from the graph (model-agnostic). Speaks token ids in/out;
-// tokenization lives above this class.
+// shape is introspected from the graph (model-agnostic).
+//
+// Two graph contracts are supported, distinguished by how many non-cache inputs
+// the decode graph has (the cache count follows from the output count):
+//
+//   TokenInput (3): [token_id, position, mask]     — Qwen2.5 / DeepSeek / Qwen3 / …
+//                   ids in, the graph embeds and ropes internally.
+//   EmbedInput (4): [embedding, mask, cos, sin]    — Qwen2.5-Omni text tower.
+//                   the HOST embeds (EmbedTable) and computes rope. That seam is
+//                   what makes VLM possible: vision/audio rows are spliced into
+//                   the embedding stream, and mrope 3-D positions are ours to pick.
 //
 // See docs/NATIVE_RUNTIME.md.
 #pragma once
@@ -48,6 +57,13 @@ inline size_t elemSize(int t) {
     case HB_DNN_TENSOR_TYPE_S32: case HB_DNN_TENSOR_TYPE_U32: case HB_DNN_TENSOR_TYPE_F32: return 4;
     default: return 0;
   }
+}
+
+inline int16_t quantS16(float v, float inv_scale) {
+  const float q = std::rint(v * inv_scale);
+  if (q <= -32768.0f) return -32768;
+  if (q >= 32767.0f) return 32767;
+  return (int16_t)q;
 }
 
 struct Mem {
@@ -96,13 +112,16 @@ struct Graph {
     }
   }
   int inCount() const { return (int)in.size(); }
+  int outCount() const { return (int)out.size(); }
   const hbDNNTensorShape& inShape(int i) const { return in[i].properties.validShape; }
   const hbDNNTensorShape& outShape(int i) const { return out[i].properties.validShape; }
   int inType(int i) const { return in[i].properties.tensorType; }
-  float outScale(int i) const {
-    const auto& s = out[i].properties.scale;
+  static float scaleOf(const hbDNNTensorProperties& p) {
+    const auto& s = p.scale;
     return (s.scaleData && s.scaleLen > 0) ? s.scaleData[0] : 1.0f;
   }
+  float inScale(int i) const { return scaleOf(in[i].properties); }
+  float outScale(int i) const { return scaleOf(out[i].properties); }
   void inClean(int i) { inMem[i].clean(); }
   void* inPtr(int i) { return inMem[i].p(); }
   void* outPtr(int i) { return outMem[i].p(); }
@@ -137,59 +156,148 @@ struct NativeSamplingParams {
 
 struct NativeStats { double ttft_ms = 0, decode_tps = 0; int ntok = 0; };
 
+// An mrope position: (temporal, height, width). Plain-rope tokens set all three
+// equal; image tokens vary h/w across the patch grid.
+struct Pos3 {
+  int32_t t = 0, h = 0, w = 0;
+  static Pos3 scalar(int32_t p) { return {p, p, p}; }
+  int32_t max() const { return std::max(t, std::max(h, w)); }
+};
+
 class NativeEngine {
  public:
-  explicit NativeEngine(const std::string& hbm) {
+  enum class InputMode { Token, Embed };
+
+  explicit NativeEngine(const std::string& hbm,
+                        const char* prefill_name = "prefill",
+                        const char* decode_name = "decode") {
     const char* files[] = {hbm.c_str()};
     BLLM_NATIVE_CK(hbDNNInitializeFromFiles(&packed_, files, 1));
-    prefill_.init(packed_, "prefill");
-    decode_.init(packed_, "decode");
-    const int nCache = decode_.inCount() - 3;
-    nLayers_ = nCache / 2;
-    vInBase_ = 3 + nLayers_;
+    prefill_.init(packed_, prefill_name);
+    decode_.init(packed_, decode_name);
+
+    // outputs are [logits] + K[L] + V[L]; inputs are [fixed…] + K[L] + V[L].
+    nLayers_ = (decode_.outCount() - 1) / 2;
+    const int nFixed = decode_.inCount() - 2 * nLayers_;
+    if (nFixed == 3) mode_ = InputMode::Token;
+    else if (nFixed == 4) mode_ = InputMode::Embed;
+    else throw std::runtime_error("[native] unsupported graph: " + std::to_string(nFixed) +
+                                  " non-cache inputs (expected 3 or 4)");
+    base_ = nFixed;
+    vInBase_ = base_ + nLayers_;
     vOutBase_ = 1 + nLayers_;
-    const auto& ks = decode_.inShape(3);
-    cacheLen_ = ks.dimensionSize[0]; nKV_ = ks.dimensionSize[1]; headDim_ = ks.dimensionSize[2];
-    rowK_ = (size_t)nKV_ * headDim_ * native_detail::elemSize(decode_.inType(3));
+
+    // KV cache is [.., cache_len, n_kv, head_dim] — dense graphs emit it 3-D,
+    // the Omni text graph 4-D (leading batch), so index from the back.
+    const auto& ks = decode_.inShape(base_);
+    const int knd = ks.numDimensions;
+    cacheLen_ = ks.dimensionSize[knd - 3]; nKV_ = ks.dimensionSize[knd - 2]; headDim_ = ks.dimensionSize[knd - 1];
+    rowK_ = (size_t)nKV_ * headDim_ * native_detail::elemSize(decode_.inType(base_));
     rowV_ = (size_t)nKV_ * headDim_ * native_detail::elemSize(decode_.inType(vInBase_));
+
     const auto& ls = decode_.outShape(0);
     vocab_ = ls.dimensionSize[ls.numDimensions - 1];
     logitStride_ = native_detail::alignUp((int64_t)vocab_ * 2, native_detail::kAlign) / 2;
     logitScale_ = decode_.outScale(0);
+
     const auto& ps = prefill_.inShape(0);
-    chunk_ = ps.dimensionSize[ps.numDimensions - 1];
+    if (mode_ == InputMode::Token) {
+      chunk_ = ps.dimensionSize[ps.numDimensions - 1];
+    } else {
+      chunk_ = ps.dimensionSize[ps.numDimensions - 2];
+      hidden_ = ps.dimensionSize[ps.numDimensions - 1];
+      rot_ = decode_.inShape(3).dimensionSize[decode_.inShape(3).numDimensions - 1];
+      embInvScale_ = 1.0f / decode_.inScale(0);
+      ropeInvScale_ = 1.0f / decode_.inScale(2);
+      rowBuf_.resize(hidden_);
+      set_rope(1e6, {16, 24, 24});  // Qwen2.5-Omni defaults; override via set_rope()
+    }
     reset();
   }
   ~NativeEngine() { if (packed_) hbDNNRelease(packed_); }
   NativeEngine(const NativeEngine&) = delete;
   NativeEngine& operator=(const NativeEngine&) = delete;
 
+  InputMode input_mode() const { return mode_; }
+  bool embed_input() const { return mode_ == InputMode::Embed; }
   int n_layers() const { return nLayers_; }
   int n_kv() const { return nKV_; }
   int head_dim() const { return headDim_; }
   int cache_len() const { return cacheLen_; }
   int vocab() const { return vocab_; }
   int chunk() const { return chunk_; }
+  int hidden() const { return hidden_; }
   int position() const { return P_; }
+  // Next plain-rope position (one past the largest mrope coordinate seen).
+  int next_pos() const { return maxPos_ + 1; }
   const NativeStats& last_stats() const { return stats_; }
+
+  // Embed-mode only: how the engine turns a sampled token id back into a hidden
+  // row (normally EmbedTable::lookup). Required before generate().
+  void set_embedder(std::function<void(int, float*)> fn) { embedder_ = std::move(fn); }
+
+  // Embed-mode only: rope base + mrope section split (sums to rot/2; empty = plain).
+  void set_rope(double theta, std::vector<int> mrope_section) {
+    inv_.resize(rot_ / 2);
+    for (int i = 0; i < rot_ / 2; ++i) inv_[i] = std::pow(theta, -(double)(2 * i) / rot_);
+    sec_.assign(rot_ / 2, 0);
+    if (!mrope_section.empty()) {
+      int d = 0;
+      for (int s = 0; s < (int)mrope_section.size() && d < rot_ / 2; ++s)
+        for (int k = 0; k < mrope_section[s] && d < rot_ / 2; ++k) sec_[d++] = s;
+      if (d != rot_ / 2)
+        throw std::runtime_error("[native] mrope_section does not cover rot/2");
+    }
+  }
 
   void reset() {
     for (int l = 0; l < nLayers_; ++l) {
-      std::memset(kBuf(l), 0, cacheLen_ * rowK_); decode_.inClean(3 + l);
+      std::memset(kBuf(l), 0, cacheLen_ * rowK_); decode_.inClean(base_ + l);
       std::memset(vBuf(l), 0, cacheLen_ * rowV_); decode_.inClean(vInBase_ + l);
     }
-    P_ = 0; curLogits_ = nullptr;
+    P_ = 0; maxPos_ = -1; curLogits_ = nullptr;
   }
+
+  // Start the clock for the next reply's TTFT. feed() does this automatically;
+  // call it earlier when work precedes the feed (e.g. a VLM's vision encode).
+  void mark_turn_start() { tTurn_ = std::chrono::steady_clock::now(); }
 
   // ingest tokens (prompt or a new conversation turn) into the cache.
   void feed(const std::vector<int>& ids) {
+    mark_turn_start();
+    if (mode_ == InputMode::Embed) {
+      if (!embedder_) throw std::runtime_error("[native] embed-mode feed() needs set_embedder()");
+      std::vector<float> rows((size_t)ids.size() * hidden_);
+      for (size_t i = 0; i < ids.size(); ++i) embedder_((int)ids[i], rows.data() + i * hidden_);
+      feed_embeds(rows.data(), (int)ids.size(), nullptr);
+      return;
+    }
     size_t i = 0;
     if (P_ == 0 && !ids.empty()) {
       int cl = std::min((int)ids.size(), chunk_);
       prefillFirst(ids, cl);
       i = cl;
     }
-    for (; i < ids.size(); ++i) decodeStep(ids[i]);
+    for (; i < ids.size(); ++i) decodeStepToken(ids[i]);
+  }
+
+  // Embed-mode: ingest `n` hidden rows (n*hidden floats). `pos` may be null, in
+  // which case positions continue sequentially from the current maximum.
+  void feed_embeds(const float* rows, int n, const Pos3* pos) {
+    if (mode_ != InputMode::Embed) throw std::runtime_error("[native] feed_embeds() needs an embed-input graph");
+    std::vector<Pos3> seq;
+    if (!pos) {
+      seq.resize(n);
+      for (int i = 0; i < n; ++i) seq[i] = Pos3::scalar(maxPos_ + 1 + i);
+      pos = seq.data();
+    }
+    int i = 0;
+    if (P_ == 0 && n > 0) {
+      const int cl = std::min(n, chunk_);
+      prefillFirstEmbed(rows, pos, cl);
+      i = cl;
+    }
+    for (; i < n; ++i) decodeStepEmbed(rows + (size_t)i * hidden_, pos[i]);
   }
 
   // sample up to p.max_new tokens; stop on eos; call on_token(id) per token.
@@ -201,20 +309,22 @@ class NativeEngine {
     std::unordered_set<int> eos(p.eos.begin(), p.eos.end());
     std::vector<int> gen;
     using clk = std::chrono::steady_clock;
-    auto t0 = clk::now(); double t_first = -1;
+    // TTFT is measured from the start of the turn (prefill, and any vision encode
+    // the caller marked), not from the first sample — the logits already exist here.
+    clk::time_point tFirst;
     for (int step = 0; step < p.max_new && curLogits_; ++step) {
       int tok = s.pick(curLogits_, logitScale_, vocab_);
       if (eos.count(tok)) break;
-      if (t_first < 0) t_first = std::chrono::duration<double>(clk::now() - t0).count();
+      if (gen.empty()) { tFirst = clk::now(); stats_.ttft_ms = std::chrono::duration<double>(tFirst - tTurn_).count() * 1000.0; }
       gen.push_back(tok);
       if (on_token) on_token(tok);
       s.record(tok);
-      decodeStep(tok);
+      decodeStepToken(tok);
     }
-    double t_last = std::chrono::duration<double>(clk::now() - t0).count();
     stats_.ntok = (int)gen.size();
-    stats_.ttft_ms = (t_first < 0 ? 0 : t_first) * 1000.0;
-    stats_.decode_tps = (stats_.ntok > 1 && t_last > t_first) ? (stats_.ntok - 1) / (t_last - t_first) : 0.0;
+    const double tail = gen.empty() ? 0.0 : std::chrono::duration<double>(clk::now() - tFirst).count();
+    stats_.decode_tps = (stats_.ntok > 1 && tail > 0) ? (stats_.ntok - 1) / tail : 0.0;
+    if (gen.empty()) stats_.ttft_ms = 0.0;
     return gen;
   }
 
@@ -254,29 +364,58 @@ class NativeEngine {
     }
   };
 
-  uint8_t* kBuf(int l) { return (uint8_t*)decode_.inPtr(3 + l); }
+  uint8_t* kBuf(int l) { return (uint8_t*)decode_.inPtr(base_ + l); }
   uint8_t* vBuf(int l) { return (uint8_t*)decode_.inPtr(vInBase_ + l); }
 
-  void decodeStep(int token) {
-    *(int32_t*)decode_.inPtr(0) = token; decode_.inClean(0);
-    *(int32_t*)decode_.inPtr(1) = P_;    decode_.inClean(1);
-    auto* mask = (int16_t*)decode_.inPtr(2);
-    int lo = cacheLen_ - 1 - P_; if (lo < 0) lo = 0;
-    for (int j = 0; j < cacheLen_; ++j) mask[j] = (j >= lo) ? 0 : -32768;
-    decode_.inClean(2);
-    decode_.infer();
-    curLogits_ = (int16_t*)decode_.outPtr(0);
+  // roll each layer's KV window left by one and append the step's new row.
+  void rollCaches() {
     for (int l = 0; l < nLayers_; ++l) {
       uint8_t* k = kBuf(l);
       std::memmove(k, k + rowK_, (cacheLen_ - 1) * rowK_);
       std::memcpy(k + (cacheLen_ - 1) * rowK_, decode_.outPtr(1 + l), rowK_);
-      decode_.inClean(3 + l);
+      decode_.inClean(base_ + l);
       uint8_t* v = vBuf(l);
       std::memmove(v, v + rowV_, (cacheLen_ - 1) * rowV_);
       std::memcpy(v + (cacheLen_ - 1) * rowV_, decode_.outPtr(vOutBase_ + l), rowV_);
       decode_.inClean(vInBase_ + l);
     }
     ++P_;
+  }
+
+  // seed the (empty) decode cache from a prefill run of `cl` tokens.
+  void adoptPrefill(int cl) {
+    curLogits_ = (int16_t*)prefill_.outPtr(0) + (size_t)(cl - 1) * logitStride_;
+    for (int l = 0; l < nLayers_; ++l) {
+      std::memcpy(kBuf(l) + (size_t)(cacheLen_ - cl) * rowK_, prefill_.outPtr(1 + l), (size_t)cl * rowK_);
+      decode_.inClean(base_ + l);
+      std::memcpy(vBuf(l) + (size_t)(cacheLen_ - cl) * rowV_, prefill_.outPtr(vOutBase_ + l), (size_t)cl * rowV_);
+      decode_.inClean(vInBase_ + l);
+    }
+    P_ = cl;
+  }
+
+  void zeroPrefillCaches() {
+    for (int l = 0; l < nLayers_; ++l) {
+      std::memset(prefill_.inPtr(base_ + l), 0, cacheLen_ * rowK_); prefill_.inClean(base_ + l);
+      std::memset(prefill_.inPtr(vInBase_ + l), 0, cacheLen_ * rowV_); prefill_.inClean(vInBase_ + l);
+    }
+  }
+
+  // ── token-input graphs ─────────────────────────────────────────────────────
+  void decodeStepToken(int token) {
+    if (mode_ == InputMode::Embed) {
+      if (!embedder_) throw std::runtime_error("[native] embed-mode decode needs set_embedder()");
+      embedder_(token, rowBuf_.data());
+      decodeStepEmbed(rowBuf_.data(), Pos3::scalar(maxPos_ + 1));
+      return;
+    }
+    *(int32_t*)decode_.inPtr(0) = token; decode_.inClean(0);
+    *(int32_t*)decode_.inPtr(1) = P_;    decode_.inClean(1);
+    writeDecodeMask((int16_t*)decode_.inPtr(2));
+    decode_.inClean(2);
+    decode_.infer();
+    curLogits_ = (int16_t*)decode_.outPtr(0);
+    rollCaches();
   }
 
   void prefillFirst(const std::vector<int>& ids, int cl) {
@@ -287,36 +426,91 @@ class NativeEngine {
     auto* pos = (int32_t*)prefill_.inPtr(1);
     for (int i = 0; i < chunk_; ++i) pos[i] = i;
     prefill_.inClean(1);
+    writePrefillMask((int16_t*)prefill_.inPtr(2));
+    prefill_.inClean(2);
+    zeroPrefillCaches();
+    prefill_.infer();
+    adoptPrefill(cl);
+    maxPos_ = cl - 1;
+  }
+
+  // ── embed-input graphs (host embedding + host rope) ────────────────────────
+  void writeRope(int16_t* cs, int16_t* sn, Pos3 p) const {
+    const int half = rot_ / 2;
+    const int32_t pv[3] = {p.t, p.h, p.w};
+    for (int i = 0; i < half; ++i) {
+      const double ang = (double)pv[sec_[i]] * inv_[i];
+      const int16_t c = native_detail::quantS16((float)std::cos(ang), ropeInvScale_);
+      const int16_t s = native_detail::quantS16((float)std::sin(ang), ropeInvScale_);
+      cs[i] = cs[i + half] = c;
+      sn[i] = sn[i + half] = s;
+    }
+  }
+  void quantRow(const float* src, int16_t* dst) const {
+    for (int i = 0; i < hidden_; ++i) dst[i] = native_detail::quantS16(src[i], embInvScale_);
+  }
+
+  void decodeStepEmbed(const float* row, Pos3 pos) {
+    quantRow(row, (int16_t*)decode_.inPtr(0)); decode_.inClean(0);
+    writeDecodeMask((int16_t*)decode_.inPtr(1)); decode_.inClean(1);
+    writeRope((int16_t*)decode_.inPtr(2), (int16_t*)decode_.inPtr(3), pos);
+    decode_.inClean(2); decode_.inClean(3);
+    decode_.infer();
+    curLogits_ = (int16_t*)decode_.outPtr(0);
+    rollCaches();
+    maxPos_ = std::max(maxPos_, pos.max());
+  }
+
+  void prefillFirstEmbed(const float* rows, const Pos3* pos, int cl) {
+    auto* x = (int16_t*)prefill_.inPtr(0);
+    std::memset(x, 0, (size_t)chunk_ * hidden_ * sizeof(int16_t));
+    for (int i = 0; i < cl; ++i) quantRow(rows + (size_t)i * hidden_, x + (size_t)i * hidden_);
+    prefill_.inClean(0);
+    writePrefillMask((int16_t*)prefill_.inPtr(1));
+    prefill_.inClean(1);
+    auto* cs = (int16_t*)prefill_.inPtr(2);
+    auto* sn = (int16_t*)prefill_.inPtr(3);
+    std::memset(cs, 0, (size_t)chunk_ * rot_ * sizeof(int16_t));
+    std::memset(sn, 0, (size_t)chunk_ * rot_ * sizeof(int16_t));
+    for (int i = 0; i < cl; ++i) writeRope(cs + (size_t)i * rot_, sn + (size_t)i * rot_, pos[i]);
+    prefill_.inClean(2); prefill_.inClean(3);
+    zeroPrefillCaches();
+    prefill_.infer();
+    adoptPrefill(cl);
+    for (int i = 0; i < cl; ++i) maxPos_ = std::max(maxPos_, pos[i].max());
+  }
+
+  // ── masks (identical for both contracts) ──────────────────────────────────
+  // decode: the graph shifts its input window left and appends the new row, so
+  // the valid slots are the last (P+1) of the cacheLen-wide window.
+  void writeDecodeMask(int16_t* mask) const {
+    int lo = cacheLen_ - 1 - P_; if (lo < 0) lo = 0;
+    for (int j = 0; j < cacheLen_; ++j) mask[j] = (j >= lo) ? 0 : -32768;
+  }
+  // prefill: token i lands at window slot base+i and attends base..base+i.
+  void writePrefillMask(int16_t* m) const {
     const int base = cacheLen_ - chunk_;
-    auto* m = (int16_t*)prefill_.inPtr(2);
     for (int i = 0; i < chunk_; ++i)
       for (int j = 0; j < cacheLen_; ++j)
-        m[i * cacheLen_ + j] = (j >= base && j <= base + i) ? 0 : -32768;
-    prefill_.inClean(2);
-    for (int l = 0; l < nLayers_; ++l) {
-      std::memset(prefill_.inPtr(3 + l), 0, cacheLen_ * rowK_); prefill_.inClean(3 + l);
-      std::memset(prefill_.inPtr(vInBase_ + l), 0, cacheLen_ * rowV_); prefill_.inClean(vInBase_ + l);
-    }
-    prefill_.infer();
-    curLogits_ = (int16_t*)prefill_.outPtr(0) + (size_t)(cl - 1) * logitStride_;
-    for (int l = 0; l < nLayers_; ++l) {
-      std::memcpy(kBuf(l) + (size_t)(cacheLen_ - cl) * rowK_, prefill_.outPtr(1 + l), (size_t)cl * rowK_);
-      decode_.inClean(3 + l);
-      std::memcpy(vBuf(l) + (size_t)(cacheLen_ - cl) * rowV_, prefill_.outPtr(vOutBase_ + l), (size_t)cl * rowV_);
-      decode_.inClean(vInBase_ + l);
-    }
-    P_ = cl;
+        m[(size_t)i * cacheLen_ + j] = (j >= base && j <= base + i) ? 0 : -32768;
   }
 
   hbDNNPackedHandle_t packed_ = nullptr;
   native_detail::Graph prefill_, decode_;
+  InputMode mode_ = InputMode::Token;
   int nLayers_ = 0, nKV_ = 0, headDim_ = 0, cacheLen_ = 0, chunk_ = 0, vocab_ = 0;
+  int hidden_ = 0, rot_ = 0;
   size_t rowK_ = 0, rowV_ = 0;
-  int vInBase_ = 0, vOutBase_ = 0, logitStride_ = 0;
-  float logitScale_ = 1.0f;
-  int P_ = 0;
+  int base_ = 3, vInBase_ = 0, vOutBase_ = 0, logitStride_ = 0;
+  float logitScale_ = 1.0f, embInvScale_ = 1.0f, ropeInvScale_ = 1.0f;
+  int P_ = 0, maxPos_ = -1;
   const int16_t* curLogits_ = nullptr;
+  std::chrono::steady_clock::time_point tTurn_ = std::chrono::steady_clock::now();
   NativeStats stats_;
+  std::function<void(int, float*)> embedder_;
+  std::vector<double> inv_;
+  std::vector<int> sec_;
+  std::vector<float> rowBuf_;
 };
 
 }  // namespace bllm

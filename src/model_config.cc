@@ -38,7 +38,10 @@ ModelConfig loadModelConfig(const std::string& dir) {
   c.hbm = resolve(dir, j.value("hbm", ""));
   c.tokenizer = resolve(dir, j.value("tokenizer", "tokenizer.json"));
   c.embed = resolve(dir, j.value("embed", ""));
+  c.visual = resolve(dir, j.value("visual", ""));
+  c.audio = resolve(dir, j.value("audio", ""));
   if (j.contains("eos")) c.eos = j.at("eos").get<std::vector<int>>();
+  if (j.contains("mrope_section")) c.mrope_section = j.at("mrope_section").get<std::vector<int>>();
   if (j.contains("chat")) {
     const auto& ch = j.at("chat");
     c.chat.format = ch.value("format", "chatml");
@@ -47,8 +50,11 @@ ModelConfig loadModelConfig(const std::string& dir) {
     c.chat.system = ch.value("system", c.chat.system);
   }
   if (c.hbm.empty()) throw std::runtime_error("[bllm] model.json missing 'hbm'");
-  if (c.is_hybrid() && c.embed.empty())
-    throw std::runtime_error("[bllm] hybrid model.json missing 'embed' (host embed table)");
+  if ((c.is_hybrid() || c.is_omni()) && c.embed.empty())
+    throw std::runtime_error("[bllm] " + c.arch + " model.json missing 'embed' (host embed table)");
+  if (c.is_omni() && c.visual.empty())
+    throw std::runtime_error("[bllm] omni model.json missing 'visual' (vision tower .hbm)");
+  if (c.is_omni() && c.mrope_section.empty()) c.mrope_section = {16, 24, 24};
   return c;
 }
 
