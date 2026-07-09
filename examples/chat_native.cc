@@ -1,7 +1,7 @@
 // bllm_chat_native — interactive chat over bllm::NativeLlm, entirely in C++ (native
 // engine + C++ tokenizer + ChatML, no libxlm, no Python). One model directory in,
 // streaming chat out.
-//   ./bllm_chat_native --model <model_dir> [--max-new 400] [--raw]
+//   ./bllm_chat_native --model <model_dir> [--max-new 400] [--raw] [--bpu-priority 0..255]
 //   commands: /reset  /exit
 #include "bllm/native_llm.h"
 
@@ -11,13 +11,14 @@
 
 int main(int argc, char** argv) {
   std::string dir;
-  int max_new = 400, top_k = 0;
+  int max_new = 400, top_k = 0, bpu_priority = -1;
   float temp = 0.0f, top_p = 1.0f, rep_pen = 1.0f;
   uint64_t seed = 1234;
   bool raw = false;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     if (a == "--model") dir = argv[++i];
+    else if (a == "--bpu-priority") bpu_priority = std::atoi(argv[++i]);
     else if (a == "--max-new") max_new = std::atoi(argv[++i]);
     else if (a == "--temp") temp = std::atof(argv[++i]);
     else if (a == "--top-p") top_p = std::atof(argv[++i]);
@@ -28,11 +29,13 @@ int main(int argc, char** argv) {
   }
   if (dir.empty()) {
     std::fprintf(stderr, "usage: %s --model <dir> [--max-new N] [--raw]"
-                 " [--temp T --top-p P --top-k K --rep-pen R --seed S]\n", argv[0]);
+                 " [--temp T --top-p P --top-k K --rep-pen R --seed S]"
+                 " [--bpu-priority 0..255]\n", argv[0]);
     return 1;
   }
 
   bllm::NativeLlm llm(dir);
+  if (bpu_priority >= 0) llm.set_bpu_priority(bpu_priority);
   llm.set_sampling(temp, top_p, top_k, rep_pen, seed);
   const auto& c = llm.config();
   std::fprintf(stderr, "[loaded] %s  arch=%s  backend=native  vocab=%d  (%s)\n",

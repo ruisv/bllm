@@ -104,6 +104,9 @@ class NativeHybridEngine {
   NativeHybridEngine(const NativeHybridEngine&) = delete;
   NativeHybridEngine& operator=(const NativeHybridEngine&) = delete;
 
+  void set_sched(const native_detail::BpuSched& s) { sched_ = s; }
+  const native_detail::BpuSched& sched() const { return sched_; }
+
   int hidden() const { return H_; }
   int vocab() const { return vocab_; }
   int n_cache() const { return nCache_; }
@@ -199,9 +202,7 @@ class NativeHybridEngine {
     // infer
     hbUCPTaskHandle_t task = nullptr;
     BLLM_NATIVE_CK(hbDNNInferV2(&task, out_.data(), in_.data(), h_));
-    hbUCPSchedParam sched; HB_UCP_INITIALIZE_SCHED_PARAM(&sched); sched.priority = HB_UCP_PRIORITY_LOWEST;
-    BLLM_NATIVE_CK(hbUCPSubmitTask(task, &sched));
-    BLLM_NATIVE_CK(hbUCPWaitTaskDone(task, 0));
+    native_detail::submitAndWait(task, sched_);
     hbUCPReleaseTask(task);
     logitMem_.inval();                          // logits are CPU-read
     curLogits_ = logitMem_.p(); curLogits_valid_ = true;
@@ -245,6 +246,7 @@ class NativeHybridEngine {
   Mem logitMem_;
   std::vector<__fp16> emb_;
   std::vector<double> inv_;
+  native_detail::BpuSched sched_;
   int H_ = 0, ROT_ = 0, nHead_ = 0, CL_ = 0, nCache_ = 0, vocab_ = 0, logitType_ = 0;
   float logitScale_ = 1.0f;
   double theta_ = 1e7;

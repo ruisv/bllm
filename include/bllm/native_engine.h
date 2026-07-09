@@ -90,6 +90,33 @@ struct Mem {
   }
 };
 
+// How BPU tasks are submitted. Shared by every graph a session owns (text tower,
+// vision/audio towers), because they contend for the same accelerator.
+//
+// `priority` (0..255) orders the *queue*. It does NOT preempt: a task already on the
+// BPU runs to completion, and an LLM decode step is one indivisible ~47 ms graph, so a
+// co-resident vision pipeline waits behind it no matter what priority either side asks
+// for. The knob that actually bounds that wait is `--max_time_per_fc` at COMPILE time,
+// which caps each function call's duration so the scheduler gets preemption points.
+//
+// `core_mask` picks BPU cores (HB_UCP_BPU_CORE_0, …). S100/S100P expose exactly ONE
+// BPU core, so it is a no-op there; it matters on multi-core parts (nash-p / J6P).
+struct BpuSched {
+  int priority = HB_UCP_PRIORITY_LOWEST;   // yield the queue to latency-critical work
+  uint64_t core_mask = HB_UCP_CORE_ANY;
+  uint32_t device_id = 0;
+};
+
+inline void submitAndWait(hbUCPTaskHandle_t task, const BpuSched& s) {
+  hbUCPSchedParam sched;
+  HB_UCP_INITIALIZE_SCHED_PARAM(&sched);
+  sched.priority = s.priority;
+  sched.backend = s.core_mask;
+  sched.deviceId = s.device_id;
+  check(hbUCPSubmitTask(task, &sched), "hbUCPSubmitTask");
+  check(hbUCPWaitTaskDone(task, 0), "hbUCPWaitTaskDone");
+}
+
 struct Graph {
   hbDNNHandle_t h = nullptr;
   std::vector<hbDNNTensor> in, out;
@@ -132,14 +159,11 @@ struct Graph {
   void inClean(int i) { inMem[i].clean(); }
   void* inPtr(int i) { return inMem[i].p(); }
   void* outPtr(int i) { return outMem[i].p(); }
+  BpuSched sched;
   void infer() {
     hbUCPTaskHandle_t task = nullptr;
     BLLM_NATIVE_CK(hbDNNInferV2(&task, out.data(), in.data(), h));
-    hbUCPSchedParam sched;
-    HB_UCP_INITIALIZE_SCHED_PARAM(&sched);
-    sched.priority = HB_UCP_PRIORITY_LOWEST;
-    BLLM_NATIVE_CK(hbUCPSubmitTask(task, &sched));
-    BLLM_NATIVE_CK(hbUCPWaitTaskDone(task, 0));
+    submitAndWait(task, sched);
     hbUCPReleaseTask(task);
     for (auto& m : outMem) m.inval();
   }
@@ -260,6 +284,12 @@ class NativeEngine {
   // So the engine refuses to overflow rather than degrade silently.
   int context_left() const { return cacheLen_ - P_; }
   const NativeStats& last_stats() const { return stats_; }
+
+  // How this engine's BPU tasks are queued. Default: lowest priority, any core, so a
+  // co-resident vision pipeline wins the queue. See native_detail::BpuSched — priority
+  // orders the queue but does not preempt a running graph.
+  void set_sched(const native_detail::BpuSched& s) { prefill_.sched = s; decode_.sched = s; }
+  const native_detail::BpuSched& sched() const { return decode_.sched; }
 
   // Embed-mode only: how the engine turns a sampled token id back into a hidden
   // row (normally EmbedTable::lookup). Required before generate().

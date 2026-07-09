@@ -291,6 +291,13 @@ if _HAVE_NATIVE:
             self._llm.set_sampling(temp, top_p, top_k, rep_pen, seed)
             return self
 
+        def set_bpu_priority(self, priority: int) -> "NativeSession":
+            """BPU queue priority 0..255 (default 0 = lowest, so a co-resident vision
+            pipeline wins the queue). It orders the queue; it does NOT preempt a graph
+            already running, and an LLM decode step is one indivisible ~47 ms task."""
+            self._llm.set_bpu_priority(priority)
+            return self
+
         @property
         def last_decode_tps(self) -> float:
             return self._llm.last_decode_tps
@@ -394,6 +401,11 @@ if _HAVE_NATIVE:
         def set_sampling(self, temp: float = 0.0, top_p: float = 1.0, top_k: int = 0,
                          rep_pen: float = 1.0, seed: int = 1234) -> "NativeVlmSession":
             self._vlm.set_sampling(temp, top_p, top_k, rep_pen, seed)
+            return self
+
+        def set_bpu_priority(self, priority: int) -> "NativeVlmSession":
+            """BPU queue priority 0..255 for the text + vision + audio graphs."""
+            self._vlm.set_bpu_priority(priority)
             return self
 
         @property

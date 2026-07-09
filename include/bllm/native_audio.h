@@ -159,6 +159,7 @@ class AudioTower {
   AudioTower(const AudioTower&) = delete;
   AudioTower& operator=(const AudioTower&) = delete;
 
+  void set_sched(const native_detail::BpuSched& s) { g_.sched = s; }
   int hidden() const { return hidden_; }
   int chunk_frames() const { return chunkFrames_; }          // 200 (= 2 s)
   int tokens_per_chunk() const { return nToken_; }           // 50

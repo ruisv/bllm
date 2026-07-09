@@ -42,6 +42,15 @@ class NativeLlm {
     sampling_.temp = temp; sampling_.top_p = top_p; sampling_.top_k = top_k;
     sampling_.rep_pen = rep_pen; sampling_.seed = seed;
   }
+  // BPU queue priority (0..255). Lowest (the default) lets a co-resident vision
+  // pipeline jump the queue. Note: it orders the queue, it does not preempt a graph
+  // that is already running — see native_detail::BpuSched.
+  void set_bpu_priority(int priority) {
+    native_detail::BpuSched s;
+    s.priority = priority;
+    if (hybrid_) hybrid_->set_sched(s); else dense_->set_sched(s);
+  }
+
   double last_decode_tps() const {
     return hybrid_ ? hybrid_->last_stats().decode_tps : dense_->last_stats().decode_tps;
   }

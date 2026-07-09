@@ -97,6 +97,14 @@ class NativeVlm {
     sampling_.rep_pen = rep_pen; sampling_.seed = seed;
   }
 
+  // BPU queue priority for every graph this session owns (text + vision + audio).
+  void set_bpu_priority(int priority) {
+    sched_.priority = priority;
+    text_->set_sched(sched_);
+    vision_->set_sched(sched_);
+    if (audio_) audio_->set_sched(sched_);
+  }
+
   void reset() {
     text_->reset();
     first_turn_ = true;
@@ -406,6 +414,7 @@ class NativeVlm {
       if (!has_audio())
         throw std::runtime_error("[bllm] model.json has no 'audio' + 'mel_filters' — audio unsupported");
       audio_ = std::make_unique<AudioTower>(cfg_.audio, cfg_.mel_filters);
+      audio_->set_sched(sched_);
       if (audio_->hidden() != text_->hidden())
         throw std::runtime_error("[bllm] audio/text hidden size mismatch");
     }
@@ -435,6 +444,7 @@ class NativeVlm {
   std::unique_ptr<AudioTower> audio_;           // lazy: only built when audio is fed
   std::unique_ptr<EmbedTable> embed_;
   NativeSamplingParams sampling_;
+  native_detail::BpuSched sched_;
   bool first_turn_ = true;
   int im_start_ = -1, im_end_ = -1, vision_bos_ = -1, vision_eos_ = -1;
   int audio_bos_ = -1, audio_eos_ = -1;

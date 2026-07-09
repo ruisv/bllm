@@ -180,6 +180,7 @@ class VisionTower {
   VisionTower(const VisionTower&) = delete;
   VisionTower& operator=(const VisionTower&) = delete;
 
+  void set_sched(const native_detail::BpuSched& s) { g_.sched = s; }
   const VisionSpec& spec() const { return spec_; }
   int image_size() const { return spec_.image_size; }
   int n_token() const { return nToken_; }

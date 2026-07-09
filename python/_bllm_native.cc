@@ -105,6 +105,9 @@ NB_MODULE(_bllm_native, m) {
       .def("set_sampling", &bllm::NativeLlm::set_sampling,
            "temp"_a = 0.0f, "top_p"_a = 1.0f, "top_k"_a = 0, "rep_pen"_a = 1.0f, "seed"_a = 1234,
            "Set sampling (temp<=0 => greedy). Applies to the next generate()/chat().")
+      .def("set_bpu_priority", &bllm::NativeLlm::set_bpu_priority, "priority"_a,
+           "BPU queue priority 0..255 (default 0 = lowest, yields to a vision pipeline). "
+           "Orders the queue; does not preempt a running graph.")
       .def_prop_ro("last_decode_tps", &bllm::NativeLlm::last_decode_tps)
       .def_prop_ro("name", [](bllm::NativeLlm& l) { return l.config().name; })
       .def_prop_ro("arch", [](bllm::NativeLlm& l) { return l.config().arch; })
@@ -212,6 +215,8 @@ NB_MODULE(_bllm_native, m) {
       .def("reset", &bllm::NativeVlm::reset, "Start a fresh conversation.")
       .def("set_sampling", &bllm::NativeVlm::set_sampling,
            "temp"_a = 0.0f, "top_p"_a = 1.0f, "top_k"_a = 0, "rep_pen"_a = 1.0f, "seed"_a = 1234)
+      .def("set_bpu_priority", &bllm::NativeVlm::set_bpu_priority, "priority"_a,
+           "BPU queue priority 0..255 for the text + vision + audio graphs.")
       .def_prop_ro("vision_tokens", &bllm::NativeVlm::vision_tokens)
       .def_prop_ro("vision_image_size", &bllm::NativeVlm::vision_image_size)
       .def_prop_ro("has_audio", &bllm::NativeVlm::has_audio)
