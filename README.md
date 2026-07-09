@@ -24,17 +24,46 @@ on one board, but they are two different runtimes at the API layer.
 
 ## Status
 
-The **`bllm::LlmSession` C++ wrapper is live and on-board validated** (M1). It
-loads a `.hbm` + tokenizer, streams tokens, keeps multi-turn history, and
-auto-detects the model type — running `Qwen2.5-1.5B-Instruct` on the S100P BPU at
-**decode ~24 tok/s** (matching the official benchmark). The underlying path was
-validated in M0; see [`docs/LLM_ONBOARD.md`](docs/LLM_ONBOARD.md) for the
-bring-up, gotchas (ION carveout, performance-mode registers), and raw API notes.
+Two runtimes behind one library:
 
-Design + layering: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Roadmap
-(async/batch, VLM, Python bindings, packaging): [`docs/PLAN.md`](docs/PLAN.md).
+- **Native runtime (self-built, no libxlm)** — drives compiled `.hbm` graphs directly
+  on the generic hbDNN/hbUCP BPU stack, with our own KV/SSM cache, sampler and loop.
+  It runs the official text models (Qwen2.5-1.5B/**7B**, DeepSeek-R1-Distill-Qwen-1.5B,
+  InternLM2) at ~libxlm throughput, **and the Qwen3.5-0.8B hybrid (Gated-DeltaNet +
+  attention) that libxlm structurally cannot run** — strict **100 % on the BPU** at
+  **~21 tok/s**. Wrapped in a one-line, string-in `bllm::NativeLlm` / `bllm.NativeSession`
+  with a C++ tokenizer, ChatML, streaming, multi-turn and sampling.
+- **libxlm runtime** — the original `bllm::LlmSession` over the OE-LLM SDK; validated on
+  board (`Qwen2.5-1.5B` ~24 tok/s), plus `Omni`/`Vlm` multimodal sessions.
 
-## Usage
+See [`docs/NATIVE_RUNTIME.md`](docs/NATIVE_RUNTIME.md) (native SE-track),
+[`docs/LLM_ONBOARD.md`](docs/LLM_ONBOARD.md) (bring-up + ION/perf gotchas),
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), and [`docs/PLAN.md`](docs/PLAN.md) (roadmap).
+
+## Usage — native runtime (recommended)
+
+One model **directory** (a `.hbm` + `tokenizer.json` + a `model.json` manifest), one line:
+
+```python
+import bllm
+
+llm = bllm.NativeSession("/path/to/qwen3.5-0.8b")   # model.json → arch/tokenizer/eos/chat
+llm.set_sampling(temp=0.7, top_p=0.9)               # or leave greedy
+for chunk in llm.stream_chat("用一句话介绍北京"):    # streaming, multi-turn
+    print(chunk, end="", flush=True)
+print(llm.last_decode_tps)
+```
+
+```cpp
+#include "bllm/native_llm.h"
+
+bllm::NativeLlm llm("/path/to/qwen3.5-0.8b");
+std::string reply = llm.chat("你好", 400, [](const std::string& s){ std::cout << s << std::flush; });
+```
+
+REPL: [`examples/chat_native.cc`](examples/chat_native.cc) (`bllm_chat_native --model <dir>`).
+
+## Usage — libxlm runtime
 
 ```cpp
 #include "bllm/bllm.h"
