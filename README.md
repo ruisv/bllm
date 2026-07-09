@@ -170,14 +170,16 @@ S100P (image TTFT, and how much video fits in 2048 slots at 2 fps):
 | tower | tokens / frame-pair | video reach | image TTFT | coarse Q&A | small text in the image |
 |---|---|---|---|---|---|
 | 448px (official) | 256 | 8 s | 871 ms | ✅ | ✅ reads "cero emisiones" |
-| 224px (re-export) | 64 | **32 s** | **381 ms** | ✅ | ❌ hallucinates |
+| **336px (re-export)** | **144** | **14 s** | **455 ms** | ✅ | ✅ still reads it |
+| 224px (re-export) | 64 | **32 s** | 381 ms | ✅ | ❌ hallucinates |
 
-224px is inside the model's training distribution (the processor's `min_pixels` is
-56×56), so coarse scene understanding, counting and video description are unchanged —
-only fine detail like text in the image is lost. Pick 448 for OCR-ish work, 224 for
-long video. Any side that is a multiple of 28 with `side/28` divisible by 4 works
-(336 → 144 tokens → 14 s of video, not yet measured for quality).
-See [`docs/NATIVE_RUNTIME.md`](docs/NATIVE_RUNTIME.md) SE5/SE8.
+These resolutions are inside the model's training distribution (the processor's
+`min_pixels` is 56×56), so coarse scene understanding, counting and video description
+survive all the way down. What breaks is fine detail, and the cliff is between 336 and
+224 — not at 448. **336 is the default worth reaching for**: 1.8× cheaper frames, image
+TTFT nearly halved, and it still reads the text on the bus. Drop to 224 only when video
+reach matters more than detail. Any side that is a multiple of 28 with `side/28`
+divisible by 4 works. See [`docs/NATIVE_RUNTIME.md`](docs/NATIVE_RUNTIME.md) SE5/SE8.
 
 ## Supported models (official pre-compiled `.hbm`)
 
