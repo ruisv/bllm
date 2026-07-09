@@ -279,6 +279,16 @@ if _HAVE_NATIVE:
             """Start a fresh conversation."""
             self._llm.reset()
 
+        def set_sampling(self, temp: float = 0.0, top_p: float = 1.0, top_k: int = 0,
+                         rep_pen: float = 1.0, seed: int = 1234) -> "NativeSession":
+            """Configure sampling (temp<=0 => greedy). Returns self for chaining."""
+            self._llm.set_sampling(temp, top_p, top_k, rep_pen, seed)
+            return self
+
+        @property
+        def last_decode_tps(self) -> float:
+            return self._llm.last_decode_tps
+
         def chat(self, message: str, max_new: int = 400,
                  on_text: "Optional[Callable[[str], None]]" = None) -> str:
             """ChatML multi-turn; returns the full reply (and streams to on_text)."""

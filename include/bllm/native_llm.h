@@ -37,6 +37,15 @@ class NativeLlm {
   const ModelConfig& config() const { return cfg_; }
   const Tokenizer& tokenizer() const { return tk_; }
 
+  // Sampling controls (default greedy). Applied to both dense and hybrid backends.
+  void set_sampling(float temp, float top_p, int top_k, float rep_pen, uint64_t seed) {
+    sampling_.temp = temp; sampling_.top_p = top_p; sampling_.top_k = top_k;
+    sampling_.rep_pen = rep_pen; sampling_.seed = seed;
+  }
+  double last_decode_tps() const {
+    return hybrid_ ? hybrid_->last_stats().decode_tps : dense_->last_stats().decode_tps;
+  }
+
   // Fresh conversation / context.
   void reset() {
     if (hybrid_) hybrid_->reset(); else dense_->reset();
@@ -82,14 +91,11 @@ class NativeLlm {
       if (on_text && full.size() > emitted.size()) on_text(full.substr(emitted.size()));
       emitted = std::move(full);
     };
-    if (hybrid_) {
-      hybrid_->generate(max_new, cfg_.eos, on_token);
-    } else {
-      NativeSamplingParams sp;
-      sp.max_new = max_new;
-      if (!cfg_.eos.empty()) sp.eos = cfg_.eos;
-      dense_->generate(sp, on_token);
-    }
+    NativeSamplingParams sp = sampling_;
+    sp.max_new = max_new;
+    if (!cfg_.eos.empty()) sp.eos = cfg_.eos;
+    if (hybrid_) hybrid_->generate(sp, on_token);
+    else dense_->generate(sp, on_token);
     return tk_.decode(gen);
   }
 
@@ -97,6 +103,7 @@ class NativeLlm {
   Tokenizer tk_;
   std::unique_ptr<NativeHybridEngine> hybrid_;
   std::unique_ptr<NativeEngine> dense_;
+  NativeSamplingParams sampling_;                 // default: greedy
   bool first_turn_ = true;
 };
 

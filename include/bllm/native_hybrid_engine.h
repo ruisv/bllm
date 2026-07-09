@@ -19,6 +19,7 @@
 #pragma once
 
 #include "bllm/native_engine.h"   // native_detail::{Mem, check, elemSize, alignUp, kAlign}
+#include "bllm/native_sampler.h"  // bllm::Sampler (temperature/top-k/top-p/rep-pen)
 
 #include <cmath>
 #include <cstdint>
@@ -133,6 +134,33 @@ class NativeHybridEngine {
       if (stop) break;
       gen.push_back(tok);
       if (on_token) on_token(tok);
+      step(tok);
+    }
+    double dt = std::chrono::duration<double>(clk::now() - t0).count();
+    stats_.ntok = (int)gen.size();
+    stats_.decode_tps = dt > 0 ? gen.size() / dt : 0.0;
+    return gen;
+  }
+
+  // sample up to p.max_new (temperature/top-k/top-p/rep-pen, seeded); stop on p.eos.
+  std::vector<int> generate(const NativeSamplingParams& p,
+                            const std::function<void(int)>& on_token = {}) {
+    Sampler s(p);
+    std::unordered_set<int> eos(p.eos.begin(), p.eos.end());
+    auto logit = [this](int i) -> float {
+      return logitType_ == HB_DNN_TENSOR_TYPE_F32
+                 ? reinterpret_cast<const float*>(curLogits_)[i]
+                 : reinterpret_cast<const int16_t*>(curLogits_)[i] * logitScale_;
+    };
+    std::vector<int> gen;
+    using clk = std::chrono::steady_clock;
+    auto t0 = clk::now();
+    for (int i = 0; i < p.max_new && curLogits_valid_; ++i) {
+      int tok = s.pick(logit, vocab_);
+      if (eos.count(tok)) break;
+      gen.push_back(tok);
+      if (on_token) on_token(tok);
+      s.record(tok);
       step(tok);
     }
     double dt = std::chrono::duration<double>(clk::now() - t0).count();

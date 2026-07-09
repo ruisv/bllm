@@ -11,17 +11,29 @@
 
 int main(int argc, char** argv) {
   std::string dir;
-  int max_new = 400;
+  int max_new = 400, top_k = 0;
+  float temp = 0.0f, top_p = 1.0f, rep_pen = 1.0f;
+  uint64_t seed = 1234;
   bool raw = false;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     if (a == "--model") dir = argv[++i];
     else if (a == "--max-new") max_new = std::atoi(argv[++i]);
+    else if (a == "--temp") temp = std::atof(argv[++i]);
+    else if (a == "--top-p") top_p = std::atof(argv[++i]);
+    else if (a == "--top-k") top_k = std::atoi(argv[++i]);
+    else if (a == "--rep-pen") rep_pen = std::atof(argv[++i]);
+    else if (a == "--seed") seed = std::strtoull(argv[++i], nullptr, 10);
     else if (a == "--raw") raw = true;
   }
-  if (dir.empty()) { std::fprintf(stderr, "usage: %s --model <dir> [--max-new N] [--raw]\n", argv[0]); return 1; }
+  if (dir.empty()) {
+    std::fprintf(stderr, "usage: %s --model <dir> [--max-new N] [--raw]"
+                 " [--temp T --top-p P --top-k K --rep-pen R --seed S]\n", argv[0]);
+    return 1;
+  }
 
   bllm::NativeLlm llm(dir);
+  llm.set_sampling(temp, top_p, top_k, rep_pen, seed);
   const auto& c = llm.config();
   std::fprintf(stderr, "[loaded] %s  arch=%s  backend=native  vocab=%d  (%s)\n",
                c.name.c_str(), c.arch.c_str(), llm.tokenizer().vocab_size(),
@@ -40,7 +52,7 @@ int main(int argc, char** argv) {
     std::printf("\033[1mBot:\033[0m ");
     if (raw) llm.generate(line, max_new, stream);
     else     llm.chat(line, max_new, stream);
-    std::printf("\n\n");
+    std::fprintf(stderr, "\n\033[2m[%.2f tok/s]\033[0m\n\n", llm.last_decode_tps());
   }
   return 0;
 }

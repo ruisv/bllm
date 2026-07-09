@@ -96,6 +96,10 @@ NB_MODULE(_bllm_native, m) {
           "prompt"_a, "max_new"_a = 256, "on_text"_a = nb::none(),
           "Raw completion; on_text(str) streams decoded deltas.")
       .def("reset", &bllm::NativeLlm::reset, "Start a fresh conversation.")
+      .def("set_sampling", &bllm::NativeLlm::set_sampling,
+           "temp"_a = 0.0f, "top_p"_a = 1.0f, "top_k"_a = 0, "rep_pen"_a = 1.0f, "seed"_a = 1234,
+           "Set sampling (temp<=0 => greedy). Applies to the next generate()/chat().")
+      .def_prop_ro("last_decode_tps", &bllm::NativeLlm::last_decode_tps)
       .def_prop_ro("name", [](bllm::NativeLlm& l) { return l.config().name; })
       .def_prop_ro("arch", [](bllm::NativeLlm& l) { return l.config().arch; })
       .def_prop_ro("vocab_size", [](bllm::NativeLlm& l) { return l.tokenizer().vocab_size(); })
