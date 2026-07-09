@@ -8,6 +8,9 @@
 #include <nanobind/stl/vector.h>
 
 #include "bllm/native_engine.h"
+#ifdef BLLM_HAVE_TOKENIZERS
+#include "bllm/native_llm.h"   // unified string-in/out session (needs the C++ tokenizer)
+#endif
 
 namespace nb = nanobind;
 using namespace nb::literals;
@@ -59,4 +62,44 @@ NB_MODULE(_bllm_native, m) {
       .def_prop_ro("cache_len", &bllm::NativeEngine::cache_len)
       .def_prop_ro("vocab", &bllm::NativeEngine::vocab)
       .def_prop_ro("position", &bllm::NativeEngine::position);
+
+#ifdef BLLM_HAVE_TOKENIZERS
+  // The unified, string-in/out session: load a model DIRECTORY (model.json),
+  // auto-pick the hybrid/dense engine + tokenizer + ChatML, chat in one call.
+  auto run = [](auto method, auto& llm, const std::string& text, int max_new, nb::object on_text) {
+    std::function<void(const std::string&)> cb;
+    if (!on_text.is_none())
+      cb = [&on_text](const std::string& s) { nb::gil_scoped_acquire g; on_text(s); };
+    std::string out;
+    { nb::gil_scoped_release r; out = method(llm, text, max_new, cb); }
+    return out;
+  };
+  nb::class_<bllm::NativeLlm>(m, "NativeLlm")
+      .def(nb::init<const std::string&>(), "model_dir"_a,
+           "Load a model directory (model.json) — native engine + C++ tokenizer, no libxlm.")
+      .def(
+          "chat",
+          [run](bllm::NativeLlm& llm, const std::string& msg, int max_new, nb::object on_text) {
+            return run([](bllm::NativeLlm& l, const std::string& t, int n,
+                          const std::function<void(const std::string&)>& c) { return l.chat(t, n, c); },
+                       llm, msg, max_new, on_text);
+          },
+          "message"_a, "max_new"_a = 400, "on_text"_a = nb::none(),
+          "ChatML multi-turn (context persists); on_text(str) streams decoded deltas.")
+      .def(
+          "generate",
+          [run](bllm::NativeLlm& llm, const std::string& prompt, int max_new, nb::object on_text) {
+            return run([](bllm::NativeLlm& l, const std::string& t, int n,
+                          const std::function<void(const std::string&)>& c) { return l.generate(t, n, c); },
+                       llm, prompt, max_new, on_text);
+          },
+          "prompt"_a, "max_new"_a = 256, "on_text"_a = nb::none(),
+          "Raw completion; on_text(str) streams decoded deltas.")
+      .def("reset", &bllm::NativeLlm::reset, "Start a fresh conversation.")
+      .def_prop_ro("name", [](bllm::NativeLlm& l) { return l.config().name; })
+      .def_prop_ro("arch", [](bllm::NativeLlm& l) { return l.config().arch; })
+      .def_prop_ro("vocab_size", [](bllm::NativeLlm& l) { return l.tokenizer().vocab_size(); })
+      .def("encode", [](bllm::NativeLlm& l, const std::string& s) { return l.tokenizer().encode(s); }, "text"_a)
+      .def("decode", [](bllm::NativeLlm& l, const std::vector<int>& ids) { return l.tokenizer().decode(ids); }, "ids"_a);
+#endif
 }

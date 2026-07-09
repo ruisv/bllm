@@ -18,17 +18,32 @@ import queue
 import threading
 from typing import Callable, Iterator, Optional
 
-from ._bllm import (
-    Content,
-    GenerationStats,
-    LlmSession as _LlmSession,
-    OmniSession as _OmniSession,
-    SamplingParams,
-    VlmSession as _VlmSession,
-    __version__,
-)
+# The libxlm-backed sessions need the OE-LLM SDK; the native engine + unified
+# NativeSession need only the hobot runtime + the C++ tokenizer. Either may be
+# absent in a given install, so import each independently.
+__version__ = "0.1.0"
+try:
+    from ._bllm import (  # noqa: F401
+        Content,
+        GenerationStats,
+        LlmSession as _LlmSession,
+        OmniSession as _OmniSession,
+        SamplingParams,
+        VlmSession as _VlmSession,
+        __version__,
+    )
+    _HAVE_LIBXLM = True
+except ImportError:
+    _HAVE_LIBXLM = False
+
+try:
+    from ._bllm_native import NativeLlm as _NativeLlm, NativeEngine  # noqa: F401
+    _HAVE_NATIVE = True
+except ImportError:
+    _HAVE_NATIVE = False
 
 __all__ = [
+    "NativeSession",
     "LlmSession",
     "OmniSession",
     "VlmSession",
@@ -228,3 +243,56 @@ class VlmSession:
     @property
     def model_type(self) -> str:
         return self._s.model_type
+
+
+if _HAVE_NATIVE:
+
+    class NativeSession:
+        """Unified native LLM session — no libxlm, no manual tokenization.
+
+        Load a model DIRECTORY (with a ``model.json`` manifest); the right engine
+        (hybrid Gated-DeltaNet for Qwen3.5, or dense KV for Qwen2.5/DeepSeek/…) and
+        the tokenizer + ChatML template are all resolved automatically.
+
+            import bllm
+            llm = bllm.NativeSession("/path/to/model_dir")
+            for chunk in llm.stream_chat("你好"):
+                print(chunk, end="", flush=True)
+        """
+
+        def __init__(self, model_dir: str) -> None:
+            self._llm = _NativeLlm(model_dir)
+
+        @property
+        def name(self) -> str:
+            return self._llm.name
+
+        @property
+        def arch(self) -> str:
+            return self._llm.arch
+
+        @property
+        def vocab_size(self) -> int:
+            return self._llm.vocab_size
+
+        def reset(self) -> None:
+            """Start a fresh conversation."""
+            self._llm.reset()
+
+        def chat(self, message: str, max_new: int = 400,
+                 on_text: "Optional[Callable[[str], None]]" = None) -> str:
+            """ChatML multi-turn; returns the full reply (and streams to on_text)."""
+            return self._llm.chat(message, max_new, on_text)
+
+        def generate(self, prompt: str, max_new: int = 256,
+                     on_text: "Optional[Callable[[str], None]]" = None) -> str:
+            """Raw completion; returns the full text (and streams to on_text)."""
+            return self._llm.generate(prompt, max_new, on_text)
+
+        def stream_chat(self, message: str, max_new: int = 400) -> "Iterator[str]":
+            """Chat as a lazy generator of decoded text chunks."""
+            return _stream(lambda cb: self._llm.chat(message, max_new, cb))
+
+        def stream(self, prompt: str, max_new: int = 256) -> "Iterator[str]":
+            """Raw completion as a lazy generator of decoded text chunks."""
+            return _stream(lambda cb: self._llm.generate(prompt, max_new, cb))

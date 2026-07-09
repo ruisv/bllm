@@ -34,14 +34,25 @@ set_target_properties(_bllm PROPERTIES
 # runtime (no libxlm), so `bllm._bllm_native.NativeEngine` runs a .hbm on hbDNN.
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 find_package(Hobot QUIET)
+find_package(Tokenizers QUIET)
 if(Hobot_FOUND)
-  nanobind_add_module(_bllm_native STABLE_ABI NB_STATIC _bllm_native.cc)
-  target_link_libraries(_bllm_native PRIVATE hobot::dnn)
+  # With the C++ tokenizer, the module also exposes the unified string-in NativeLlm.
+  if(Tokenizers_FOUND)
+    nanobind_add_module(_bllm_native STABLE_ABI NB_STATIC
+      _bllm_native.cc "${CMAKE_SOURCE_DIR}/src/model_config.cc")
+    target_link_libraries(_bllm_native PRIVATE hobot::dnn tokenizers::tokenizers)
+    target_compile_definitions(_bllm_native PRIVATE BLLM_HAVE_TOKENIZERS)
+    target_compile_options(_bllm_native PRIVATE -march=armv8.2-a+fp16)
+    message(STATUS "_bllm_native: native engine + unified NativeLlm (no libxlm)")
+  else()
+    nanobind_add_module(_bllm_native STABLE_ABI NB_STATIC _bllm_native.cc)
+    target_link_libraries(_bllm_native PRIVATE hobot::dnn)
+    message(STATUS "_bllm_native: native engine binding (no NativeLlm — tokenizers not found)")
+  endif()
   target_include_directories(_bllm_native PRIVATE "${CMAKE_SOURCE_DIR}/include")
   target_link_options(_bllm_native PRIVATE -Wl,--unresolved-symbols=ignore-all)
   set_target_properties(_bllm_native PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bllm")
-  message(STATUS "_bllm_native: native hbDNN engine binding (no libxlm)")
 else()
   message(STATUS "_bllm_native: skipped (hobot runtime not found)")
 endif()

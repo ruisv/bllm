@@ -1,34 +1,34 @@
-# FindTokenizers — locate the mlc-ai/tokenizers-cpp build (HuggingFace `tokenizers`
-# via the official Rust crate) so BLLM's native engine can tokenize in pure C++.
-# Point it at the tokenizers-cpp checkout with -DTOKENIZERS_ROOT=<path> (defaults to
-# a sibling ~/projects/tokenizers-cpp). Defines the imported target
-# `tokenizers::tokenizers` (include dir + the static libs + pthread/dl/m).
+# FindTokenizers — locate the HuggingFace `tokenizers` C++ binding (mlc-ai/
+# tokenizers-cpp + the official Rust `tokenizers` crate), linked as a single SHARED
+# library so BLLM targets relink fast (static-linking the 37 MB Rust archive into
+# every binary was the slow path). Point at the checkout with -DTOKENIZERS_ROOT=<p>
+# (default ~/projects/tokenizers-cpp). Defines the imported target
+# `tokenizers::tokenizers` (include dir + libtokenizers_hf.so + rpath).
 #
-# Build tokenizers-cpp once on the board:
-#   conda create -n tokbuild -c conda-forge rust cmake ninja
-#   # prefixed-gcc symlinks so cc-rs finds a compiler for onig_sys:
+# One-time build on the board (drops sentencepiece — we only use tokenizer.json):
 #   for t in gcc g++ ar; do ln -sf $(which $t) ~/.local/xbin/aarch64-unknown-linux-gnu-$t; done
-#   PATH=~/.local/xbin:$PATH cmake -S tokenizers-cpp -B tokenizers-cpp/build -G Ninja
-#   PATH=~/.local/xbin:$PATH cmake --build tokenizers-cpp/build -j
+#   PATH=~/.local/xbin:$PATH cmake -S tokenizers-cpp -B tokenizers-cpp/build \
+#       -DMLC_ENABLE_SENTENCEPIECE_TOKENIZER=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+#   PATH=~/.local/xbin:$PATH cmake --build tokenizers-cpp/build --target tokenizers_cpp -j
+#   RUST=$(find tokenizers-cpp/build -name libtokenizers_c.a); \
+#   g++ -shared -fPIC -o tokenizers-cpp/build/libtokenizers_hf.so \
+#       -Wl,--whole-archive tokenizers-cpp/build/libtokenizers_cpp.a $RUST \
+#       -Wl,--no-whole-archive -lpthread -ldl -lm
 
 set(TOKENIZERS_ROOT "$ENV{HOME}/projects/tokenizers-cpp" CACHE PATH "tokenizers-cpp checkout")
 
 find_path(TOKENIZERS_INCLUDE_DIR tokenizers_cpp.h HINTS "${TOKENIZERS_ROOT}/include")
-find_library(TOKENIZERS_CPP_LIB  tokenizers_cpp    HINTS "${TOKENIZERS_ROOT}/build")
-find_library(TOKENIZERS_C_LIB    tokenizers_c      HINTS "${TOKENIZERS_ROOT}/build" "${TOKENIZERS_ROOT}/build/aarch64-unknown-linux-gnu/release")
-find_library(SENTENCEPIECE_LIB   sentencepiece     HINTS "${TOKENIZERS_ROOT}/build/sentencepiece/src")
+find_library(TOKENIZERS_SO tokenizers_hf HINTS "${TOKENIZERS_ROOT}/build")
 
 include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(Tokenizers DEFAULT_MSG
-  TOKENIZERS_INCLUDE_DIR TOKENIZERS_CPP_LIB TOKENIZERS_C_LIB)
+  TOKENIZERS_INCLUDE_DIR TOKENIZERS_SO)
 
 if(Tokenizers_FOUND AND NOT TARGET tokenizers::tokenizers)
+  get_filename_component(_tok_libdir "${TOKENIZERS_SO}" DIRECTORY)
   add_library(tokenizers::tokenizers INTERFACE IMPORTED)
   set_target_properties(tokenizers::tokenizers PROPERTIES
-    INTERFACE_INCLUDE_DIRECTORIES "${TOKENIZERS_INCLUDE_DIR}")
-  # order matters: cpp wrapper -> c/rust lib -> sentencepiece -> system
-  target_link_libraries(tokenizers::tokenizers INTERFACE
-    "${TOKENIZERS_CPP_LIB}" "${TOKENIZERS_C_LIB}"
-    $<$<BOOL:${SENTENCEPIECE_LIB}>:${SENTENCEPIECE_LIB}>
-    pthread dl m)
+    INTERFACE_INCLUDE_DIRECTORIES "${TOKENIZERS_INCLUDE_DIR}"
+    INTERFACE_LINK_LIBRARIES "${TOKENIZERS_SO}"
+    INTERFACE_LINK_OPTIONS "-Wl,-rpath,${_tok_libdir}")   # find the .so at runtime
 endif()
