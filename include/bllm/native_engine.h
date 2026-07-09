@@ -72,6 +72,13 @@ struct Mem {
   void clean() const { if (m.virAddr) BLLM_NATIVE_CK(hbUCPMemFlush(&m, HB_SYS_MEM_CACHE_CLEAN)); }
   void inval() const { if (m.virAddr) BLLM_NATIVE_CK(hbUCPMemFlush(&m, HB_SYS_MEM_CACHE_INVALIDATE)); }
   void* p() const { return m.virAddr; }
+  // A view into this allocation at `off` bytes. hbDNN only needs {phyAddr, virAddr},
+  // so a sub-view of a registered allocation binds like any other tensor buffer.
+  hbUCPSysMem view(uint64_t off) const { return {m.phyAddr + off, (uint8_t*)m.virAddr + off, m.memSize - off}; }
+  void flush(uint64_t off, uint64_t len, int flag) const {
+    const hbUCPSysMem s{m.phyAddr + off, (uint8_t*)m.virAddr + off, len};
+    BLLM_NATIVE_CK(hbUCPMemFlush(&s, flag));
+  }
   ~Mem() { if (m.virAddr) hbUCPFree(&m); }
   Mem() = default;
   Mem(const Mem&) = delete;
@@ -212,6 +219,22 @@ class NativeEngine {
       rowBuf_.resize(hidden_);
       set_rope(1e6, {16, 24, 24});  // Qwen2.5-Omni defaults; override via set_rope()
     }
+
+    // Zero-copy KV: hold each layer's cache in a ring longer than the window, so a
+    // decode step just slides the window one row and lets the BPU write the new row
+    // into the freed slot. No per-token memmove, and no flush at all — the caches are
+    // BPU-write then BPU-read. Compaction happens once every `slack_` tokens.
+    slack_ = std::max(512, chunk_ + 2);
+    ringRows_ = cacheLen_ + slack_;
+    kRing_.resize(nLayers_); vRing_.resize(nLayers_);
+    for (int l = 0; l < nLayers_; ++l) {
+      kRing_[l].alloc((uint64_t)(ringRows_ + 1) * rowK_);   // +1 row of slop for tensor padding
+      vRing_[l].alloc((uint64_t)(ringRows_ + 1) * rowV_);
+      decode_.inMem[base_ + l] = Mem{};                     // free the graph's own buffers
+      decode_.inMem[vInBase_ + l] = Mem{};
+      decode_.outMem[1 + l] = Mem{};
+      decode_.outMem[vOutBase_ + l] = Mem{};
+    }
     reset();
   }
   ~NativeEngine() { if (packed_) hbDNNRelease(packed_); }
@@ -251,9 +274,12 @@ class NativeEngine {
   }
 
   void reset() {
+    W_ = 0;
     for (int l = 0; l < nLayers_; ++l) {
-      std::memset(kBuf(l), 0, cacheLen_ * rowK_); decode_.inClean(base_ + l);
-      std::memset(vBuf(l), 0, cacheLen_ * rowV_); decode_.inClean(vInBase_ + l);
+      std::memset(kRing_[l].p(), 0, (size_t)cacheLen_ * rowK_);
+      kRing_[l].flush(0, (uint64_t)cacheLen_ * rowK_, HB_SYS_MEM_CACHE_CLEAN);
+      std::memset(vRing_[l].p(), 0, (size_t)cacheLen_ * rowV_);
+      vRing_[l].flush(0, (uint64_t)cacheLen_ * rowV_, HB_SYS_MEM_CACHE_CLEAN);
     }
     P_ = 0; maxPos_ = -1; curLogits_ = nullptr;
   }
@@ -354,22 +380,37 @@ class NativeEngine {
     }
   };
 
-  uint8_t* kBuf(int l) { return (uint8_t*)decode_.inPtr(base_ + l); }
-  uint8_t* vBuf(int l) { return (uint8_t*)decode_.inPtr(vInBase_ + l); }
+  using Mem = native_detail::Mem;
 
-  // roll each layer's KV window left by one and append the step's new row.
-  void rollCaches() {
+  uint8_t* kRow(int l, int row) { return (uint8_t*)kRing_[l].p() + (size_t)row * rowK_; }
+  uint8_t* vRow(int l, int row) { return (uint8_t*)vRing_[l].p() + (size_t)row * rowV_; }
+  int filled() const { return std::min(P_, cacheLen_); }   // valid rows inside the window
+
+  // Bind the decode graph at the current window: caches in at row W_, and the step's
+  // new KV out straight into row W_+cacheLen_ — which is the last row of the window
+  // one slide later. The CPU never touches them, so nothing needs flushing.
+  void bindDecodeCaches() {
     for (int l = 0; l < nLayers_; ++l) {
-      uint8_t* k = kBuf(l);
-      std::memmove(k, k + rowK_, (cacheLen_ - 1) * rowK_);
-      std::memcpy(k + (cacheLen_ - 1) * rowK_, decode_.outPtr(1 + l), rowK_);
-      decode_.inClean(base_ + l);
-      uint8_t* v = vBuf(l);
-      std::memmove(v, v + rowV_, (cacheLen_ - 1) * rowV_);
-      std::memcpy(v + (cacheLen_ - 1) * rowV_, decode_.outPtr(vOutBase_ + l), rowV_);
-      decode_.inClean(vInBase_ + l);
+      decode_.in[base_ + l].sysMem = kRing_[l].view((uint64_t)W_ * rowK_);
+      decode_.in[vInBase_ + l].sysMem = vRing_[l].view((uint64_t)W_ * rowV_);
+      decode_.out[1 + l].sysMem = kRing_[l].view((uint64_t)(W_ + cacheLen_) * rowK_);
+      decode_.out[vOutBase_ + l].sysMem = vRing_[l].view((uint64_t)(W_ + cacheLen_) * rowV_);
     }
-    ++P_;
+  }
+
+  // Slide the ring back to the start once it runs out of room (every `slack_` tokens).
+  void ensureRingRoom(int rows) {
+    if (W_ + cacheLen_ + rows <= ringRows_) return;
+    const int D = filled();
+    for (int l = 0; l < nLayers_; ++l) {
+      kRing_[l].flush((uint64_t)(W_ + cacheLen_ - D) * rowK_, (uint64_t)D * rowK_, HB_SYS_MEM_CACHE_INVALIDATE);
+      std::memmove(kRow(l, cacheLen_ - D), kRow(l, W_ + cacheLen_ - D), (size_t)D * rowK_);
+      kRing_[l].flush((uint64_t)(cacheLen_ - D) * rowK_, (uint64_t)D * rowK_, HB_SYS_MEM_CACHE_CLEAN);
+      vRing_[l].flush((uint64_t)(W_ + cacheLen_ - D) * rowV_, (uint64_t)D * rowV_, HB_SYS_MEM_CACHE_INVALIDATE);
+      std::memmove(vRow(l, cacheLen_ - D), vRow(l, W_ + cacheLen_ - D), (size_t)D * rowV_);
+      vRing_[l].flush((uint64_t)(cacheLen_ - D) * rowV_, (uint64_t)D * rowV_, HB_SYS_MEM_CACHE_CLEAN);
+    }
+    W_ = 0;
   }
 
   // A prefill pass costs a whole static chunk of compute, so it only beats
@@ -382,33 +423,36 @@ class NativeEngine {
   // Like decode (which shifts its window left by one and appends the new row), the
   // prefill graph shifts its input window left by a whole chunk and writes the chunk's
   // KV into the freed tail. So the cached rows go in with the SAME right-aligned
-  // layout the decode cache uses; the graph relocates them to [base-P, base).
+  // layout the decode window uses; the graph relocates them to [base-P, base).
+  // These rows were written by the BPU, so invalidate before the CPU reads them.
   void loadPrefillCaches() {
     for (int l = 0; l < nLayers_; ++l) {
       uint8_t* pk = (uint8_t*)prefill_.inPtr(base_ + l);
       std::memset(pk, 0, cacheLen_ * rowK_);
-      if (P_ > 0) std::memcpy(pk + (size_t)(cacheLen_ - P_) * rowK_, kBuf(l) + (size_t)(cacheLen_ - P_) * rowK_, (size_t)P_ * rowK_);
-      prefill_.inClean(base_ + l);
       uint8_t* pv = (uint8_t*)prefill_.inPtr(vInBase_ + l);
       std::memset(pv, 0, cacheLen_ * rowV_);
-      if (P_ > 0) std::memcpy(pv + (size_t)(cacheLen_ - P_) * rowV_, vBuf(l) + (size_t)(cacheLen_ - P_) * rowV_, (size_t)P_ * rowV_);
+      if (P_ > 0) {
+        kRing_[l].flush((uint64_t)(W_ + cacheLen_ - P_) * rowK_, (uint64_t)P_ * rowK_, HB_SYS_MEM_CACHE_INVALIDATE);
+        std::memcpy(pk + (size_t)(cacheLen_ - P_) * rowK_, kRow(l, W_ + cacheLen_ - P_), (size_t)P_ * rowK_);
+        vRing_[l].flush((uint64_t)(W_ + cacheLen_ - P_) * rowV_, (uint64_t)P_ * rowV_, HB_SYS_MEM_CACHE_INVALIDATE);
+        std::memcpy(pv + (size_t)(cacheLen_ - P_) * rowV_, vRow(l, W_ + cacheLen_ - P_), (size_t)P_ * rowV_);
+      }
+      prefill_.inClean(base_ + l);
       prefill_.inClean(vInBase_ + l);
     }
   }
 
-  // Append the chunk's `cl` new KV rows to the right-aligned decode window.
+  // Append the chunk's `cl` new KV rows just past the window, then slide by cl — the
+  // cached rows keep their addresses, so there is nothing to move.
   void appendPrefill(int cl) {
     curLogits_ = (int16_t*)prefill_.outPtr(0) + (size_t)(cl - 1) * logitStride_;
     for (int l = 0; l < nLayers_; ++l) {
-      uint8_t* k = kBuf(l);
-      if (P_ > 0) std::memmove(k + (size_t)(cacheLen_ - P_ - cl) * rowK_, k + (size_t)(cacheLen_ - P_) * rowK_, (size_t)P_ * rowK_);
-      std::memcpy(k + (size_t)(cacheLen_ - cl) * rowK_, prefill_.outPtr(1 + l), (size_t)cl * rowK_);
-      decode_.inClean(base_ + l);
-      uint8_t* v = vBuf(l);
-      if (P_ > 0) std::memmove(v + (size_t)(cacheLen_ - P_ - cl) * rowV_, v + (size_t)(cacheLen_ - P_) * rowV_, (size_t)P_ * rowV_);
-      std::memcpy(v + (size_t)(cacheLen_ - cl) * rowV_, prefill_.outPtr(vOutBase_ + l), (size_t)cl * rowV_);
-      decode_.inClean(vInBase_ + l);
+      std::memcpy(kRow(l, W_ + cacheLen_), prefill_.outPtr(1 + l), (size_t)cl * rowK_);
+      kRing_[l].flush((uint64_t)(W_ + cacheLen_) * rowK_, (uint64_t)cl * rowK_, HB_SYS_MEM_CACHE_CLEAN);
+      std::memcpy(vRow(l, W_ + cacheLen_), prefill_.outPtr(vOutBase_ + l), (size_t)cl * rowV_);
+      vRing_[l].flush((uint64_t)(W_ + cacheLen_) * rowV_, (uint64_t)cl * rowV_, HB_SYS_MEM_CACHE_CLEAN);
     }
+    W_ += cl;
     P_ += cl;
   }
 
@@ -424,12 +468,15 @@ class NativeEngine {
     *(int32_t*)decode_.inPtr(1) = P_;    decode_.inClean(1);
     writeDecodeMask((int16_t*)decode_.inPtr(2));
     decode_.inClean(2);
+    ensureRingRoom(1);
+    bindDecodeCaches();
     decode_.infer();
     curLogits_ = (int16_t*)decode_.outPtr(0);
-    rollCaches();
+    ++W_; ++P_;
   }
 
   void prefillTokens(const int* ids, int cl) {
+    ensureRingRoom(cl);
     auto* tk = (int32_t*)prefill_.inPtr(0);
     std::memset(tk, 0, chunk_ * sizeof(int32_t));
     for (int i = 0; i < cl; ++i) tk[i] = ids[i];
@@ -467,13 +514,16 @@ class NativeEngine {
     writeDecodeMask((int16_t*)decode_.inPtr(1)); decode_.inClean(1);
     writeRope((int16_t*)decode_.inPtr(2), (int16_t*)decode_.inPtr(3), pos);
     decode_.inClean(2); decode_.inClean(3);
+    ensureRingRoom(1);
+    bindDecodeCaches();
     decode_.infer();
     curLogits_ = (int16_t*)decode_.outPtr(0);
-    rollCaches();
+    ++W_; ++P_;
     maxPos_ = std::max(maxPos_, pos.max());
   }
 
   void prefillEmbeds(const float* rows, const Pos3* pos, int cl) {
+    ensureRingRoom(cl);
     auto* x = (int16_t*)prefill_.inPtr(0);
     std::memset(x, 0, (size_t)chunk_ * hidden_ * sizeof(int16_t));
     for (int i = 0; i < cl; ++i) quantRow(rows + (size_t)i * hidden_, x + (size_t)i * hidden_);
@@ -530,6 +580,8 @@ class NativeEngine {
 
   hbDNNPackedHandle_t packed_ = nullptr;
   native_detail::Graph prefill_, decode_;
+  std::vector<Mem> kRing_, vRing_;               // per layer, ringRows_+1 rows each
+  int W_ = 0, ringRows_ = 0, slack_ = 0;         // window starts at row W_
   InputMode mode_ = InputMode::Token;
   int nLayers_ = 0, nKV_ = 0, headDim_ = 0, cacheLen_ = 0, chunk_ = 0, vocab_ = 0;
   int hidden_ = 0, rot_ = 0;
