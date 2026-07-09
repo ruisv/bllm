@@ -370,8 +370,13 @@ if _HAVE_NATIVE:
 
         @property
         def vision_tokens(self) -> int:
-            """How many decoder tokens one image occupies."""
+            """Decoder tokens one image (or one video frame-pair) occupies."""
             return self._vlm.vision_tokens
+
+        @property
+        def vision_image_size(self) -> int:
+            """Square side the tower was compiled for; sample frames at it."""
+            return self._vlm.vision_image_size
 
         @property
         def last_decode_tps(self) -> float:

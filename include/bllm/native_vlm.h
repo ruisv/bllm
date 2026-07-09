@@ -85,6 +85,9 @@ class NativeVlm {
   const ModelConfig& config() const { return cfg_; }
   const Tokenizer& tokenizer() const { return tk_; }
   int vision_tokens() const { return vision_->n_token(); }
+  // The square side this tower was compiled for — sample frames at it to
+  // avoid resizing twice.
+  int vision_image_size() const { return vision_->image_size(); }
   bool has_audio() const { return !cfg_.audio.empty() && !cfg_.mel_filters.empty(); }
   double last_decode_tps() const { return text_->last_stats().decode_tps; }
   double last_ttft_ms() const { return text_->last_stats().ttft_ms; }

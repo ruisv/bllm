@@ -213,6 +213,7 @@ NB_MODULE(_bllm_native, m) {
       .def("set_sampling", &bllm::NativeVlm::set_sampling,
            "temp"_a = 0.0f, "top_p"_a = 1.0f, "top_k"_a = 0, "rep_pen"_a = 1.0f, "seed"_a = 1234)
       .def_prop_ro("vision_tokens", &bllm::NativeVlm::vision_tokens)
+      .def_prop_ro("vision_image_size", &bllm::NativeVlm::vision_image_size)
       .def_prop_ro("has_audio", &bllm::NativeVlm::has_audio)
       .def_prop_ro("last_decode_tps", &bllm::NativeVlm::last_decode_tps)
       .def_prop_ro("last_ttft_ms", &bllm::NativeVlm::last_ttft_ms)

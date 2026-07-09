@@ -32,8 +32,8 @@ def run_stream(vlm, args) -> int:
 
     if not args.video:
         raise SystemExit("--stream needs --video")
-    v = bllm.load_video(args.video[0], fps=args.fps, max_frames=args.max_frames,
-                        with_audio=not args.mute)
+    v = bllm.load_video(args.video[0], fps=args.fps, size=vlm.vision_image_size,
+                        max_frames=args.max_frames, with_audio=not args.mute)
     frames, pcm = v["frames"], v["audio"]
     per_frame = int(16000 / args.fps)              # audio that accompanies one frame
 
@@ -87,8 +87,9 @@ def main() -> int:
         from PIL import Image
         images = [np.asarray(Image.open(p).convert("RGB")) for p in images]
 
-    videos = [bllm.load_video(p, fps=args.fps, max_frames=args.max_frames,
-                              with_audio=not args.mute) for p in args.video]
+    videos = [bllm.load_video(p, fps=args.fps, size=vlm.vision_image_size,
+                              max_frames=args.max_frames, with_audio=not args.mute)
+              for p in args.video]
 
     print(f"[{vlm.name}] {len(images)} image(s), {len(args.audio)} audio, {len(videos)} video")
     for v in videos:
