@@ -253,6 +253,12 @@ class NativeEngine {
   int position() const { return P_; }
   // Next plain-rope position (one past the largest mrope coordinate seen).
   int next_pos() const { return maxPos_ + 1; }
+  // Tokens that still fit. The KV window IS the context: these graphs are compiled
+  // for full attention over cache_len slots, and rolling past it — evicting the
+  // earliest tokens, which act as attention sinks — collapses the model into
+  // gibberish. Measured on both the prefill and the decode-step path, byte for byte.
+  // So the engine refuses to overflow rather than degrade silently.
+  int context_left() const { return cacheLen_ - P_; }
   const NativeStats& last_stats() const { return stats_; }
 
   // Embed-mode only: how the engine turns a sampled token id back into a hidden
@@ -291,6 +297,7 @@ class NativeEngine {
   // ingest tokens (prompt or a new conversation turn) into the cache.
   void feed(const std::vector<int>& ids) {
     mark_turn_start();
+    checkRoom((int)ids.size());
     if (mode_ == InputMode::Embed) {
       if (!embedder_) throw std::runtime_error("[native] embed-mode feed() needs set_embedder()");
       std::vector<float> rows((size_t)ids.size() * hidden_);
@@ -313,6 +320,7 @@ class NativeEngine {
   // which case positions continue sequentially from the current maximum. Does NOT
   // reset the TTFT clock — a VLM marks the turn before encoding its media.
   void feed_embeds(const float* rows, int n, const Pos3* pos) {
+    checkRoom(n);
     feedEmbedsNoMark(rows, n, pos);
   }
 
@@ -328,7 +336,8 @@ class NativeEngine {
     // TTFT is measured from the start of the turn (prefill, and any vision encode
     // the caller marked), not from the first sample — the logits already exist here.
     clk::time_point tFirst;
-    for (int step = 0; step < p.max_new && curLogits_; ++step) {
+    // Stop at the window rather than evict — see context_left().
+    for (int step = 0; step < p.max_new && curLogits_ && P_ < cacheLen_; ++step) {
       int tok = s.pick(curLogits_, logitScale_, vocab_);
       if (eos.count(tok)) break;
       if (gen.empty()) { tFirst = clk::now(); stats_.ttft_ms = std::chrono::duration<double>(tFirst - tTurn_).count() * 1000.0; }
@@ -381,6 +390,14 @@ class NativeEngine {
   };
 
   using Mem = native_detail::Mem;
+
+  void checkRoom(int n) const {
+    if (n > context_left())
+      throw std::runtime_error("[native] context overflow: " + std::to_string(n) +
+                               " tokens do not fit in the remaining " + std::to_string(context_left()) +
+                               " of " + std::to_string(cacheLen_) +
+                               " cache slots. reset(), shorten the turn, or use a longer-context build.");
+  }
 
   uint8_t* kRow(int l, int row) { return (uint8_t*)kRing_[l].p() + (size_t)row * rowK_; }
   uint8_t* vRow(int l, int row) { return (uint8_t*)vRing_[l].p() + (size_t)row * rowV_; }

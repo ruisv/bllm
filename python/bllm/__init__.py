@@ -406,3 +406,45 @@ if _HAVE_NATIVE:
             """The same turn as a lazy generator of decoded text chunks."""
             imgs, aus, vids = list(images), list(audios), list(videos)
             return _stream(lambda cb: self._vlm.chat(text, imgs, aus, vids, max_new, cb))
+
+        # ── live capture: push frames / mic PCM as they arrive, ask any time ──
+        #
+        # The KV window IS the context, so budget matters: a frame-pair costs
+        # `vision_tokens` (256) and a second of audio costs 25. At 2 fps a
+        # 2048-slot model holds ~3.5 s of video, but ~80 s of audio alone.
+        # Pushing past that raises rather than silently evicting — evicting the
+        # earliest tokens collapses these full-attention models into gibberish.
+
+        def stream_begin(self, fps: float = 2.0, with_audio: bool = True) -> None:
+            """Open a live media turn. fps<=0 means audio only."""
+            self._vlm.stream_begin(fps, with_audio)
+
+        def stream_frame(self, frame) -> None:
+            """Push one HxWx3 uint8 frame."""
+            self._vlm.stream_frame(frame)
+
+        def stream_audio(self, pcm) -> None:
+            """Push 16 kHz mono float32 samples."""
+            self._vlm.stream_audio(pcm)
+
+        def stream_ask(self, text: str, max_new: int = 256,
+                       on_text: "Optional[Callable[[str], None]]" = None) -> str:
+            """Close the live media block, ask, and generate."""
+            return self._vlm.stream_ask(text, max_new, on_text)
+
+        @property
+        def streaming(self) -> bool:
+            return self._vlm.streaming
+
+        @property
+        def tokens_used(self) -> int:
+            return self._vlm.tokens_used
+
+        @property
+        def context_left(self) -> int:
+            """KV slots still free in this conversation."""
+            return self._vlm.context_left
+
+        @property
+        def video_tokens_per_second(self) -> float:
+            return self._vlm.video_tokens_per_second

@@ -6,10 +6,16 @@
         --prompt "描述这张图片。"
     python examples/vlm_native.py --model ... --audio clip.wav --prompt "听到了什么？"
     python examples/vlm_native.py --model ... --video clip.mp4 --prompt "描述这段视频。"
+    python examples/vlm_native.py --model ... --video clip.mp4 --stream --prompt "刚才发生了什么？"
 
 Images may be paths or HxWx3 uint8 arrays, audio a .wav path or 16 kHz mono
 float32 — the shapes a camera/microphone pipeline already has. --video uses
 bllm.load_video (ffmpeg) and feeds the soundtrack too unless --mute.
+
+--stream replays the video as a LIVE capture: frames and PCM are pushed as they
+arrive and encoded into the KV cache every 2 seconds, so the question at the end
+answers in a fraction of the offline TTFT. Watch `context_left`: the KV window is
+the whole context, and at 2 fps 2048 slots hold only ~3.5 s of video.
 """
 
 from __future__ import annotations
@@ -18,6 +24,37 @@ import argparse
 import sys
 
 import bllm
+
+
+def run_stream(vlm, args) -> int:
+    """Replay a video as if it were arriving from a camera + microphone."""
+    import numpy as np
+
+    if not args.video:
+        raise SystemExit("--stream needs --video")
+    v = bllm.load_video(args.video[0], fps=args.fps, max_frames=args.max_frames,
+                        with_audio=not args.mute)
+    frames, pcm = v["frames"], v["audio"]
+    per_frame = int(16000 / args.fps)              # audio that accompanies one frame
+
+    vlm.stream_begin(fps=args.fps, with_audio=pcm is not None)
+    print(f"[stream] {len(frames)} frames @ {args.fps} fps; "
+          f"a frame-pair costs {vlm.vision_tokens} tokens, audio 25/s")
+    for i, f in enumerate(frames):
+        vlm.stream_frame(f)                        # media is encoded into KV as
+        if pcm is not None:                        # each 2-second chunk completes
+            part = pcm[i * per_frame:(i + 1) * per_frame]
+            if len(part):
+                vlm.stream_audio(np.ascontiguousarray(part))
+        print(f"  frame {i+1:3d}  used={vlm.tokens_used:4d}  left={vlm.context_left:4d}", flush=True)
+    if pcm is not None and len(pcm) > len(frames) * per_frame:
+        vlm.stream_audio(np.ascontiguousarray(pcm[len(frames) * per_frame:]))
+
+    print(f"> {args.prompt}")
+    out = vlm.stream_ask(args.prompt, max_new=args.max_new,
+                         on_text=lambda c: print(c, end="", flush=True))
+    print(f"\n[ask ttft {vlm.last_ttft_ms:.0f} ms, decode {vlm.last_decode_tps:.1f} tok/s]")
+    return 0
 
 
 def main() -> int:
@@ -34,10 +71,15 @@ def main() -> int:
     ap.add_argument("--mute", action="store_true", help="drop the video soundtrack")
     ap.add_argument("--numpy", action="store_true",
                     help="decode images with PIL and pass raw arrays, as a camera would")
+    ap.add_argument("--stream", action="store_true",
+                    help="replay --video frame by frame as a live capture, then ask")
     args = ap.parse_args()
 
     vlm = bllm.NativeVlmSession(args.model)
     vlm.set_sampling(temp=args.temp)
+
+    if args.stream:
+        return run_stream(vlm, args)
 
     images = args.image
     if args.numpy and images:

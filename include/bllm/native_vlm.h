@@ -25,6 +25,9 @@
 #include "bllm/native_vision.h"
 #include "bllm/tokenizer.h"
 
+#include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -91,39 +94,107 @@ class NativeVlm {
     sampling_.rep_pen = rep_pen; sampling_.seed = seed;
   }
 
-  void reset() { text_->reset(); first_turn_ = true; }
+  void reset() {
+    text_->reset();
+    first_turn_ = true;
+    streaming_ = false;
+    frames_.clear(); pcm_.clear();
+  }
 
   // One ChatML user turn. Media precedes `text`, as the Qwen chat template does.
   std::string chat(const std::string& text, const std::vector<ImageRGB>& images = {},
                    const std::vector<AudioPCM>& audios = {},
                    const std::vector<VideoClip>& videos = {},
                    int max_new = 256, const OnText& on_text = {}) {
+    if (streaming_) throw std::runtime_error("[bllm] a stream is open; use stream_ask()");
     text_->mark_turn_start();                    // TTFT counts the media encode too
     Stream s(text_->hidden(), text_->next_pos());
-    if (first_turn_) {
-      appendText(s, {im_start_});
-      appendText(s, tk_.encode("system\n" + cfg_.chat.system));
-      appendText(s, {im_end_});
-      appendText(s, tk_.encode("\n"));
-      first_turn_ = false;
-    } else {
-      appendText(s, {im_end_});                  // close the previous assistant turn
-      appendText(s, tk_.encode("\n"));
-    }
-    appendText(s, {im_start_});
-    appendText(s, tk_.encode("user\n"));
+    openTurn(s);
     for (const ImageRGB& im : images) appendImage(s, im);
     for (const VideoClip& v : videos) appendVideo(s, v);
     for (const AudioPCM& au : audios) appendAudio(s, au);
     appendText(s, tk_.encode(text));
-    appendText(s, {im_end_});
-    appendText(s, tk_.encode("\n"));
-    appendText(s, {im_start_});
-    appendText(s, tk_.encode("assistant\n"));
-
-    text_->feed_embeds(s.rows.data(), s.n, s.pos.data());
+    closeTurn(s);
+    feedStream(s);
     return streamDecode(max_new, on_text);
   }
+
+  // ── live streaming: push camera frames / microphone PCM as they arrive ──────
+  //
+  //   vlm.stream_begin(2.0);                 // frames will arrive at 2 fps
+  //   while (grabbing) { vlm.stream_frame(f); vlm.stream_audio(pcm, n); }
+  //   std::string a = vlm.stream_ask("刚才发生了什么？");
+  //
+  // Media is encoded and pushed into the KV cache as each 2-second chunk completes,
+  // so by the time the question arrives most of the prefill is already paid for.
+  //
+  // BUDGET: the KV window is the whole context (see NativeEngine::context_left).
+  // A frame-pair costs vision_tokens() (256) and a second of audio costs 25, so at
+  // 2 fps a 2048-slot model holds only ~3.5 s of video — but ~80 s of audio alone.
+  // stream_frame/stream_audio throw once the budget is spent rather than evict, and
+  // context_left() lets a caller see it coming.
+
+  // fps <= 0 means audio only (no video block).
+  void stream_begin(double fps = 2.0, bool with_audio = true) {
+    if (streaming_) throw std::runtime_error("[bllm] stream already open");
+    if (fps <= 0 && !with_audio) throw std::runtime_error("[bllm] stream needs video, audio, or both");
+    fps_ = fps; withVideo_ = fps > 0; withAudio_ = with_audio;
+    framesPerChunk_ = withVideo_ ? std::max(2, (int)std::lround(fps * kSecondsPerChunk)) : 0;
+    frames_.clear(); pcm_.clear();
+    pairIdx_ = 0; audioIdx_ = 0; maxRel_ = -1; frameW_ = frameH_ = 0;
+
+    Stream s(text_->hidden(), text_->next_pos());
+    openTurn(s);
+    if (withVideo_) appendText(s, {vision_bos_});
+    if (withAudio_) appendText(s, {audio_bos_});
+    st_ = s.nextPos;
+    feedStream(s);
+    streaming_ = true;
+  }
+
+  // One frame; all frames must share a size. Copied, since encoding is deferred.
+  void stream_frame(const ImageRGB& f) {
+    requireStream();
+    if (!withVideo_) throw std::runtime_error("[bllm] stream opened without video (fps <= 0)");
+    if (!f.rgb || f.width <= 0 || f.height <= 0) throw std::runtime_error("[bllm] empty frame");
+    if (frames_.empty()) { frameW_ = f.width; frameH_ = f.height; }
+    else if (f.width != frameW_ || f.height != frameH_)
+      throw std::runtime_error("[bllm] streamed frames must all be the same size");
+    frames_.emplace_back(f.rgb, f.rgb + (size_t)f.width * f.height * 3);
+    drainChunks();
+  }
+
+  void stream_audio(const float* samples, size_t count) {
+    requireStream();
+    if (!withAudio_) throw std::runtime_error("[bllm] stream opened without audio");
+    pcm_.insert(pcm_.end(), samples, samples + count);
+    drainChunks();
+  }
+
+  // Flush whatever is buffered, close the media block, ask, and generate.
+  std::string stream_ask(const std::string& text, int max_new = 256, const OnText& on_text = {}) {
+    requireStream();
+    // TTFT is measured from the question, not from stream_begin: everything the
+    // capture loop already pushed was encoded while the camera was still running.
+    text_->mark_turn_start();
+    Stream s(text_->hidden(), text_->next_pos());
+    emitChunk(s, /*final=*/true);
+    s.nextPos = st_ + std::max(maxRel_, 0) + 1;
+    if (withAudio_) appendText(s, {audio_eos_});
+    if (withVideo_) appendText(s, {vision_eos_});
+    appendText(s, tk_.encode(text));
+    closeTurn(s);
+    feedStream(s);
+    streaming_ = false;
+    return streamDecode(max_new, on_text);
+  }
+
+  bool streaming() const { return streaming_; }
+  int context_left() const { return text_->context_left(); }
+  int tokens_used() const { return text_->position(); }
+  // How many decoder tokens a second of video/audio costs at the current settings.
+  double video_tokens_per_second() const { return withVideo_ ? fps_ * vision_->n_token() / 2.0 : 0.0; }
+  static constexpr double kAudioTokensPerSecond = 25.0;
 
  private:
   // The turn being assembled: one hidden row + one mrope position per token.
@@ -144,6 +215,76 @@ class NativeVlm {
     for (int id : ids) {
       embed_->lookup(id, row.data());
       s.push(row.data(), Pos3::scalar(s.nextPos++));
+    }
+  }
+
+  void openTurn(Stream& s) {
+    if (first_turn_) {
+      appendText(s, {im_start_});
+      appendText(s, tk_.encode("system\n" + cfg_.chat.system));
+      appendText(s, {im_end_});
+      appendText(s, tk_.encode("\n"));
+      first_turn_ = false;
+    } else {
+      appendText(s, {im_end_});                  // close the previous assistant turn
+      appendText(s, tk_.encode("\n"));
+    }
+    appendText(s, {im_start_});
+    appendText(s, tk_.encode("user\n"));
+  }
+  void closeTurn(Stream& s) {
+    appendText(s, {im_end_});
+    appendText(s, tk_.encode("\n"));
+    appendText(s, {im_start_});
+    appendText(s, tk_.encode("assistant\n"));
+  }
+  void feedStream(Stream& s) {
+    if (s.n) text_->feed_embeds(s.rows.data(), s.n, s.pos.data());
+  }
+
+  // ── live-stream internals ─────────────────────────────────────────────────
+  static constexpr int kSampleRate = 16000;
+  void requireStream() const { if (!streaming_) throw std::runtime_error("[bllm] no stream open"); }
+
+  bool chunkReady() const {
+    if (withVideo_ && (int)frames_.size() < framesPerChunk_) return false;
+    if (withAudio_ && pcm_.size() < (size_t)kSampleRate * kSecondsPerChunk) return false;
+    return true;
+  }
+  void drainChunks() {
+    while (chunkReady()) {
+      Stream s(text_->hidden(), 0);
+      emitChunk(s, /*final=*/false);
+      feedStream(s);
+    }
+  }
+
+  // One 2-second slice: the chunk's video frame-pairs, then its audio tokens — the
+  // same order the offline `use_audio_in_video` interleave produces.
+  void emitChunk(Stream& s, bool final) {
+    if (withVideo_ && !frames_.empty()) {
+      int nf = final ? (int)frames_.size() : framesPerChunk_;
+      if (final && (nf & 1)) frames_.push_back(frames_.back()), ++nf;   // pad the odd tail
+      const int G = vision_->spec().llm_grid(), TOK = vision_->n_token();
+      for (int p = 0; p < nf / 2; ++p, ++pairIdx_) {
+        const float* e = vision_->encode_pair(frames_[2 * p].data(), frames_[2 * p + 1].data(), frameW_, frameH_);
+        const int t = (int)(pairIdx_ * (2.0 / fps_) * kPositionIdPerSecond);
+        for (int idx = 0; idx < TOK; ++idx)
+          s.push(e + (size_t)idx * s.H, Pos3{st_ + t, st_ + idx / G, st_ + idx % G});
+        maxRel_ = std::max(maxRel_, std::max(t, G - 1));
+      }
+      frames_.erase(frames_.begin(), frames_.begin() + nf);
+    }
+    if (withAudio_ && !pcm_.empty()) {
+      const size_t want = (size_t)kSampleRate * kSecondsPerChunk;
+      const size_t ns = final ? pcm_.size() : want;
+      if (ns > kSampleRate / 20) {                                       // < 50 ms is not codeable
+        const std::vector<float> rows = audioTower().encode({pcm_.data(), ns});
+        const int n = (int)(rows.size() / s.H);
+        for (int i = 0; i < n; ++i) s.push(rows.data() + (size_t)i * s.H, Pos3::scalar(st_ + audioIdx_++));
+        maxRel_ = std::max(maxRel_, audioIdx_ - 1);
+      }
+      pcm_.erase(pcm_.begin(), pcm_.begin() + std::min(ns, pcm_.size()));
     }
   }
 
@@ -293,6 +434,14 @@ class NativeVlm {
   bool first_turn_ = true;
   int im_start_ = -1, im_end_ = -1, vision_bos_ = -1, vision_eos_ = -1;
   int audio_bos_ = -1, audio_eos_ = -1;
+
+  // live stream state
+  bool streaming_ = false, withVideo_ = false, withAudio_ = false;
+  double fps_ = 2.0;
+  int framesPerChunk_ = 0, st_ = 0, pairIdx_ = 0, audioIdx_ = 0, maxRel_ = -1;
+  int frameW_ = 0, frameH_ = 0;
+  std::vector<std::vector<uint8_t>> frames_;
+  std::vector<float> pcm_;
 };
 
 }  // namespace bllm

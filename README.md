@@ -135,6 +135,24 @@ vlm.reset(); vlm.chat("这段音频里说了什么？", audios=["clip.wav"])
 vlm.reset(); vlm.chat("描述这段视频。", videos=[bllm.load_video("clip.mp4")])
 ```
 
+**Live capture.** Push frames and microphone PCM as they arrive; each 2-second chunk
+is encoded into the KV cache while the camera is still running, so the question at the
+end answers in a fraction of the offline TTFT (4151 → 914 ms on our test clip):
+
+```python
+vlm.stream_begin(fps=2.0)
+while capturing:
+    vlm.stream_frame(frame_hwc_uint8)     # from the camera
+    vlm.stream_audio(pcm_float32)         # from the mic, 16 kHz mono
+print(vlm.stream_ask("刚才发生了什么？"))
+```
+
+The KV window **is** the context, and it is the binding constraint: a frame-pair costs
+256 tokens and a second of audio 25, so a 2048-slot model holds ~3.5 s of video at
+2 fps — but ~80 s of audio alone. `vlm.context_left` tracks it, and pushing past it
+raises rather than silently evicting (evicting the earliest tokens turns these
+full-attention models into gibberish).
+
 C++: `bllm::NativeVlm` (`bllm/native_vlm.h`); CLI: `bllm_vlm_native --model <dir>
 [--image f] [--audio f.wav] [--video f.mp4] --prompt <text>`. The vision tower is
 fixed at 448×448 → 256 tokens per frame-pair, the audio tower at 50 tokens per 2 s;

@@ -175,6 +175,40 @@ NB_MODULE(_bllm_native, m) {
           "Answer a turn of text + images (paths or HxWx3 uint8) + audio (wav paths or "
           "16 kHz mono float32) + videos ({'frames':[...], 'fps':2.0, 'audio':pcm|path}); "
           "on_text(str) streams.")
+      // Live streaming: push camera frames / mic PCM as they arrive, ask any time.
+      .def("stream_begin", &bllm::NativeVlm::stream_begin, "fps"_a = 2.0, "with_audio"_a = true,
+           "Open a live media turn. fps<=0 means audio only.")
+      .def(
+          "stream_frame",
+          [](bllm::NativeVlm& vlm, RgbArray a) {
+            if (a.shape(2) != 3) throw std::runtime_error("[bllm] frame must be HxWx3 uint8");
+            nb::gil_scoped_release r;
+            vlm.stream_frame({a.data(), (int)a.shape(1), (int)a.shape(0)});
+          },
+          "frame"_a, "Push one HxWx3 uint8 frame.")
+      .def(
+          "stream_audio",
+          [](bllm::NativeVlm& vlm, PcmArray a) {
+            nb::gil_scoped_release r;
+            vlm.stream_audio(a.data(), a.shape(0));
+          },
+          "pcm"_a, "Push 16 kHz mono float32 samples.")
+      .def(
+          "stream_ask",
+          [](bllm::NativeVlm& vlm, const std::string& text, int max_new, nb::object on_text) {
+            std::function<void(const std::string&)> cb;
+            if (!on_text.is_none())
+              cb = [&on_text](const std::string& s) { nb::gil_scoped_acquire g; on_text(s); };
+            std::string out;
+            { nb::gil_scoped_release r; out = vlm.stream_ask(text, max_new, cb); }
+            return out;
+          },
+          "text"_a, "max_new"_a = 256, "on_text"_a = nb::none(),
+          "Close the live media block, ask, and generate.")
+      .def_prop_ro("streaming", &bllm::NativeVlm::streaming)
+      .def_prop_ro("context_left", &bllm::NativeVlm::context_left)
+      .def_prop_ro("tokens_used", &bllm::NativeVlm::tokens_used)
+      .def_prop_ro("video_tokens_per_second", &bllm::NativeVlm::video_tokens_per_second)
       .def("reset", &bllm::NativeVlm::reset, "Start a fresh conversation.")
       .def("set_sampling", &bllm::NativeVlm::set_sampling,
            "temp"_a = 0.0f, "top_p"_a = 1.0f, "top_k"_a = 0, "rep_pen"_a = 1.0f, "seed"_a = 1234)
