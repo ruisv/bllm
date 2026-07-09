@@ -293,8 +293,14 @@ if _HAVE_NATIVE:
 
         def set_bpu_priority(self, priority: int) -> "NativeSession":
             """BPU queue priority 0..255 (default 0 = lowest, so a co-resident vision
-            pipeline wins the queue). It orders the queue; it does NOT preempt a graph
-            already running, and an LLM decode step is one indivisible ~47 ms task."""
+            pipeline wins the queue).
+
+            Priority is relative, and it only bites where the running graph offers
+            preemption points. Protecting a vision pipeline's latency needs BOTH the
+            LLM below it in priority AND an .hbm compiled with `--max_time_per_fc`.
+            Measured on S100P (yolo26s p99, LLM decoding): 41.3 ms with neither,
+            13.5 ms with priority alone, 2.95 ms with both (2.06 ms when CV runs alone).
+            """
             self._llm.set_bpu_priority(priority)
             return self
 

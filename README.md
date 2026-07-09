@@ -181,6 +181,34 @@ TTFT nearly halved, and it still reads the text on the bus. Drop to 224 only whe
 reach matters more than detail. Any side that is a multiple of 28 with `side/28`
 divisible by 4 works. See [`docs/NATIVE_RUNTIME.md`](docs/NATIVE_RUNTIME.md) SE5/SE8.
 
+## Sharing the BPU with a vision pipeline
+
+S100/S100P have a single BPU core, so an LLM and a vision pipeline (bcdl) contend for
+it. An LLM decode step is one big graph, and by default a co-resident detector waits
+behind the whole thing. Fixing that takes **two** things — a compile flag on the LLM's
+`.hbm` and a priority gap at runtime:
+
+```python
+llm = bllm.NativeSession("/models/qwen2.5-1.5b")
+llm.set_bpu_priority(0)          # lowest — the default; let vision jump the queue
+```
+
+plus `oellm_build --max_time_per_fc 1000` (µs) when compiling the LLM, which caps each
+function call so the scheduler can switch inside the graph. Measured on S100P with
+yolo26s running against Qwen2.5-1.5B decode (p99 latency of the detector):
+
+| LLM `.hbm` | detector priority | detector p99 | detector FPS | LLM tok/s |
+|---|---|---|---|---|
+| — (detector alone) | — | 2.06 ms | 563 | — |
+| stock | same as LLM | 41.33 ms | 188 | 24.22 |
+| stock | above LLM | 13.49 ms | 189 | 20.66 |
+| `max_time_per_fc=1000` | same as LLM | 40.98 ms | 188 | 23.87 |
+| **`max_time_per_fc=1000`** | **above LLM** | **2.95 ms** | **383** | **17.11** |
+
+Neither knob works alone. The bound is nearly free on an idle BPU (24.00 vs 24.36
+tok/s); the LLM only pays when it actually yields. See
+[`docs/NATIVE_RUNTIME.md`](docs/NATIVE_RUNTIME.md) SE9.
+
 ## Supported models (official pre-compiled `.hbm`)
 
 All official **text** LLMs run through one config-free path — BLLM infers the

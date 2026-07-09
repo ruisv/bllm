@@ -93,11 +93,18 @@ struct Mem {
 // How BPU tasks are submitted. Shared by every graph a session owns (text tower,
 // vision/audio towers), because they contend for the same accelerator.
 //
-// `priority` (0..255) orders the *queue*. It does NOT preempt: a task already on the
-// BPU runs to completion, and an LLM decode step is one indivisible ~47 ms graph, so a
-// co-resident vision pipeline waits behind it no matter what priority either side asks
-// for. The knob that actually bounds that wait is `--max_time_per_fc` at COMPILE time,
-// which caps each function call's duration so the scheduler gets preemption points.
+// `priority` (0..255) is RELATIVE, and it only bites where the running graph offers
+// preemption points. Sharing a board with a vision pipeline needs BOTH halves:
+//   * the LLM `.hbm` compiled with `--max_time_per_fc` (µs), which caps each function
+//     call so the scheduler can switch inside a big graph, and
+//   * the LLM submitting BELOW the vision pipeline (the default here is LOWEST).
+// Measured on S100P with yolo26s alongside Qwen2.5-1.5B decode — CV p99 latency:
+//   unbounded fc, equal priority   41.3 ms      (CV waits out a whole decode step)
+//   unbounded fc, CV at 255        13.5 ms
+//   1 ms fc,      equal priority   41.0 ms
+//   1 ms fc,      CV at 255         2.95 ms     (idle CV is 2.06 ms)
+// The bound is nearly free on an idle BPU (24.00 vs 24.36 tok/s); the LLM only pays
+// when it actually yields (23.9 -> 17.1 tok/s under a CV saturating the core).
 //
 // `core_mask` picks BPU cores (HB_UCP_BPU_CORE_0, …). S100/S100P expose exactly ONE
 // BPU core, so it is a no-op there; it matters on multi-core parts (nash-p / J6P).
