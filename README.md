@@ -120,21 +120,27 @@ but SDK 1.0.0 ships no such model yet, so it's compile/guard-validated only.
 
 ### Multimodal on the native runtime (no libxlm)
 
-The self-built engine also does image+text, driving the Omni towers on plain
-hbDNN. Images may be file paths **or raw `HxWx3` uint8 frames**, so a camera
-pipeline needs no file round-trip:
+The self-built engine also does **text + image + audio + video**, driving the Omni
+towers on plain hbDNN. Media may be file paths **or raw arrays** — `HxWx3` uint8
+frames and 16 kHz mono float PCM — so a camera/microphone pipeline needs no file
+round-trip:
 
 ```python
 vlm = bllm.NativeVlmSession("/models/qwen2.5-omni-3b")   # model.json, arch="omni"
 for chunk in vlm.stream_chat("描述这张图片。", ["bus.jpg"]):
     print(chunk, end="", flush=True)
-print(vlm.last_ttft_ms, vlm.last_decode_tps)             # ttft includes vision encode
+print(vlm.last_ttft_ms, vlm.last_decode_tps)             # ttft includes the media encode
+
+vlm.reset(); vlm.chat("这段音频里说了什么？", audios=["clip.wav"])
+vlm.reset(); vlm.chat("描述这段视频。", videos=[bllm.load_video("clip.mp4")])
 ```
 
 C++: `bllm::NativeVlm` (`bllm/native_vlm.h`); CLI: `bllm_vlm_native --model <dir>
---image <file> --prompt <text>`. The vision tower runs at a fixed 448×448 → 256
-vision tokens, which are spliced into the decoder's embedding stream with 3-D
-**mrope** positions. See [`docs/NATIVE_RUNTIME.md`](docs/NATIVE_RUNTIME.md) SE5.
+[--image f] [--audio f.wav] [--video f.mp4] --prompt <text>`. The vision tower is
+fixed at 448×448 → 256 tokens per frame-pair, the audio tower at 50 tokens per 2 s;
+both are spliced into the decoder's embedding stream with 3-D **mrope**/TMRoPE
+positions, and a video's soundtrack interleaves with its frames in 2-second chunks.
+See [`docs/NATIVE_RUNTIME.md`](docs/NATIVE_RUNTIME.md) SE5.
 
 ## Supported models (official pre-compiled `.hbm`)
 

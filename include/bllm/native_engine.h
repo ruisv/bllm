@@ -269,35 +269,25 @@ class NativeEngine {
       if (!embedder_) throw std::runtime_error("[native] embed-mode feed() needs set_embedder()");
       std::vector<float> rows((size_t)ids.size() * hidden_);
       for (size_t i = 0; i < ids.size(); ++i) embedder_((int)ids[i], rows.data() + i * hidden_);
-      feed_embeds(rows.data(), (int)ids.size(), nullptr);
+      feedEmbedsNoMark(rows.data(), (int)ids.size(), nullptr);
       return;
     }
-    size_t i = 0;
-    if (P_ == 0 && !ids.empty()) {
-      int cl = std::min((int)ids.size(), chunk_);
-      prefillFirst(ids, cl);
-      i = cl;
+    int i = 0, n = (int)ids.size();
+    while (i < n) {
+      const int left = n - i;
+      if (!prefillWorthwhile(left)) break;
+      const int cl = std::min(left, chunk_);
+      prefillTokens(ids.data() + i, cl);
+      i += cl;
     }
-    for (; i < ids.size(); ++i) decodeStepToken(ids[i]);
+    for (; i < n; ++i) decodeStepToken(ids[i]);
   }
 
   // Embed-mode: ingest `n` hidden rows (n*hidden floats). `pos` may be null, in
-  // which case positions continue sequentially from the current maximum.
+  // which case positions continue sequentially from the current maximum. Does NOT
+  // reset the TTFT clock — a VLM marks the turn before encoding its media.
   void feed_embeds(const float* rows, int n, const Pos3* pos) {
-    if (mode_ != InputMode::Embed) throw std::runtime_error("[native] feed_embeds() needs an embed-input graph");
-    std::vector<Pos3> seq;
-    if (!pos) {
-      seq.resize(n);
-      for (int i = 0; i < n; ++i) seq[i] = Pos3::scalar(maxPos_ + 1 + i);
-      pos = seq.data();
-    }
-    int i = 0;
-    if (P_ == 0 && n > 0) {
-      const int cl = std::min(n, chunk_);
-      prefillFirstEmbed(rows, pos, cl);
-      i = cl;
-    }
-    for (; i < n; ++i) decodeStepEmbed(rows + (size_t)i * hidden_, pos[i]);
+    feedEmbedsNoMark(rows, n, pos);
   }
 
   // sample up to p.max_new tokens; stop on eos; call on_token(id) per token.
@@ -382,23 +372,44 @@ class NativeEngine {
     ++P_;
   }
 
-  // seed the (empty) decode cache from a prefill run of `cl` tokens.
-  void adoptPrefill(int cl) {
-    curLogits_ = (int16_t*)prefill_.outPtr(0) + (size_t)(cl - 1) * logitStride_;
-    for (int l = 0; l < nLayers_; ++l) {
-      std::memcpy(kBuf(l) + (size_t)(cacheLen_ - cl) * rowK_, prefill_.outPtr(1 + l), (size_t)cl * rowK_);
-      decode_.inClean(base_ + l);
-      std::memcpy(vBuf(l) + (size_t)(cacheLen_ - cl) * rowV_, prefill_.outPtr(vOutBase_ + l), (size_t)cl * rowV_);
-      decode_.inClean(vInBase_ + l);
-    }
-    P_ = cl;
+  // A prefill pass costs a whole static chunk of compute, so it only beats
+  // decode-stepping once enough tokens are left to amortize it.
+  static constexpr int kPrefillMinTokens = 16;
+  bool prefillWorthwhile(int left) const {
+    return left >= kPrefillMinTokens && P_ + chunk_ <= cacheLen_;
   }
 
-  void zeroPrefillCaches() {
+  // Like decode (which shifts its window left by one and appends the new row), the
+  // prefill graph shifts its input window left by a whole chunk and writes the chunk's
+  // KV into the freed tail. So the cached rows go in with the SAME right-aligned
+  // layout the decode cache uses; the graph relocates them to [base-P, base).
+  void loadPrefillCaches() {
     for (int l = 0; l < nLayers_; ++l) {
-      std::memset(prefill_.inPtr(base_ + l), 0, cacheLen_ * rowK_); prefill_.inClean(base_ + l);
-      std::memset(prefill_.inPtr(vInBase_ + l), 0, cacheLen_ * rowV_); prefill_.inClean(vInBase_ + l);
+      uint8_t* pk = (uint8_t*)prefill_.inPtr(base_ + l);
+      std::memset(pk, 0, cacheLen_ * rowK_);
+      if (P_ > 0) std::memcpy(pk + (size_t)(cacheLen_ - P_) * rowK_, kBuf(l) + (size_t)(cacheLen_ - P_) * rowK_, (size_t)P_ * rowK_);
+      prefill_.inClean(base_ + l);
+      uint8_t* pv = (uint8_t*)prefill_.inPtr(vInBase_ + l);
+      std::memset(pv, 0, cacheLen_ * rowV_);
+      if (P_ > 0) std::memcpy(pv + (size_t)(cacheLen_ - P_) * rowV_, vBuf(l) + (size_t)(cacheLen_ - P_) * rowV_, (size_t)P_ * rowV_);
+      prefill_.inClean(vInBase_ + l);
     }
+  }
+
+  // Append the chunk's `cl` new KV rows to the right-aligned decode window.
+  void appendPrefill(int cl) {
+    curLogits_ = (int16_t*)prefill_.outPtr(0) + (size_t)(cl - 1) * logitStride_;
+    for (int l = 0; l < nLayers_; ++l) {
+      uint8_t* k = kBuf(l);
+      if (P_ > 0) std::memmove(k + (size_t)(cacheLen_ - P_ - cl) * rowK_, k + (size_t)(cacheLen_ - P_) * rowK_, (size_t)P_ * rowK_);
+      std::memcpy(k + (size_t)(cacheLen_ - cl) * rowK_, prefill_.outPtr(1 + l), (size_t)cl * rowK_);
+      decode_.inClean(base_ + l);
+      uint8_t* v = vBuf(l);
+      if (P_ > 0) std::memmove(v + (size_t)(cacheLen_ - P_ - cl) * rowV_, v + (size_t)(cacheLen_ - P_) * rowV_, (size_t)P_ * rowV_);
+      std::memcpy(v + (size_t)(cacheLen_ - cl) * rowV_, prefill_.outPtr(vOutBase_ + l), (size_t)cl * rowV_);
+      decode_.inClean(vInBase_ + l);
+    }
+    P_ += cl;
   }
 
   // ── token-input graphs ─────────────────────────────────────────────────────
@@ -418,20 +429,21 @@ class NativeEngine {
     rollCaches();
   }
 
-  void prefillFirst(const std::vector<int>& ids, int cl) {
+  void prefillTokens(const int* ids, int cl) {
     auto* tk = (int32_t*)prefill_.inPtr(0);
     std::memset(tk, 0, chunk_ * sizeof(int32_t));
     for (int i = 0; i < cl; ++i) tk[i] = ids[i];
     prefill_.inClean(0);
     auto* pos = (int32_t*)prefill_.inPtr(1);
-    for (int i = 0; i < chunk_; ++i) pos[i] = i;
+    for (int i = 0; i < chunk_; ++i) pos[i] = P_ + i;
     prefill_.inClean(1);
     writePrefillMask((int16_t*)prefill_.inPtr(2));
     prefill_.inClean(2);
-    zeroPrefillCaches();
+    loadPrefillCaches();
     prefill_.infer();
-    adoptPrefill(cl);
-    maxPos_ = cl - 1;
+    const int p0 = P_;
+    appendPrefill(cl);
+    maxPos_ = p0 + cl - 1;
   }
 
   // ── embed-input graphs (host embedding + host rope) ────────────────────────
@@ -461,7 +473,7 @@ class NativeEngine {
     maxPos_ = std::max(maxPos_, pos.max());
   }
 
-  void prefillFirstEmbed(const float* rows, const Pos3* pos, int cl) {
+  void prefillEmbeds(const float* rows, const Pos3* pos, int cl) {
     auto* x = (int16_t*)prefill_.inPtr(0);
     std::memset(x, 0, (size_t)chunk_ * hidden_ * sizeof(int16_t));
     for (int i = 0; i < cl; ++i) quantRow(rows + (size_t)i * hidden_, x + (size_t)i * hidden_);
@@ -474,10 +486,29 @@ class NativeEngine {
     std::memset(sn, 0, (size_t)chunk_ * rot_ * sizeof(int16_t));
     for (int i = 0; i < cl; ++i) writeRope(cs + (size_t)i * rot_, sn + (size_t)i * rot_, pos[i]);
     prefill_.inClean(2); prefill_.inClean(3);
-    zeroPrefillCaches();
+    loadPrefillCaches();
     prefill_.infer();
-    adoptPrefill(cl);
+    appendPrefill(cl);
     for (int i = 0; i < cl; ++i) maxPos_ = std::max(maxPos_, pos[i].max());
+  }
+
+  void feedEmbedsNoMark(const float* rows, int n, const Pos3* pos) {
+    if (mode_ != InputMode::Embed) throw std::runtime_error("[native] feed_embeds() needs an embed-input graph");
+    std::vector<Pos3> seq;
+    if (!pos) {
+      seq.resize(n);
+      for (int i = 0; i < n; ++i) seq[i] = Pos3::scalar(maxPos_ + 1 + i);
+      pos = seq.data();
+    }
+    int i = 0;
+    while (i < n) {
+      const int left = n - i;
+      if (!prefillWorthwhile(left)) break;
+      const int cl = std::min(left, chunk_);
+      prefillEmbeds(rows + (size_t)i * hidden_, pos + i, cl);
+      i += cl;
+    }
+    for (; i < n; ++i) decodeStepEmbed(rows + (size_t)i * hidden_, pos[i]);
   }
 
   // ── masks (identical for both contracts) ──────────────────────────────────
@@ -487,12 +518,14 @@ class NativeEngine {
     int lo = cacheLen_ - 1 - P_; if (lo < 0) lo = 0;
     for (int j = 0; j < cacheLen_; ++j) mask[j] = (j >= lo) ? 0 : -32768;
   }
-  // prefill: token i lands at window slot base+i and attends base..base+i.
+  // prefill: token i lands at window slot base+i, and attends everything from the
+  // start of the already-cached rows (base-P) up to itself.
   void writePrefillMask(int16_t* m) const {
     const int base = cacheLen_ - chunk_;
+    int lo = base - P_; if (lo < 0) lo = 0;
     for (int i = 0; i < chunk_; ++i)
       for (int j = 0; j < cacheLen_; ++j)
-        m[(size_t)i * cacheLen_ + j] = (j >= base && j <= base + i) ? 0 : -32768;
+        m[(size_t)i * cacheLen_ + j] = (j >= lo && j <= base + i) ? 0 : -32768;
   }
 
   hbDNNPackedHandle_t packed_ = nullptr;

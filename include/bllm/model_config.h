@@ -26,6 +26,7 @@ struct ModelConfig {
   std::string embed;                             // resolved path to the host embed table (hybrid + omni)
   std::string visual;                            // resolved path to the vision-tower .hbm (omni)
   std::string audio;                             // resolved path to the audio-tower .hbm (omni)
+  std::string mel_filters;                       // resolved path to mel_filters_t.txt (omni audio)
   std::string graph = "qwen35";                  // graph name inside the .hbm (hybrid)
   std::vector<int> eos;                          // stop-token ids
   std::vector<int> mrope_section;                // omni: rope dim split across (t,h,w)

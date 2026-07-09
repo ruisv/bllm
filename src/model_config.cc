@@ -40,6 +40,7 @@ ModelConfig loadModelConfig(const std::string& dir) {
   c.embed = resolve(dir, j.value("embed", ""));
   c.visual = resolve(dir, j.value("visual", ""));
   c.audio = resolve(dir, j.value("audio", ""));
+  c.mel_filters = resolve(dir, j.value("mel_filters", ""));
   if (j.contains("eos")) c.eos = j.at("eos").get<std::vector<int>>();
   if (j.contains("mrope_section")) c.mrope_section = j.at("mrope_section").get<std::vector<int>>();
   if (j.contains("chat")) {

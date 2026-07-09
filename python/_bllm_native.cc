@@ -8,8 +8,11 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 
+#include <deque>
+
 #include "bllm/native_engine.h"
 #ifdef BLLM_HAVE_TOKENIZERS
+#include "bllm/audio_io.h"     // dr_wav-backed decode, for wav paths
 #include "bllm/image_io.h"     // stb-backed decode, for image paths
 #include "bllm/native_llm.h"   // unified string-in/out session (needs the C++ tokenizer)
 #include "bllm/native_vlm.h"   // multimodal session (Qwen2.5-Omni)
@@ -109,47 +112,74 @@ NB_MODULE(_bllm_native, m) {
       .def("encode", [](bllm::NativeLlm& l, const std::string& s) { return l.tokenizer().encode(s); }, "text"_a)
       .def("decode", [](bllm::NativeLlm& l, const std::vector<int>& ids) { return l.tokenizer().decode(ids); }, "ids"_a);
 
-  // The multimodal session. Images arrive either as a path (decoded by stb) or as
-  // an HxWx3 uint8 array, which is what a camera pipeline already holds.
+  // The multimodal session. Media arrives either as a path (decoded by stb/dr_wav)
+  // or as a raw array — an HxWx3 uint8 frame, or 16 kHz mono float PCM — which is
+  // what a camera/microphone pipeline already holds. A video is a dict:
+  //   {"frames": [...], "fps": 2.0, "audio": pcm|path|None}
   using RgbArray = nb::ndarray<const uint8_t, nb::ndim<3>, nb::c_contig, nb::device::cpu>;
+  using PcmArray = nb::ndarray<const float, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
   nb::class_<bllm::NativeVlm>(m, "NativeVlm")
       .def(nb::init<const std::string&>(), "model_dir"_a,
-           "Load an omni model directory (model.json: text + visual towers + embed table).")
+           "Load an omni model directory (model.json: text + visual/audio towers + embed table).")
       .def(
           "chat",
-          [](bllm::NativeVlm& vlm, const std::string& text, nb::list images, int max_new,
-             nb::object on_text) {
-            std::vector<bllm::OwnedImage> owned;   // keeps decoded pixels alive
-            std::vector<bllm::ImageRGB> refs;
-            for (nb::handle h : images) {
+          [](bllm::NativeVlm& vlm, const std::string& text, nb::list images, nb::list audios,
+             nb::list videos, int max_new, nb::object on_text) {
+            // deques: decoded media must not move, since the *Ref structs point into it.
+            std::deque<bllm::OwnedImage> ownedImg;
+            std::deque<bllm::OwnedAudio> ownedAu;
+            auto asImage = [&](nb::handle h) -> bllm::ImageRGB {
               if (nb::isinstance<nb::str>(h)) {
-                owned.push_back(bllm::loadImageRGB(nb::cast<std::string>(h)));
-                refs.push_back({nullptr, owned.back().width, owned.back().height});
-              } else {
-                RgbArray a = nb::cast<RgbArray>(h);
-                if (a.shape(2) != 3) throw std::runtime_error("[bllm] image array must be HxWx3 uint8");
-                refs.push_back({a.data(), (int)a.shape(1), (int)a.shape(0)});
+                ownedImg.push_back(bllm::loadImageRGB(nb::cast<std::string>(h)));
+                const auto& o = ownedImg.back();
+                return {o.rgb.data(), o.width, o.height};
               }
+              RgbArray a = nb::cast<RgbArray>(h);
+              if (a.shape(2) != 3) throw std::runtime_error("[bllm] image array must be HxWx3 uint8");
+              return {a.data(), (int)a.shape(1), (int)a.shape(0)};
+            };
+            auto asAudio = [&](nb::handle h) -> bllm::AudioPCM {
+              if (nb::isinstance<nb::str>(h)) {
+                ownedAu.push_back(bllm::loadAudio16k(nb::cast<std::string>(h)));
+                const auto& o = ownedAu.back();
+                return {o.samples.data(), o.samples.size()};
+              }
+              PcmArray a = nb::cast<PcmArray>(h);
+              return {a.data(), a.shape(0)};
+            };
+
+            std::vector<bllm::ImageRGB> imgs;
+            for (nb::handle h : images) imgs.push_back(asImage(h));
+            std::vector<bllm::AudioPCM> aus;
+            for (nb::handle h : audios) aus.push_back(asAudio(h));
+            std::vector<bllm::VideoClip> vids;
+            for (nb::handle h : videos) {
+              nb::dict d = nb::cast<nb::dict>(h);
+              bllm::VideoClip v;
+              if (d.contains("fps")) v.fps = nb::cast<double>(d["fps"]);
+              if (!d.contains("frames")) throw std::runtime_error("[bllm] video dict needs 'frames'");
+              for (nb::handle fh : nb::cast<nb::list>(d["frames"])) v.frames.push_back(asImage(fh));
+              if (d.contains("audio") && !d["audio"].is_none()) v.audio = asAudio(d["audio"]);
+              vids.push_back(std::move(v));
             }
-            // Paths were decoded into `owned`, whose buffers may have moved while
-            // the vector grew — bind those pointers only now.
-            size_t k = 0;
-            for (size_t i = 0; i < refs.size(); ++i)
-              if (!refs[i].rgb) refs[i].rgb = owned[k++].rgb.data();
 
             std::function<void(const std::string&)> cb;
             if (!on_text.is_none())
               cb = [&on_text](const std::string& s) { nb::gil_scoped_acquire g; on_text(s); };
             std::string out;
-            { nb::gil_scoped_release r; out = vlm.chat(text, refs, max_new, cb); }
+            { nb::gil_scoped_release r; out = vlm.chat(text, imgs, aus, vids, max_new, cb); }
             return out;
           },
-          "text"_a, "images"_a = nb::list(), "max_new"_a = 256, "on_text"_a = nb::none(),
-          "Answer a turn of text + images (paths or HxWx3 uint8 arrays); on_text(str) streams.")
+          "text"_a, "images"_a = nb::list(), "audios"_a = nb::list(), "videos"_a = nb::list(),
+          "max_new"_a = 256, "on_text"_a = nb::none(),
+          "Answer a turn of text + images (paths or HxWx3 uint8) + audio (wav paths or "
+          "16 kHz mono float32) + videos ({'frames':[...], 'fps':2.0, 'audio':pcm|path}); "
+          "on_text(str) streams.")
       .def("reset", &bllm::NativeVlm::reset, "Start a fresh conversation.")
       .def("set_sampling", &bllm::NativeVlm::set_sampling,
            "temp"_a = 0.0f, "top_p"_a = 1.0f, "top_k"_a = 0, "rep_pen"_a = 1.0f, "seed"_a = 1234)
       .def_prop_ro("vision_tokens", &bllm::NativeVlm::vision_tokens)
+      .def_prop_ro("has_audio", &bllm::NativeVlm::has_audio)
       .def_prop_ro("last_decode_tps", &bllm::NativeVlm::last_decode_tps)
       .def_prop_ro("last_ttft_ms", &bllm::NativeVlm::last_ttft_ms)
       .def_prop_ro("name", [](bllm::NativeVlm& v) { return v.config().name; });

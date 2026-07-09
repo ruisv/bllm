@@ -119,8 +119,10 @@ inline void preprocessToPlanar(const uint8_t* rgb, int w, int h, const VisionSpe
     }
 }
 
-// Planar CHW (normalized) -> the graph's [n_patch, row_len] patch tensor.
-inline void patchify(const std::vector<float>& chw, const VisionSpec& spec, float* out) {
+// Planar CHW frames (normalized) -> the graph's [n_patch, row_len] patch tensor.
+// `frames` holds spec.temporal planes; a still image passes the same one twice,
+// a video passes two consecutive frames (that is what temporal_patch_size means).
+inline void patchify(const std::vector<float>* const* frames, const VisionSpec& spec, float* out) {
   const int S = spec.image_size, C = spec.channels, P = spec.patch;
   const int M = spec.merge, T = spec.temporal, GB = spec.llm_grid();
   const int RL = spec.row_len();
@@ -132,18 +134,18 @@ inline void patchify(const std::vector<float>& chw, const VisionSpec& spec, floa
           float* row = out + (size_t)r * RL;
           int k = 0;
           for (int c = 0; c < C; ++c)
-            for (int t = 0; t < T; ++t)  // a still image is repeated across frames
+            for (int t = 0; t < T; ++t)
               for (int py = 0; py < P; ++py)
                 for (int px = 0; px < P; ++px) {
                   const int Y = (bh * M + mh) * P + py;
                   const int X = (bw * M + mw) * P + px;
-                  row[k++] = chw[((size_t)c * S + Y) * S + X];
+                  row[k++] = (*frames[t])[((size_t)c * S + Y) * S + X];
                 }
         }
 }
 
-// The vision encoder graph. encode() returns a pointer to n_token()×hidden floats
-// owned by the tower (valid until the next encode()).
+// The vision encoder graph. encode()/encode_pair() return a pointer to
+// n_token()×hidden floats owned by the tower (valid until the next call).
 class VisionTower {
  public:
   explicit VisionTower(const std::string& hbm, const char* graph = "visual") {
@@ -169,11 +171,20 @@ class VisionTower {
   int n_token() const { return nToken_; }
   int hidden() const { return hidden_; }
 
-  // rgb: interleaved RGB8, w×h. Returns n_token()×hidden() embedding rows.
-  const float* encode(const uint8_t* rgb, int w, int h) {
-    std::vector<float> chw;
-    preprocessToPlanar(rgb, w, h, spec_, chw);
-    patchify(chw, spec_, (float*)g_.inPtr(0));
+  // A still image: the same frame fills both temporal slots, as HF does.
+  const float* encode(const uint8_t* rgb, int w, int h) { return encode_pair(rgb, rgb, w, h); }
+
+  // Two consecutive video frames (same size) -> one temporal grid step of tokens.
+  const float* encode_pair(const uint8_t* rgb0, const uint8_t* rgb1, int w, int h) {
+    preprocessToPlanar(rgb0, w, h, spec_, chw0_);
+    if (rgb1 == rgb0) {
+      const std::vector<float>* planes[2] = {&chw0_, &chw0_};
+      patchify(planes, spec_, (float*)g_.inPtr(0));
+    } else {
+      preprocessToPlanar(rgb1, w, h, spec_, chw1_);
+      const std::vector<float>* planes[2] = {&chw0_, &chw1_};
+      patchify(planes, spec_, (float*)g_.inPtr(0));
+    }
     g_.inClean(0);
     g_.infer();
     return (const float*)g_.outPtr(0);
@@ -183,6 +194,7 @@ class VisionTower {
   hbDNNPackedHandle_t packed_ = nullptr;
   native_detail::Graph g_;
   VisionSpec spec_;
+  std::vector<float> chw0_, chw1_;
   int nPatch_ = 0, rowLen_ = 0, nToken_ = 0, hidden_ = 0;
 };
 

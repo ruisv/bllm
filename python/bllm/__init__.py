@@ -49,6 +49,7 @@ except ImportError:
 __all__ = [
     "NativeSession",
     "NativeVlmSession",
+    "load_video",
     "LlmSession",
     "OmniSession",
     "VlmSession",
@@ -312,16 +313,52 @@ if _HAVE_NATIVE:
             """Raw completion as a lazy generator of decoded text chunks."""
             return _stream(lambda cb: self._llm.generate(prompt, max_new, cb))
 
+    def load_video(path: str, fps: float = 2.0, size: int = 448, max_frames: int = 10,
+                   with_audio: bool = True, ffmpeg: str = "ffmpeg") -> dict:
+        """Sample a video file into the ``videos=`` argument of NativeVlmSession.chat.
+
+        BLLM itself knows nothing about containers — the runtime takes decoded frames
+        and PCM, which a camera + microphone pipeline already has. This helper exists
+        so demos can open an .mp4; it shells out to ffmpeg and needs numpy.
+
+        Each PAIR of frames costs ``vision_tokens()`` of context, so ``max_frames``
+        is what keeps a long clip from overflowing the decoder window.
+        """
+        import subprocess
+        import numpy as np
+
+        vf = f"fps={fps},scale={size}:{size}"
+        cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-i", path, "-vf", vf,
+               "-frames:v", str(max_frames), "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
+        raw = subprocess.run(cmd, stdout=subprocess.PIPE, check=True).stdout
+        frames = np.frombuffer(raw, np.uint8).reshape(-1, size, size, 3)
+        if len(frames) == 0:
+            raise RuntimeError(f"[bllm] no frames decoded from {path}")
+
+        pcm = None
+        if with_audio:
+            acmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-i", path, "-vn",
+                    "-ac", "1", "-ar", "16000", "-f", "f32le", "-"]
+            out = subprocess.run(acmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+            if out:
+                pcm = np.frombuffer(out, np.float32).copy()
+        return {"frames": [np.ascontiguousarray(f) for f in frames], "fps": fps, "audio": pcm}
+
     class NativeVlmSession:
         """Unified native multimodal session — image + text, no libxlm.
 
-        Load an ``arch="omni"`` model directory. Images are file paths or HxWx3
-        uint8 arrays (what a camera pipeline already has), so no file round-trip.
+        Load an ``arch="omni"`` model directory. Media may be file paths or raw
+        arrays — HxWx3 uint8 frames and 16 kHz mono float32 PCM, what a camera or
+        microphone pipeline already has — so no file round-trip is needed.
 
             import bllm
             vlm = bllm.NativeVlmSession("/path/to/qwen2.5-omni-3b")
             for chunk in vlm.stream_chat("描述这张图片。", ["bus.jpg"]):
                 print(chunk, end="", flush=True)
+            vlm.reset()
+            print(vlm.chat("这段音频里是什么声音？", audios=["clip.wav"]))
+            vlm.reset()
+            print(vlm.chat("描述这段视频。", videos=[bllm.load_video("clip.mp4")]))
         """
 
         def __init__(self, model_dir: str) -> None:
@@ -354,12 +391,18 @@ if _HAVE_NATIVE:
             self._vlm.set_sampling(temp, top_p, top_k, rep_pen, seed)
             return self
 
-        def chat(self, text: str, images=(), max_new: int = 256,
-                 on_text: "Optional[Callable[[str], None]]" = None) -> str:
-            """Answer a turn of text + images; returns the full reply."""
-            return self._vlm.chat(text, list(images), max_new, on_text)
+        @property
+        def has_audio(self) -> bool:
+            """Whether this model directory ships an audio tower + mel filters."""
+            return self._vlm.has_audio
 
-        def stream_chat(self, text: str, images=(), max_new: int = 256) -> "Iterator[str]":
+        def chat(self, text: str, images=(), audios=(), videos=(), max_new: int = 256,
+                 on_text: "Optional[Callable[[str], None]]" = None) -> str:
+            """Answer a turn of text + images + audio + videos; returns the full reply."""
+            return self._vlm.chat(text, list(images), list(audios), list(videos), max_new, on_text)
+
+        def stream_chat(self, text: str, images=(), audios=(), videos=(),
+                        max_new: int = 256) -> "Iterator[str]":
             """The same turn as a lazy generator of decoded text chunks."""
-            imgs = list(images)
-            return _stream(lambda cb: self._vlm.chat(text, imgs, max_new, cb))
+            imgs, aus, vids = list(images), list(audios), list(videos)
+            return _stream(lambda cb: self._vlm.chat(text, imgs, aus, vids, max_new, cb))

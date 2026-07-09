@@ -43,8 +43,9 @@ if(Hobot_FOUND)
     target_link_libraries(_bllm_native PRIVATE hobot::dnn tokenizers::tokenizers)
     target_compile_definitions(_bllm_native PRIVATE BLLM_HAVE_TOKENIZERS)
     target_compile_options(_bllm_native PRIVATE -march=armv8.2-a+fp16)
-    # vendored stb_image backs NativeVlm's "image path" convenience overload
-    target_include_directories(_bllm_native PRIVATE "${CMAKE_SOURCE_DIR}/vendor/stb")
+    # vendored stb_image + dr_wav back NativeVlm's "media path" convenience overloads
+    target_include_directories(_bllm_native PRIVATE
+      "${CMAKE_SOURCE_DIR}/vendor/stb" "${CMAKE_SOURCE_DIR}/vendor/dr_libs")
     message(STATUS "_bllm_native: native engine + NativeLlm + NativeVlm (no libxlm)")
   else()
     nanobind_add_module(_bllm_native STABLE_ABI NB_STATIC _bllm_native.cc)

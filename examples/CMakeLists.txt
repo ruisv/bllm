@@ -55,12 +55,13 @@ if(Hobot_FOUND AND Tokenizers_FOUND)
   target_compile_options(bllm_chat_native PRIVATE -march=armv8.2-a+fp16)
   message(STATUS "bllm_chat_native: unified native session (no libxlm, no Python)")
 
-  # Native VLM (bllm::NativeVlm): image + text -> streamed reply, all on hbDNN.
-  # Image file decoding comes from vendored stb_image (no OpenCV dependency).
+  # Native VLM (bllm::NativeVlm): image/audio + text -> streamed reply, all on hbDNN.
+  # Media file decoding comes from vendored stb_image + dr_wav (no OpenCV/ffmpeg dep).
   add_executable(bllm_vlm_native vlm_native.cc "${CMAKE_SOURCE_DIR}/src/model_config.cc")
   target_link_libraries(bllm_vlm_native PRIVATE hobot::dnn tokenizers::tokenizers)
   target_include_directories(bllm_vlm_native PRIVATE
-    "${CMAKE_SOURCE_DIR}/include" "${CMAKE_SOURCE_DIR}/vendor/stb")
+    "${CMAKE_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_SOURCE_DIR}/vendor/stb" "${CMAKE_SOURCE_DIR}/vendor/dr_libs")
   target_compile_options(bllm_vlm_native PRIVATE -march=armv8.2-a+fp16)
   message(STATUS "bllm_vlm_native: native multimodal session (no libxlm)")
 endif()
