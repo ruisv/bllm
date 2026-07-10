@@ -57,6 +57,26 @@ except ImportError:
 __all__ = ["__version__"]
 
 
+def _run_async(fn):
+    """Run a blocking generate on a background thread and hand back a Future. The native
+    call releases the GIL, so this is a real async submission — libxlm's xlm_infer_async
+    intent, at the Python level. One generation at a time per session (a session serialises
+    on its single BPU handle); use separate sessions for true concurrency."""
+    from concurrent.futures import Future
+    fut: "Future[str]" = Future()
+
+    def run() -> None:
+        if not fut.set_running_or_notify_cancel():
+            return
+        try:
+            fut.set_result(fn())
+        except BaseException as e:  # noqa: BLE001 — surfaced through the Future
+            fut.set_exception(e)
+
+    threading.Thread(target=run, daemon=True).start()
+    return fut
+
+
 def _stream(generate_call) -> "Iterator[str]":
     """Turn a blocking generate(on_token=...) into a lazy generator: run it on a
     worker thread (the native call releases the GIL) and drain a queue here."""
@@ -128,6 +148,11 @@ class LlmSession:
     def stream(self, prompt: str) -> Iterator[str]:
         """Yield reply chunks as they decode."""
         return _stream(lambda on_token: self._s.generate(prompt, on_token))
+
+    def generate_async(self, prompt: str, on_token: Optional[Callable[[str], None]] = None):
+        """Non-blocking generate → concurrent.futures.Future[str] (libxlm's xlm_infer_async
+        intent). on_token still streams chunks. One at a time per session."""
+        return _run_async(lambda: self._s.generate(prompt, on_token))
 
     # chat()/stream_chat() are aliases: libxlm applies the chat template inside the
     # runtime, so generate() on an Instruct model already IS a chat turn. Having them
@@ -361,6 +386,21 @@ if _HAVE_NATIVE:
             """Raw completion as a lazy generator of decoded text chunks."""
             s = list(stop) if stop else []
             return _stream(lambda cb: self._llm.generate(prompt, max_new, cb, s))
+
+        def chat_async(self, message: str, max_new: int = 400,
+                       on_text: "Optional[Callable[[str], None]]" = None,
+                       stop: "Optional[list[str]]" = None):
+            """Non-blocking chat → concurrent.futures.Future[str] (libxlm's xlm_infer_async
+            intent). One generation at a time per session."""
+            s = list(stop) if stop else []
+            return _run_async(lambda: self._llm.chat(message, max_new, on_text, s))
+
+        def generate_async(self, prompt: str, max_new: int = 256,
+                           on_text: "Optional[Callable[[str], None]]" = None,
+                           stop: "Optional[list[str]]" = None):
+            """Non-blocking raw completion → concurrent.futures.Future[str]."""
+            s = list(stop) if stop else []
+            return _run_async(lambda: self._llm.generate(prompt, max_new, on_text, s))
 
         def perplexity(self, text: str) -> float:
             """Teacher-forced perplexity of raw `text` under the model (no chat template).

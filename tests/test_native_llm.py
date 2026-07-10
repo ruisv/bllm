@@ -81,6 +81,17 @@ def test_sampling_knobs_at_libxlm_parity(llm):
     llm.set_sampling()                                     # restore greedy for later tests
 
 
+def test_generate_async_returns_a_future(llm):
+    """chat_async submits on a background thread and hands back a Future (libxlm's
+    xlm_infer_async intent): it returns before generation finishes, result() blocks."""
+    from concurrent.futures import Future
+    llm.reset()
+    fut = llm.chat_async("法国的首都是哪里？只答城市名。", max_new=8)
+    assert isinstance(fut, Future)
+    assert "巴黎" in fut.result(timeout=60)
+    llm.reset()
+
+
 def test_perplexity_ranks_coherent_below_scrambled(llm):
     """Teacher-forced perplexity (libxlm's xlm_ppl on the native path): a fluent sentence
     is more predictable than its shuffled words, so it must score lower."""
