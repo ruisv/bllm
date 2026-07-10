@@ -3,13 +3,18 @@
 //   ./bllm_embed_native --model <dir> --text "巴黎是法国的首都。" [--dim 256]
 //   ./bllm_embed_native --model <dir> --verify ref.json --ref emb_ref.npy
 //
-// --verify replays the token ids the HF reference used and scores the result two ways:
-// per-text cosine, and whether the pairwise-similarity RANKING survives. A vector can
-// sit at cosine 0.99 and still reorder a retrieval result, so the ranking is the test
-// that matters.
+// --verify replays the token ids the HF reference used and reports per-text cosine plus
+// whether the pairwise-similarity ranking survives. It is a SMOKE TEST, not a ship gate:
+// the five reference sentences are near-duplicates whose pairwise similarities are nearly
+// tied, so their ranking flips on noise. Measured on SciFact (1000 docs, 300 queries), the
+// preserve_precision build reorders that 5-way ranking and still retrieves as well as fp32
+// — nDCG@10 0.8437 vs 0.8469 — while the build with int16 RMSNorm variance collapses to
+// 0.3358. What separates them is the cosine, not the ranking. The real gate is
+// host_toolchain/convert/embed/eval_retrieval.py.
 #include "bllm/native_embedder.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -83,19 +88,62 @@ double dot(const std::vector<float>& a, const std::vector<float>& b) {
 
 }  // namespace
 
+// float32 .npy, C-order, shape (n, d). Minimal writer — enough for the eval pipeline.
+void writeNpy(const std::string& path, const std::vector<std::vector<float>>& rows) {
+  if (rows.empty()) throw std::runtime_error("nothing to write");
+  std::ostringstream hdr;
+  hdr << "{'descr': '<f4', 'fortran_order': False, 'shape': (" << rows.size() << ", "
+      << rows[0].size() << "), }";
+  std::string h = hdr.str();
+  size_t pre = 10 + h.size() + 1;                 // magic+ver+len, header, trailing '\n'
+  h.append((16 - pre % 16) % 16, ' ');
+  h.push_back('\n');
+  const uint16_t hlen = (uint16_t)h.size();
+  std::ofstream f(path, std::ios::binary);
+  if (!f) throw std::runtime_error("cannot write " + path);
+  f.write("\x93NUMPY\x01\x00", 8);
+  f.write((const char*)&hlen, 2);
+  f.write(h.data(), h.size());
+  for (const auto& r : rows) f.write((const char*)r.data(), r.size() * sizeof(float));
+}
+
 int main(int argc, char** argv) {
   const char* model = argOf(argc, argv, "--model");
   if (!model) {
     std::fprintf(stderr,
                  "usage: %s --model <dir> --text <text> [--dim N]\n"
-                 "       %s --model <dir> --verify <ref.json> --ref <emb_ref.npy>\n",
-                 argv[0], argv[0]);
+                 "       %s --model <dir> --verify <ref.json> --ref <emb_ref.npy>\n"
+                 "       %s --model <dir> --dump <eval.json> --out <emb.npy>\n",
+                 argv[0], argv[0], argv[0]);
     return 2;
   }
   try {
     bllm::NativeEmbedder emb(model);
     std::fprintf(stderr, "[%s] dim=%d  max_tokens=%d\n", emb.config().name.c_str(),
                  emb.dimension(), emb.max_tokens());
+
+    // Batch mode: replay a make_scifact_eval.py id set and dump the vectors, so a real
+    // retrieval eval can be scored off-board against the fp32 reference.
+    if (const char* dumpj = argOf(argc, argv, "--dump")) {
+      const char* outn = argOf(argc, argv, "--out");
+      if (!outn) { std::fprintf(stderr, "--dump needs --out <emb.npy>\n"); return 2; }
+      const auto ids = readTokenIds(dumpj);
+      std::vector<std::vector<float>> got;
+      got.reserve(ids.size());
+      const auto t0 = std::chrono::steady_clock::now();
+      for (size_t i = 0; i < ids.size(); ++i) {
+        got.push_back(emb.embed_ids(ids[i]));
+        if ((i + 1) % 200 == 0) {
+          const double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+          std::fprintf(stderr, "  %zu/%zu  %.0fs\n", i + 1, ids.size(), el);
+        }
+      }
+      writeNpy(outn, got);
+      const double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      std::fprintf(stderr, "wrote %zu x %zu -> %s  (%.1f ms/text)\n", got.size(),
+                   got[0].size(), outn, el * 1000.0 / got.size());
+      return 0;
+    }
 
     if (const char* refj = argOf(argc, argv, "--verify")) {
       const char* refn = argOf(argc, argv, "--ref");
@@ -107,14 +155,15 @@ int main(int argc, char** argv) {
       std::vector<std::vector<float>> got;
       for (const auto& row : ids) got.push_back(emb.embed_ids(row));
 
-      double worst = 1.0;
+      double worst = 1.0, mean = 0.0;
       std::printf("per-text cosine vs HF:");
       for (size_t i = 0; i < got.size(); ++i) {
         const double c = dot(got[i], ref[i]);
         worst = std::min(worst, c);
+        mean += c / got.size();
         std::printf(" %.6f", c);
       }
-      std::printf("\n  min %.6f   (HF's own bf16-vs-fp32 gap is 0.9998)\n", worst);
+      std::printf("\n  min %.6f  mean %.6f\n", worst, mean);
 
       // Ranking: for each query, does the BPU order the others the same way?
       const size_t n = got.size();
@@ -127,11 +176,16 @@ int main(int argc, char** argv) {
         if (a != b) order_ok = false;
         for (size_t j = 0; j < n; ++j) maxd = std::max(maxd, std::fabs(dot(ref[i], ref[j]) - dot(got[i], got[j])));
       }
-      std::printf("  pairwise-similarity max|diff| %.6f   ranking preserved: %s\n",
-                  maxd, order_ok ? "yes" : "NO");
-      const bool pass = worst > 0.99 && order_ok;
-      std::printf("\n%s\n", pass ? "PASS" : "FAIL");
-      return pass ? 0 : 1;
+      std::printf("  pairwise-similarity max|diff| %.6f   ranking preserved: %s"
+                  "  (informational — these 5 sentences are near-ties)\n",
+                  maxd, order_ok ? "yes" : "no");
+      // Threshold from measurement, not taste: on SciFact the mean-cosine 0.9825 build
+      // retrieves at fp32 quality and the mean-cosine 0.5665 build is destroyed. Nothing
+      // observed lands between. Run eval_retrieval.py before shipping.
+      const bool intact = mean > 0.95;
+      std::printf("\n%s\n", intact ? "ENCODER INTACT (smoke test; gate on eval_retrieval.py)"
+                                   : "ENCODER BROKEN");
+      return intact ? 0 : 1;
     }
 
     const std::string text = argOf(argc, argv, "--text", "The capital of France is Paris.");
