@@ -157,6 +157,10 @@ struct Graph {
   const hbDNNTensorShape& inShape(int i) const { return in[i].properties.validShape; }
   const hbDNNTensorShape& outShape(int i) const { return out[i].properties.validShape; }
   int inType(int i) const { return in[i].properties.tensorType; }
+  int outType(int i) const { return out[i].properties.tensorType; }
+  // Bytes to advance index `dim` by one. Dtype- and padding-agnostic, unlike a hand
+  // computed stride.
+  int64_t outStride(int i, int dim) const { return out[i].properties.stride[dim]; }
   static float scaleOf(const hbDNNTensorProperties& p) {
     const auto& s = p.scale;
     return (s.scaleData && s.scaleLen > 0) ? s.scaleData[0] : 1.0f;

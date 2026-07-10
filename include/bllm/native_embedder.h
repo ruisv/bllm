@@ -6,7 +6,7 @@
 // graph, produced by replacing the recipe's `lm_head` with an identity:
 //
 //   in : tokens[1, seq] s32, positions[seq] s32, mask[seq, cache_len] s16, zeroed KV
-//   out: hidden[1, seq, hidden] s16 (+ KV we ignore)
+//   out: hidden[1, seq, hidden] s16 or f32 (+ KV we ignore)
 //
 // The input template is not negotiable — it was recovered by diffing token ids against
 // the model's own embedder, and getting it wrong silently returns a different vector:
@@ -52,9 +52,15 @@ class NativeEmbedder {
     seq_ = ts.dimensionSize[ts.numDimensions - 1];
     const auto& ms = g_.inShape(2);
     cacheLen_ = ms.dimensionSize[ms.numDimensions - 1];
+    if (g_.inType(2) != HB_DNN_TENSOR_TYPE_S16)
+      throw std::runtime_error("[embed] the encoder's mask input is not s16");
     const auto& os = g_.outShape(0);
     hidden_ = os.dimensionSize[os.numDimensions - 1];
-    hiddenStride_ = native_detail::alignUp((int64_t)hidden_ * 2, native_detail::kAlign) / 2;
+    const int ht = g_.outType(0);
+    if (ht != HB_DNN_TENSOR_TYPE_S16 && ht != HB_DNN_TENSOR_TYPE_F32)
+      throw std::runtime_error("[embed] hidden output is neither s16 nor f32");
+    hiddenIsF32_ = (ht == HB_DNN_TENSOR_TYPE_F32);
+    rowBytes_ = g_.outStride(0, os.numDimensions - 2);   // one seq step, in bytes
     hiddenScale_ = g_.outScale(0);
 
     im_start_ = tk_.token_to_id("<|im_start|>");
@@ -111,10 +117,15 @@ class NativeEmbedder {
 
     // The pooled row is the last REAL token; attention is causal, so the padding after
     // it cannot have influenced it.
-    const int16_t* row = (const int16_t*)g_.outPtr(0) + (size_t)(ids.size() - 1) * hiddenStride_;
+    const auto* row = (const uint8_t*)g_.outPtr(0) + (size_t)(ids.size() - 1) * rowBytes_;
     std::vector<float> v(out_dim);
     double n2 = 0;
-    for (int i = 0; i < out_dim; ++i) { v[i] = row[i] * hiddenScale_; n2 += (double)v[i] * v[i]; }
+    for (int i = 0; i < out_dim; ++i) {
+      // A preserve_precision graph keeps the final norm in fp32, so the hidden comes back
+      // as f32 with no scale; the quantized build returns s16 + a per-tensor scale.
+      v[i] = hiddenIsF32_ ? ((const float*)row)[i] : ((const int16_t*)row)[i] * hiddenScale_;
+      n2 += (double)v[i] * v[i];
+    }
     const float inv = n2 > 0 ? (float)(1.0 / std::sqrt(n2)) : 0.0f;
     for (float& x : v) x *= inv;
     return v;
@@ -146,7 +157,9 @@ class NativeEmbedder {
   Tokenizer tk_;
   hbDNNPackedHandle_t packed_ = nullptr;
   native_detail::Graph g_;
-  int nLayers_ = 0, seq_ = 0, cacheLen_ = 0, hidden_ = 0, hiddenStride_ = 0;
+  int nLayers_ = 0, seq_ = 0, cacheLen_ = 0, hidden_ = 0;
+  int64_t rowBytes_ = 0;
+  bool hiddenIsF32_ = false;
   float hiddenScale_ = 1.0f;
   int im_start_ = -1, im_end_ = -1, eot_ = -1;
 };
