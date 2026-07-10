@@ -32,7 +32,7 @@ ModelConfig loadModelConfig(const std::string& dir) {
   c.name = j.value("name", "");
   c.backend = j.value("backend", "auto");
   c.arch = j.value("arch", "dense");
-  c.graph = j.value("graph", c.is_hybrid() ? "qwen35" : "decode");
+  c.graph = j.value("graph", c.is_hybrid() ? "qwen35" : (c.is_embed() ? "prefill" : "decode"));
   c.cache_len = j.value("cache_len", 0);
   c.rope_theta = j.value("rope_theta", 1e7);
   c.hbm = resolve(dir, j.value("hbm", ""));
@@ -51,6 +51,8 @@ ModelConfig loadModelConfig(const std::string& dir) {
     c.chat.system = ch.value("system", c.chat.system);
   }
   if (c.hbm.empty()) throw std::runtime_error("[bllm] model.json missing 'hbm'");
+  if (c.is_embed() && c.chat.format == "chatml" && c.chat.system.empty())
+    throw std::runtime_error("[bllm] embed model.json needs chat.system (the instruction)");
   if ((c.is_hybrid() || c.is_omni()) && c.embed.empty())
     throw std::runtime_error("[bllm] " + c.arch + " model.json missing 'embed' (host embed table)");
   if (c.is_omni() && c.visual.empty())

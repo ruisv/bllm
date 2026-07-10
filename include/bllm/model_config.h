@@ -20,7 +20,7 @@ struct ModelConfig {
   std::string dir;                               // model directory (paths below resolve against it)
   std::string name;
   std::string backend = "auto";                  // "native" | "libxlm" | "auto"
-  std::string arch;                              // "hybrid" (Qwen3.5) | "omni" (VLM) | "dense" (KV models)
+  std::string arch;                              // "dense" | "hybrid" (SSM) | "omni" (VLM) | "embed" (encoder)
   std::string hbm;                               // resolved absolute path to the .hbm (text tower for omni)
   std::string tokenizer;                         // resolved path to tokenizer.json
   std::string embed;                             // resolved path to the host embed table (hybrid + omni)
@@ -36,6 +36,7 @@ struct ModelConfig {
 
   bool is_hybrid() const { return arch == "hybrid"; }
   bool is_omni() const { return arch == "omni"; }
+  bool is_embed() const { return arch == "embed"; }
 };
 
 // Load + validate `<dir>/model.json`; resolves relative paths against <dir>.

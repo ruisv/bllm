@@ -30,6 +30,10 @@ if(BLLM_HAVE_NATIVE AND BLLM_HAVE_TOKENIZERS)
   add_executable(bllm_chat_native chat_native.cc)
   target_link_libraries(bllm_chat_native PRIVATE bllm::native)
 
+  # Text embeddings (bllm::NativeEmbedder): one encoder graph, last-token pooling.
+  add_executable(bllm_embed_native embed_native.cc)
+  target_link_libraries(bllm_embed_native PRIVATE bllm::native)
+
   # Native VLM (bllm::NativeVlm): image/audio/video + text -> streamed reply.
   # File decoding is vendored (stb_image + dr_wav); video frame sampling
   # (video_io.h) shells out to ffmpeg and is example-only, never in the library.

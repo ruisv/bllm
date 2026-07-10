@@ -31,6 +31,9 @@ class NativeLlm {
     if (cfg_.is_omni())
       throw std::runtime_error("[bllm] '" + cfg_.name + "' is arch=\"omni\" (multimodal); "
                                "load it with bllm::NativeVlm / bllm.NativeVlmSession");
+    if (cfg_.is_embed())
+      throw std::runtime_error("[bllm] '" + cfg_.name + "' is arch=\"embed\" (an encoder, not a "
+                               "generator); load it with bllm::NativeEmbedder");
     if (cfg_.is_hybrid())
       hybrid_ = std::make_unique<NativeHybridEngine>(cfg_.hbm, cfg_.embed, cfg_.graph, cfg_.rope_theta);
     else
