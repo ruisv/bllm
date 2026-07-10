@@ -5,6 +5,7 @@
 // instead of guessing). See docs/PLAN.md (usability, Phase 1).
 #pragma once
 
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,28 @@ struct ModelConfig {
   bool is_omni() const { return arch == "omni"; }
   bool is_embed() const { return arch == "embed"; }
 };
+
+// Which runtime should drive a model.json package: "native" or "libxlm".
+//
+// The decision is not a preference — it is a capability boundary. libxlm's op set cannot
+// express the hybrid Gated-DeltaNet/SSM arch (Qwen3.5), and the SDK gives it no multimodal
+// or encoder entry point that consumes a host-owned embedding stream, so hybrid / omni /
+// embed can ONLY run native. A dense model can run on either (native reached libxlm
+// throughput — see NATIVE_RUNTIME.md SE6), so there the manifest's `backend` field decides,
+// defaulting to native: it is one code path, stops early on stop strings, and carries the
+// CV-coexistence knobs. Set `backend: "libxlm"` in model.json to pin a dense model to the
+// proven runtime. `throw_on_conflict` turns an impossible request (backend "libxlm" on a
+// non-dense arch) into an error instead of silently overriding it.
+inline std::string chooseBackend(const ModelConfig& c, bool throw_on_conflict = true) {
+  const bool dense = !c.is_hybrid() && !c.is_omni() && !c.is_embed();
+  if (!dense) {
+    if (throw_on_conflict && c.backend == "libxlm")
+      throw std::runtime_error("[bllm] model.json requests backend=\"libxlm\" but arch=\"" +
+                               c.arch + "\" only runs on the native runtime");
+    return "native";
+  }
+  return c.backend == "libxlm" ? "libxlm" : "native";   // "native" | "auto" -> native
+}
 
 // Load + validate `<dir>/model.json`; resolves relative paths against <dir>.
 ModelConfig loadModelConfig(const std::string& dir);

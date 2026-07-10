@@ -1,15 +1,20 @@
 """BLLM — BPU LLM runtime for RDK S100 (Python API).
 
-Wraps the D-Robotics OE-LLM runtime (libxlm.so) behind an ergonomic session:
+Two runtimes behind one front door. ``bllm.load(path)`` picks the right one by the model:
+a native model.json package → the hbDNN native engine; a bare libxlm ``.hbm`` / OE-LLM
+package → libxlm. Either way you get a uniform chat/stream surface.
 
     import bllm
-    llm = bllm.LlmSession(
-        "Qwen2.5_1.5B_Instruct_1024.hbm",
-        "Qwen2.5_1.5B_Instruct_config/",
-    )                                   # model_type + chat template auto-detected
-    for chunk in llm.stream("你好"):     # streaming generator
+    llm = bllm.load("qwen3.5-0.8b")          # native (hybrid SSM — libxlm can't run it)
+    for chunk in llm.stream_chat("你好"):     # streaming generator
         print(chunk, end="", flush=True)
-    print(llm.last_stats.decode_tps)
+
+    llm = bllm.load("Qwen2.5_1.5B.hbm",       # bare libxlm .hbm → LlmSession
+                    tokenizer_dir="Qwen2.5_1.5B_config/")
+    print(llm.chat("你好"))
+
+The concrete session classes (LlmSession / NativeSession / NativeVlmSession) remain
+available if you want to pick a backend explicitly.
 """
 
 from __future__ import annotations
@@ -123,6 +128,17 @@ class LlmSession:
     def stream(self, prompt: str) -> Iterator[str]:
         """Yield reply chunks as they decode."""
         return _stream(lambda on_token: self._s.generate(prompt, on_token))
+
+    # chat()/stream_chat() are aliases: libxlm applies the chat template inside the
+    # runtime, so generate() on an Instruct model already IS a chat turn. Having them
+    # lets bllm.load() hand back either backend behind one surface.
+    def chat(self, message: str, on_token: Optional[Callable[[str], None]] = None) -> str:
+        """A chat turn (libxlm manages the template + history internally)."""
+        return self._s.generate(message, on_token)
+
+    def stream_chat(self, message: str) -> Iterator[str]:
+        """A chat turn as a lazy generator of decoded chunks."""
+        return _stream(lambda on_token: self._s.generate(message, on_token))
 
     def set_stop(self, stop: "list[str]") -> "LlmSession":
         """Stop strings: end a reply as soon as any appears, trimmed from stream and
@@ -499,7 +515,89 @@ if _HAVE_NATIVE:
             return self._vlm.video_tokens_per_second
 
 
+def _choose_backend(arch: str, backend_field: str) -> str:
+    """Mirror of C++ bllm::chooseBackend (include/bllm/model_config.h) — kept in step by
+    tests/test_choose_backend.cc on the C++ side and test_backend_routing.py here.
+
+    A capability boundary, not a preference: hybrid / omni / embed can ONLY run native
+    (libxlm's op set can't express them, and it has no host-embedding entry point); dense
+    runs on either, so the manifest's `backend` field decides, defaulting to native."""
+    dense = arch in ("", "dense")
+    if not dense:
+        if backend_field == "libxlm":
+            raise ValueError(f"model.json requests backend='libxlm' but arch='{arch}' "
+                             "only runs on the native runtime")
+        return "native"
+    return "libxlm" if backend_field == "libxlm" else "native"
+
+
+def _read_manifest(path: str) -> "Optional[dict]":
+    """Return the parsed model.json if `path` is a native model package (a directory with
+    one, or the manifest file itself); None if it looks like a bare libxlm .hbm/package."""
+    import json
+    import os
+    if os.path.isdir(path):
+        mj = os.path.join(path, "model.json")
+        if os.path.isfile(mj):
+            with open(mj) as f:
+                return json.load(f)
+        return None
+    if path.endswith(".json") and os.path.isfile(path):
+        with open(path) as f:
+            return json.load(f)
+    return None
+
+
+def load(path: str, *, backend: str = "auto", **kwargs):
+    """Load a model and return a session on the right runtime, chosen automatically.
+
+    Routing (see bllm.chooseBackend rule):
+      * a native package (a directory with model.json) → NativeSession (dense/hybrid) or
+        NativeVlmSession (omni), by its `arch`;
+      * a bare libxlm `.hbm` / OE-LLM package → LlmSession (libxlm).
+    `backend="native"|"libxlm"` forces one and errors if it is impossible. Extra kwargs go
+    to the chosen session's constructor.
+
+        s = bllm.load("qwen3.5-0.8b")      # -> NativeSession (hybrid; libxlm can't run it)
+        s = bllm.load("Qwen2.5_1.5B.hbm", tokenizer_dir="Qwen2.5_1.5B_config/")  # -> libxlm
+        s.chat("你好")                      # uniform surface either way
+    """
+    manifest = _read_manifest(path)
+    if manifest is not None:
+        arch = manifest.get("arch", "dense")
+        chosen = backend if backend != "auto" else _choose_backend(arch, manifest.get("backend", "auto"))
+        if backend == "libxlm" and arch not in ("", "dense"):
+            raise ValueError(f"backend='libxlm' cannot run arch='{arch}' (native only)")
+        if chosen == "libxlm":
+            if not _HAVE_LIBXLM:
+                raise RuntimeError("this install has no libxlm backend (available: "
+                                   f"{available_backends()})")
+            # A native package pinned to libxlm: drive its .hbm through libxlm, using the
+            # package dir as the tokenizer dir (it holds tokenizer.json + config).
+            import os
+            hbm = manifest.get("hbm", "")
+            hbm_path = hbm if os.path.isabs(hbm) else os.path.join(path, hbm)
+            return LlmSession(hbm_path, tokenizer_dir=path, **kwargs)
+        if not _HAVE_NATIVE:
+            raise RuntimeError("this install has no native backend (available: "
+                               f"{available_backends()})")
+        if arch == "omni":
+            return NativeVlmSession(path, **kwargs)
+        if arch == "embed":
+            raise ValueError("arch='embed' is an encoder, not a chat session; use the "
+                             "NativeEmbedder C++ API (no Python binding yet)")
+        return NativeSession(path, **kwargs)   # dense or hybrid
+
+    # Not a native package → a bare libxlm .hbm or OE-LLM package.
+    if backend == "native":
+        raise ValueError("backend='native' needs a model.json directory, not a bare .hbm")
+    if not _HAVE_LIBXLM:
+        raise RuntimeError(f"this install has no libxlm backend (available: {available_backends()})")
+    return LlmSession(path, **kwargs)
+
+
 # ── public surface, per backend actually present ─────────────────────────────
+__all__ += ["load", "available_backends"]
 if _HAVE_LIBXLM:
     __all__ += ["LlmSession", "OmniSession", "VlmSession",
                 "Content", "SamplingParams", "GenerationStats"]
