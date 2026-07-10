@@ -67,7 +67,7 @@ int main(int argc, char** argv) {
       std::vector<int> req = parseIds(line);
       if (req.empty()) { std::printf("E\n"); std::fflush(stdout); continue; }
       for (int id : req) eng.step(id);   // feed the whole turn; last step sets logits
-      eng.generate(req_max, eos, [](int id) { std::printf("T %d\n", id); std::fflush(stdout); });
+      eng.generate(req_max, eos, [](int id) { std::printf("T %d\n", id); std::fflush(stdout); return false; });
       std::printf("E\n"); std::fflush(stdout);
     }
     return 0;
@@ -84,7 +84,7 @@ int main(int argc, char** argv) {
 
   std::printf("ids:");
   auto t0 = clk::now();
-  std::vector<int> gen = eng.generate(max_new, eos, [](int id) { std::printf(" %d", id); std::fflush(stdout); });
+  std::vector<int> gen = eng.generate(max_new, eos, [](int id) { std::printf(" %d", id); std::fflush(stdout); return false; });
   double dt = std::chrono::duration<double>(clk::now() - t0).count();
   std::printf("\n");
   std::fprintf(stderr, "[prefill %zu tok in %.3fs] [decode %zu tok in %.3fs = %.2f tok/s]\n",

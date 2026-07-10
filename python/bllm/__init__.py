@@ -124,6 +124,14 @@ class LlmSession:
         """Yield reply chunks as they decode."""
         return _stream(lambda on_token: self._s.generate(prompt, on_token))
 
+    def set_stop(self, stop: "list[str]") -> "LlmSession":
+        """Stop strings: end a reply as soon as any appears, trimmed from stream and
+        return value. NOTE: libxlm has no cancellation hook, so it still generates to
+        its own eos — the reply is correct but no compute is saved. The native backend
+        (``NativeSession``) stops early. Returns self for chaining."""
+        self._s.set_stop(list(stop))
+        return self
+
     def reset(self) -> None:
         """Clear history so the next generate()/stream() starts fresh."""
         self._s.reset()
@@ -283,6 +291,13 @@ if _HAVE_NATIVE:
             self._llm.set_sampling(temp, top_p, top_k, rep_pen, seed)
             return self
 
+        def set_stop(self, stop: "list[str]") -> "NativeSession":
+            """Persistent stop strings: end each turn as soon as any appears in the reply,
+            trimmed from both the stream and the return value. A per-call ``stop=`` on
+            chat()/generate() overrides. Returns self for chaining."""
+            self._llm.set_stop(list(stop))
+            return self
+
         def set_bpu_priority(self, priority: int) -> "NativeSession":
             """BPU queue priority 0..255 (default 0 = lowest, so a co-resident vision
             pipeline wins the queue).
@@ -301,22 +316,30 @@ if _HAVE_NATIVE:
             return self._llm.last_decode_tps
 
         def chat(self, message: str, max_new: int = 400,
-                 on_text: "Optional[Callable[[str], None]]" = None) -> str:
-            """ChatML multi-turn; returns the full reply (and streams to on_text)."""
-            return self._llm.chat(message, max_new, on_text)
+                 on_text: "Optional[Callable[[str], None]]" = None,
+                 stop: "Optional[list[str]]" = None) -> str:
+            """ChatML multi-turn; returns the full reply (and streams to on_text).
+            stop=[...] ends the turn on any of those strings (trimmed from the reply)."""
+            return self._llm.chat(message, max_new, on_text, list(stop) if stop else [])
 
         def generate(self, prompt: str, max_new: int = 256,
-                     on_text: "Optional[Callable[[str], None]]" = None) -> str:
-            """Raw completion; returns the full text (and streams to on_text)."""
-            return self._llm.generate(prompt, max_new, on_text)
+                     on_text: "Optional[Callable[[str], None]]" = None,
+                     stop: "Optional[list[str]]" = None) -> str:
+            """Raw completion; returns the full text (and streams to on_text).
+            stop=[...] ends generation on any of those strings (trimmed)."""
+            return self._llm.generate(prompt, max_new, on_text, list(stop) if stop else [])
 
-        def stream_chat(self, message: str, max_new: int = 400) -> "Iterator[str]":
+        def stream_chat(self, message: str, max_new: int = 400,
+                        stop: "Optional[list[str]]" = None) -> "Iterator[str]":
             """Chat as a lazy generator of decoded text chunks."""
-            return _stream(lambda cb: self._llm.chat(message, max_new, cb))
+            s = list(stop) if stop else []
+            return _stream(lambda cb: self._llm.chat(message, max_new, cb, s))
 
-        def stream(self, prompt: str, max_new: int = 256) -> "Iterator[str]":
+        def stream(self, prompt: str, max_new: int = 256,
+                   stop: "Optional[list[str]]" = None) -> "Iterator[str]":
             """Raw completion as a lazy generator of decoded text chunks."""
-            return _stream(lambda cb: self._llm.generate(prompt, max_new, cb))
+            s = list(stop) if stop else []
+            return _stream(lambda cb: self._llm.generate(prompt, max_new, cb, s))
 
     def load_video(path: str, fps: float = 2.0, size: int = 448, max_frames: int = 10,
                    with_audio: bool = True, ffmpeg: str = "ffmpeg") -> dict:
@@ -401,6 +424,11 @@ if _HAVE_NATIVE:
             self._vlm.set_sampling(temp, top_p, top_k, rep_pen, seed)
             return self
 
+        def set_stop(self, stop: "list[str]") -> "NativeVlmSession":
+            """Persistent stop strings for every following turn (see NativeSession.set_stop)."""
+            self._vlm.set_stop(list(stop))
+            return self
+
         def set_bpu_priority(self, priority: int) -> "NativeVlmSession":
             """BPU queue priority 0..255 for the text + vision + audio graphs."""
             self._vlm.set_bpu_priority(priority)
@@ -412,15 +440,19 @@ if _HAVE_NATIVE:
             return self._vlm.has_audio
 
         def chat(self, text: str, images=(), audios=(), videos=(), max_new: int = 256,
-                 on_text: "Optional[Callable[[str], None]]" = None) -> str:
-            """Answer a turn of text + images + audio + videos; returns the full reply."""
-            return self._vlm.chat(text, list(images), list(audios), list(videos), max_new, on_text)
+                 on_text: "Optional[Callable[[str], None]]" = None,
+                 stop: "Optional[list[str]]" = None) -> str:
+            """Answer a turn of text + images + audio + videos; returns the full reply.
+            stop=[...] ends the answer on any of those strings (trimmed)."""
+            return self._vlm.chat(text, list(images), list(audios), list(videos), max_new,
+                                  on_text, list(stop) if stop else [])
 
         def stream_chat(self, text: str, images=(), audios=(), videos=(),
-                        max_new: int = 256) -> "Iterator[str]":
+                        max_new: int = 256, stop: "Optional[list[str]]" = None) -> "Iterator[str]":
             """The same turn as a lazy generator of decoded text chunks."""
             imgs, aus, vids = list(images), list(audios), list(videos)
-            return _stream(lambda cb: self._vlm.chat(text, imgs, aus, vids, max_new, cb))
+            s = list(stop) if stop else []
+            return _stream(lambda cb: self._vlm.chat(text, imgs, aus, vids, max_new, cb, s))
 
         # ── live capture: push frames / mic PCM as they arrive, ask any time ──
         #

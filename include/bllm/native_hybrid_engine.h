@@ -137,8 +137,9 @@ class NativeHybridEngine {
   }
 
   // greedy-generate up to max_new; stop on any eos; call on_token(id) per token.
+  // on_token may return true to stop after that token (session-level stop string).
   std::vector<int> generate(int max_new, const std::vector<int>& eos,
-                            const std::function<void(int)>& on_token = {}) {
+                            const std::function<bool(int)>& on_token = {}) {
     std::vector<int> gen;
     using clk = std::chrono::steady_clock;
     auto t0 = clk::now();
@@ -147,7 +148,7 @@ class NativeHybridEngine {
       bool stop = false; for (int e : eos) if (e == tok) { stop = true; break; }
       if (stop) break;
       gen.push_back(tok);
-      if (on_token) on_token(tok);
+      if (on_token && on_token(tok)) break;
       step(tok);
     }
     double dt = std::chrono::duration<double>(clk::now() - t0).count();
@@ -157,8 +158,9 @@ class NativeHybridEngine {
   }
 
   // sample up to p.max_new (temperature/top-k/top-p/rep-pen, seeded); stop on p.eos.
+  // on_token may return true to stop after that token (session-level stop string).
   std::vector<int> generate(const NativeSamplingParams& p,
-                            const std::function<void(int)>& on_token = {}) {
+                            const std::function<bool(int)>& on_token = {}) {
     Sampler s(p);
     std::unordered_set<int> eos(p.eos.begin(), p.eos.end());
     auto logit = [this](int i) -> float {
@@ -173,7 +175,7 @@ class NativeHybridEngine {
       int tok = s.pick(logit, vocab_);
       if (eos.count(tok)) break;
       gen.push_back(tok);
-      if (on_token) on_token(tok);
+      if (on_token && on_token(tok)) break;
       s.record(tok);
       step(tok);
     }

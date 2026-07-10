@@ -23,6 +23,7 @@
 #include "bllm/native_embed.h"
 #include "bllm/native_engine.h"
 #include "bllm/native_vision.h"
+#include "bllm/stop_match.h"
 #include "bllm/tokenizer.h"
 
 #include <algorithm>
@@ -97,6 +98,11 @@ class NativeVlm {
     sampling_.rep_pen = rep_pen; sampling_.seed = seed;
   }
 
+  // Stop strings: end the answer as soon as any appears, trimmed from stream and return.
+  // Persists across turns; the per-call `stop` argument overrides for that call. See
+  // NativeLlm::set_stop.
+  void set_stop(std::vector<std::string> stops) { stop_ = std::move(stops); }
+
   // BPU queue priority for every graph this session owns (text + vision + audio).
   void set_bpu_priority(int priority) {
     sched_.priority = priority;
@@ -116,7 +122,8 @@ class NativeVlm {
   std::string chat(const std::string& text, const std::vector<ImageRGB>& images = {},
                    const std::vector<AudioPCM>& audios = {},
                    const std::vector<VideoClip>& videos = {},
-                   int max_new = 256, const OnText& on_text = {}) {
+                   int max_new = 256, const OnText& on_text = {},
+                   const std::vector<std::string>& stop = {}) {
     if (streaming_) throw std::runtime_error("[bllm] a stream is open; use stream_ask()");
     text_->mark_turn_start();                    // TTFT counts the media encode too
     Stream s(text_->hidden(), text_->next_pos());
@@ -127,7 +134,7 @@ class NativeVlm {
     appendText(s, tk_.encode(text));
     closeTurn(s);
     feedStream(s);
-    return streamDecode(max_new, on_text);
+    return streamDecode(max_new, on_text, stop);
   }
 
   // ── live streaming: push camera frames / microphone PCM as they arrive ──────
@@ -184,7 +191,8 @@ class NativeVlm {
   }
 
   // Flush whatever is buffered, close the media block, ask, and generate.
-  std::string stream_ask(const std::string& text, int max_new = 256, const OnText& on_text = {}) {
+  std::string stream_ask(const std::string& text, int max_new = 256, const OnText& on_text = {},
+                         const std::vector<std::string>& stop = {}) {
     requireStream();
     // TTFT is measured from the question, not from stream_begin: everything the
     // capture loop already pushed was encoded while the camera was still running.
@@ -198,7 +206,7 @@ class NativeVlm {
     closeTurn(s);
     feedStream(s);
     streaming_ = false;
-    return streamDecode(max_new, on_text);
+    return streamDecode(max_new, on_text, stop);
   }
 
   bool streaming() const { return streaming_; }
@@ -421,20 +429,31 @@ class NativeVlm {
     return *audio_;
   }
 
-  std::string streamDecode(int max_new, const OnText& on_text) {
+  // See NativeLlm::streamDecode — same stop-string holdback logic.
+  std::string streamDecode(int max_new, const OnText& on_text,
+                           const std::vector<std::string>& stop = {}) {
+    const StopMatcher matcher(stop.empty() ? stop_ : stop);
     std::vector<int> gen;
-    std::string emitted;
-    auto on_token = [&](int id) {
+    size_t emitted = 0;
+    size_t cut = std::string::npos;
+    std::string full;
+    auto on_token = [&](int id) -> bool {
       gen.push_back(id);
-      std::string full = tk_.decode(gen);
-      if (on_text && full.size() > emitted.size()) on_text(full.substr(emitted.size()));
-      emitted = std::move(full);
+      full = tk_.decode(gen);
+      const auto sc = matcher.scan(full);
+      const size_t show = sc.cut != std::string::npos ? sc.cut : sc.safe;
+      if (on_text && show > emitted) on_text(full.substr(emitted, show - emitted));
+      emitted = std::max(emitted, show);
+      cut = sc.cut;
+      return cut != std::string::npos;
     };
     NativeSamplingParams sp = sampling_;
     sp.max_new = max_new;
     sp.eos = cfg_.eos;
     text_->generate(sp, on_token);
-    return tk_.decode(gen);
+    if (cut != std::string::npos) return full.substr(0, cut);
+    if (on_text && full.size() > emitted) on_text(full.substr(emitted));
+    return full.empty() ? tk_.decode(gen) : full;
   }
 
   ModelConfig cfg_;
@@ -444,6 +463,7 @@ class NativeVlm {
   std::unique_ptr<AudioTower> audio_;           // lazy: only built when audio is fed
   std::unique_ptr<EmbedTable> embed_;
   NativeSamplingParams sampling_;
+  std::vector<std::string> stop_;
   native_detail::BpuSched sched_;
   bool first_turn_ = true;
   int im_start_ = -1, im_end_ = -1, vision_bos_ = -1, vision_eos_ = -1;

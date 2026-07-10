@@ -2,12 +2,14 @@
 // engine + C++ tokenizer + ChatML, no libxlm, no Python). One model directory in,
 // streaming chat out.
 //   ./bllm_chat_native --model <model_dir> [--max-new 400] [--raw] [--bpu-priority 0..255]
+//                      [--stop STR ...]   (repeatable; ends the turn on any of them)
 //   commands: /reset  /exit
 #include "bllm/native_llm.h"
 
 #include <cstdio>
 #include <iostream>
 #include <string>
+#include <vector>
 
 int main(int argc, char** argv) {
   std::string dir;
@@ -15,6 +17,7 @@ int main(int argc, char** argv) {
   float temp = 0.0f, top_p = 1.0f, rep_pen = 1.0f;
   uint64_t seed = 1234;
   bool raw = false;
+  std::vector<std::string> stop;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     if (a == "--model") dir = argv[++i];
@@ -25,6 +28,7 @@ int main(int argc, char** argv) {
     else if (a == "--top-k") top_k = std::atoi(argv[++i]);
     else if (a == "--rep-pen") rep_pen = std::atof(argv[++i]);
     else if (a == "--seed") seed = std::strtoull(argv[++i], nullptr, 10);
+    else if (a == "--stop") stop.push_back(argv[++i]);
     else if (a == "--raw") raw = true;
   }
   if (dir.empty()) {
@@ -37,6 +41,7 @@ int main(int argc, char** argv) {
   bllm::NativeLlm llm(dir);
   if (bpu_priority >= 0) llm.set_bpu_priority(bpu_priority);
   llm.set_sampling(temp, top_p, top_k, rep_pen, seed);
+  if (!stop.empty()) llm.set_stop(stop);
   const auto& c = llm.config();
   std::fprintf(stderr, "[loaded] %s  arch=%s  backend=native  vocab=%d  (%s)\n",
                c.name.c_str(), c.arch.c_str(), llm.tokenizer().vocab_size(),

@@ -17,6 +17,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "bllm/common.h"
 #include "bllm/types.h"
@@ -51,6 +52,13 @@ class LlmSession {
   // Drop the runtime-side KV-cache / history so the next generate() starts a
   // fresh conversation.
   void reset();
+
+  // Stop strings: end a reply as soon as any appears, trimmed from both the stream
+  // and the return value (its prefix is held back mid-stream until it completes).
+  // CAVEAT: libxlm exposes no cancellation hook, so unlike the native backend this
+  // cannot stop the runtime early — it generates to its own eos and we stop forwarding.
+  // The reply is correct; the compute is not saved. Empty clears them.
+  void set_stop(std::vector<std::string> stop);
 
   // Timing of the most recent generate() (TTFT, decode tok/s, ...).
   const GenerationStats& last_stats() const;

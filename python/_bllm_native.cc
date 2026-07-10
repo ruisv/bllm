@@ -54,13 +54,17 @@ NB_MODULE(_bllm_native, m) {
       .def(
           "generate",
           [](bllm::NativeEngine& e, const bllm::NativeSamplingParams& p, nb::object on_token) {
-            std::function<void(int)> cb;
+            std::function<bool(int)> cb;
             if (!on_token.is_none())
-              cb = [on_token](int t) { on_token(t); };
+              cb = [on_token](int t) {   // a truthy return stops after this token
+                nb::object r = on_token(t);
+                return !r.is_none() && nb::cast<bool>(r);
+              };
             return e.generate(p, cb);
           },
           "params"_a, "on_token"_a = nb::none(),
-          "Generate up to params.max_new ids; stop on eos; on_token(id) streams.")
+          "Generate up to params.max_new ids; stop on eos; on_token(id) streams. "
+          "on_token may return True to stop early.")
       .def("last_stats", &bllm::NativeEngine::last_stats)
       .def_prop_ro("n_layers", &bllm::NativeEngine::n_layers)
       .def_prop_ro("n_kv", &bllm::NativeEngine::n_kv)
@@ -72,12 +76,13 @@ NB_MODULE(_bllm_native, m) {
 #ifdef BLLM_HAVE_TOKENIZERS
   // The unified, string-in/out session: load a model DIRECTORY (model.json),
   // auto-pick the hybrid/dense engine + tokenizer + ChatML, chat in one call.
-  auto run = [](auto method, auto& llm, const std::string& text, int max_new, nb::object on_text) {
+  auto run = [](auto method, auto& llm, const std::string& text, int max_new, nb::object on_text,
+                const std::vector<std::string>& stop) {
     std::function<void(const std::string&)> cb;
     if (!on_text.is_none())
       cb = [&on_text](const std::string& s) { nb::gil_scoped_acquire g; on_text(s); };
     std::string out;
-    { nb::gil_scoped_release r; out = method(llm, text, max_new, cb); }
+    { nb::gil_scoped_release r; out = method(llm, text, max_new, cb, stop); }
     return out;
   };
   nb::class_<bllm::NativeLlm>(m, "NativeLlm")
@@ -85,26 +90,34 @@ NB_MODULE(_bllm_native, m) {
            "Load a model directory (model.json) — native engine + C++ tokenizer, no libxlm.")
       .def(
           "chat",
-          [run](bllm::NativeLlm& llm, const std::string& msg, int max_new, nb::object on_text) {
+          [run](bllm::NativeLlm& llm, const std::string& msg, int max_new, nb::object on_text,
+                const std::vector<std::string>& stop) {
             return run([](bllm::NativeLlm& l, const std::string& t, int n,
-                          const std::function<void(const std::string&)>& c) { return l.chat(t, n, c); },
-                       llm, msg, max_new, on_text);
+                          const std::function<void(const std::string&)>& c,
+                          const std::vector<std::string>& st) { return l.chat(t, n, c, st); },
+                       llm, msg, max_new, on_text, stop);
           },
-          "message"_a, "max_new"_a = 400, "on_text"_a = nb::none(),
-          "ChatML multi-turn (context persists); on_text(str) streams decoded deltas.")
+          "message"_a, "max_new"_a = 400, "on_text"_a = nb::none(), "stop"_a = std::vector<std::string>(),
+          "ChatML multi-turn (context persists); on_text(str) streams decoded deltas. "
+          "stop=[...] ends the turn on any of those strings (trimmed from the reply).")
       .def(
           "generate",
-          [run](bllm::NativeLlm& llm, const std::string& prompt, int max_new, nb::object on_text) {
+          [run](bllm::NativeLlm& llm, const std::string& prompt, int max_new, nb::object on_text,
+                const std::vector<std::string>& stop) {
             return run([](bllm::NativeLlm& l, const std::string& t, int n,
-                          const std::function<void(const std::string&)>& c) { return l.generate(t, n, c); },
-                       llm, prompt, max_new, on_text);
+                          const std::function<void(const std::string&)>& c,
+                          const std::vector<std::string>& st) { return l.generate(t, n, c, st); },
+                       llm, prompt, max_new, on_text, stop);
           },
-          "prompt"_a, "max_new"_a = 256, "on_text"_a = nb::none(),
-          "Raw completion; on_text(str) streams decoded deltas.")
+          "prompt"_a, "max_new"_a = 256, "on_text"_a = nb::none(), "stop"_a = std::vector<std::string>(),
+          "Raw completion; on_text(str) streams decoded deltas. stop=[...] ends generation "
+          "on any of those strings (trimmed from the reply).")
       .def("reset", &bllm::NativeLlm::reset, "Start a fresh conversation.")
       .def("set_sampling", &bllm::NativeLlm::set_sampling,
            "temp"_a = 0.0f, "top_p"_a = 1.0f, "top_k"_a = 0, "rep_pen"_a = 1.0f, "seed"_a = 1234,
            "Set sampling (temp<=0 => greedy). Applies to the next generate()/chat().")
+      .def("set_stop", &bllm::NativeLlm::set_stop, "stop"_a,
+           "Persistent stop strings for every following turn (a per-call stop=[...] overrides).")
       .def("set_bpu_priority", &bllm::NativeLlm::set_bpu_priority, "priority"_a,
            "BPU queue priority 0..255 (default 0 = lowest, yields to a vision pipeline). "
            "Orders the queue; does not preempt a running graph.")
@@ -127,7 +140,7 @@ NB_MODULE(_bllm_native, m) {
       .def(
           "chat",
           [](bllm::NativeVlm& vlm, const std::string& text, nb::list images, nb::list audios,
-             nb::list videos, int max_new, nb::object on_text) {
+             nb::list videos, int max_new, nb::object on_text, const std::vector<std::string>& stop) {
             // deques: decoded media must not move, since the *Ref structs point into it.
             std::deque<bllm::OwnedImage> ownedImg;
             std::deque<bllm::OwnedAudio> ownedAu;
@@ -170,14 +183,14 @@ NB_MODULE(_bllm_native, m) {
             if (!on_text.is_none())
               cb = [&on_text](const std::string& s) { nb::gil_scoped_acquire g; on_text(s); };
             std::string out;
-            { nb::gil_scoped_release r; out = vlm.chat(text, imgs, aus, vids, max_new, cb); }
+            { nb::gil_scoped_release r; out = vlm.chat(text, imgs, aus, vids, max_new, cb, stop); }
             return out;
           },
           "text"_a, "images"_a = nb::list(), "audios"_a = nb::list(), "videos"_a = nb::list(),
-          "max_new"_a = 256, "on_text"_a = nb::none(),
+          "max_new"_a = 256, "on_text"_a = nb::none(), "stop"_a = std::vector<std::string>(),
           "Answer a turn of text + images (paths or HxWx3 uint8) + audio (wav paths or "
           "16 kHz mono float32) + videos ({'frames':[...], 'fps':2.0, 'audio':pcm|path}); "
-          "on_text(str) streams.")
+          "on_text(str) streams. stop=[...] ends the answer on any of those strings.")
       // Live streaming: push camera frames / mic PCM as they arrive, ask any time.
       .def("stream_begin", &bllm::NativeVlm::stream_begin, "fps"_a = 2.0, "with_audio"_a = true,
            "Open a live media turn. fps<=0 means audio only.")
@@ -198,16 +211,17 @@ NB_MODULE(_bllm_native, m) {
           "pcm"_a, "Push 16 kHz mono float32 samples.")
       .def(
           "stream_ask",
-          [](bllm::NativeVlm& vlm, const std::string& text, int max_new, nb::object on_text) {
+          [](bllm::NativeVlm& vlm, const std::string& text, int max_new, nb::object on_text,
+             const std::vector<std::string>& stop) {
             std::function<void(const std::string&)> cb;
             if (!on_text.is_none())
               cb = [&on_text](const std::string& s) { nb::gil_scoped_acquire g; on_text(s); };
             std::string out;
-            { nb::gil_scoped_release r; out = vlm.stream_ask(text, max_new, cb); }
+            { nb::gil_scoped_release r; out = vlm.stream_ask(text, max_new, cb, stop); }
             return out;
           },
-          "text"_a, "max_new"_a = 256, "on_text"_a = nb::none(),
-          "Close the live media block, ask, and generate.")
+          "text"_a, "max_new"_a = 256, "on_text"_a = nb::none(), "stop"_a = std::vector<std::string>(),
+          "Close the live media block, ask, and generate. stop=[...] ends on any of those strings.")
       .def_prop_ro("streaming", &bllm::NativeVlm::streaming)
       .def_prop_ro("context_left", &bllm::NativeVlm::context_left)
       .def_prop_ro("tokens_used", &bllm::NativeVlm::tokens_used)
@@ -215,6 +229,8 @@ NB_MODULE(_bllm_native, m) {
       .def("reset", &bllm::NativeVlm::reset, "Start a fresh conversation.")
       .def("set_sampling", &bllm::NativeVlm::set_sampling,
            "temp"_a = 0.0f, "top_p"_a = 1.0f, "top_k"_a = 0, "rep_pen"_a = 1.0f, "seed"_a = 1234)
+      .def("set_stop", &bllm::NativeVlm::set_stop, "stop"_a,
+           "Persistent stop strings for every following turn (a per-call stop=[...] overrides).")
       .def("set_bpu_priority", &bllm::NativeVlm::set_bpu_priority, "priority"_a,
            "BPU queue priority 0..255 for the text + vision + audio graphs.")
       .def_prop_ro("vision_tokens", &bllm::NativeVlm::vision_tokens)

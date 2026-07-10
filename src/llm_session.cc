@@ -7,6 +7,7 @@
 #include <mutex>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "bllm/package.h"
 
@@ -64,6 +65,7 @@ struct LlmSession::Impl {
   std::mutex mu;                // serialize infer on a single handle
   bool next_new_chat = true;    // first turn (and post-reset) starts fresh
   GenerationStats last_stats;
+  std::vector<std::string> stop; // stop strings (trimmed post-hoc; libxlm can't cancel)
 
   // Backing storage kept alive for the handle's lifetime (xlm keeps pointers).
   std::string model_path, tokenizer_dir, config_path, chat_template, system_prompt;
@@ -174,6 +176,7 @@ std::string LlmSession::generate(std::string_view prompt,
 
   CallContext ctx;
   ctx.on_token = on_token ? &on_token : nullptr;
+  ctx.stop = StopMatcher(s.stop);
   ctx.t_start = Clock::now();
 
   const std::string prompt_str(prompt);
@@ -198,6 +201,7 @@ std::string LlmSession::generate(std::string_view prompt,
   int ret = xlm_infer(s.handle, &input, &ctx);
   BLLM_CHECK_XLM(ret, "xlm_infer failed");
   BLLM_CHECK(!ctx.error, "runtime reported XLM_STATE_ERROR during generation");
+  ctx.finish_stream();      // flush a held-back tail / trim the reply at a stop string
 
   s.next_new_chat = false;  // subsequent turns continue the conversation
   s.last_stats = ComputeStats(ctx);
@@ -205,6 +209,10 @@ std::string LlmSession::generate(std::string_view prompt,
 }
 
 void LlmSession::reset() { impl_->next_new_chat = true; }
+
+void LlmSession::set_stop(std::vector<std::string> stop) {
+  impl_->stop = std::move(stop);
+}
 
 const GenerationStats& LlmSession::last_stats() const {
   return impl_->last_stats;

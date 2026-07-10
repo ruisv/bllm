@@ -136,6 +136,10 @@ NB_MODULE(_bllm, m) {
           "each streamed chunk. Returns the full reply.")
       .def("reset", &bllm::LlmSession::reset,
            "Clear history so the next generate() starts a fresh conversation.")
+      .def("set_stop", &bllm::LlmSession::set_stop, "stop"_a,
+           "Stop strings: end a reply as soon as any appears, trimmed from stream and "
+           "return value. Note: libxlm cannot cancel, so it still generates to its own "
+           "eos (no compute saved); use the native backend to actually stop early.")
       .def_prop_ro("last_stats", &bllm::LlmSession::last_stats)
       .def_prop_ro("model_type", [](const bllm::LlmSession& self) {
         return std::string(bllm::ToString(self.options().model_type));

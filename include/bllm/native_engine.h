@@ -365,9 +365,11 @@ class NativeEngine {
     feedEmbedsNoMark(rows, n, pos);
   }
 
-  // sample up to p.max_new tokens; stop on eos; call on_token(id) per token.
+  // sample up to p.max_new tokens; stop on eos; call on_token(id) per token. on_token may
+  // return true to stop after that token (e.g. a session-level stop string matched) —
+  // this breaks before the next decode step, so nothing is generated past the stop.
   std::vector<int> generate(const NativeSamplingParams& p,
-                            const std::function<void(int)>& on_token = {}) {
+                            const std::function<bool(int)>& on_token = {}) {
     Sampler s;
     s.temp = p.temp; s.topp = p.top_p; s.rep_pen = p.rep_pen; s.topk = p.top_k;
     s.rng.seed(p.seed);
@@ -383,7 +385,8 @@ class NativeEngine {
       if (eos.count(tok)) break;
       if (gen.empty()) { tFirst = clk::now(); stats_.ttft_ms = std::chrono::duration<double>(tFirst - tTurn_).count() * 1000.0; }
       gen.push_back(tok);
-      if (on_token) on_token(tok);
+      const bool stop = on_token && on_token(tok);
+      if (stop) break;                          // skip the next decode step we won't use
       s.record(tok);
       decodeStepToken(tok);
     }

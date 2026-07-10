@@ -85,7 +85,7 @@ int main(int argc, char** argv) {
       std::vector<int> ids = parseIds(line);
       if (ids.empty()) { std::printf("END\n"); std::fflush(stdout); continue; }
       eng.feed(ids);
-      eng.generate(req, [](int t) { std::printf("TOK %d\n", t); std::fflush(stdout); });
+      eng.generate(req, [](int t) { std::printf("TOK %d\n", t); std::fflush(stdout); return false; });
       const auto& s = eng.last_stats();
       std::printf("STATS ttft_ms=%.1f decode_tps=%.2f ntok=%d\n",
                   s.ttft_ms, s.decode_tps, s.ntok);

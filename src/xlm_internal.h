@@ -17,6 +17,7 @@
 #include <string_view>
 
 #include "bllm/common.h"
+#include "bllm/stop_match.h"
 #include "bllm/types.h"
 #include "xlm.h"  // OE-LLM runtime C API (board SDK only; located by CMake)
 
@@ -70,11 +71,45 @@ struct CallContext {
   std::string accum;
   bool error = false;
 
+  // Stop strings. libxlm has no cancellation API — xlm_infer blocks and its callback
+  // returns void — so we cannot halt the runtime early; it keeps generating to its own
+  // eos and we simply stop forwarding once a stop string appears. So the STREAM and the
+  // RETURN value are trimmed correctly (with prefix holdback), but no compute is saved.
+  StopMatcher stop;
+  size_t emitted = 0;                 // bytes of `accum` already forwarded to on_token
+  size_t cut = std::string::npos;     // where a stop string began, once seen
+
   Clock::time_point t_start;
   Clock::time_point t_first;
   Clock::time_point t_end;
   int32_t chunk_count = 0;
   bool have_first = false;
+
+  // Stream a chunk through the stop matcher: emit only what is safe, hold back a live
+  // stop-string prefix, and latch `cut` at the first complete stop.
+  void ingest(std::string_view text) {
+    if (cut != std::string::npos) return;    // already past a stop; drop the rest
+    accum.append(text.data(), text.size());
+    if (stop.empty()) {
+      if (on_token && *on_token) (*on_token)(text);
+      emitted = accum.size();
+      return;
+    }
+    const auto sc = stop.scan(accum);
+    const size_t show = sc.cut != std::string::npos ? sc.cut : sc.safe;
+    if (on_token && *on_token && show > emitted)
+      (*on_token)(std::string_view(accum).substr(emitted, show - emitted));
+    if (show > emitted) emitted = show;
+    cut = sc.cut;
+  }
+
+  // Called after xlm_infer returns: flush any held-back tail (no stop completed) and
+  // trim the accumulated reply at the stop.
+  void finish_stream() {
+    if (cut != std::string::npos) { accum.resize(cut); return; }
+    if (on_token && *on_token && accum.size() > emitted)
+      (*on_token)(std::string_view(accum).substr(emitted));
+  }
 };
 
 // The single C callback shared by every session; `userdata` selects the call.
@@ -90,8 +125,7 @@ inline void Trampoline(xlm_result_t* result, xlm_state_t state, void* userdata) 
           ctx->t_first = Clock::now();
         }
         ++ctx->chunk_count;
-        ctx->accum += result->text;
-        if (ctx->on_token && *ctx->on_token) (*ctx->on_token)(result->text);
+        ctx->ingest(result->text);
       }
       break;
     case XLM_STATE_END:

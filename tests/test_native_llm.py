@@ -40,6 +40,28 @@ def test_chat_and_stream(llm):
     assert llm.last_decode_tps >= 0
 
 
+def test_stop_string_trims_reply_and_stream(llm):
+    """A stop string ends the turn, and appears in neither the return value nor the
+    streamed chunks — its own prefix is held back until it completes."""
+    llm.reset()
+    # Count 1..9 on separate lines, then stop at "5". The reply must end before it, and
+    # the stop string spans the "\n" / "5" token boundary, so this exercises the holdback.
+    chunks = []
+    reply = llm.chat("从1数到9，每个数字单独一行，只输出数字。", max_new=60,
+                     on_text=chunks.append, stop=["5"])
+    assert "5" not in reply, reply
+    assert "1" in reply and "4" in reply, reply
+    assert "5" not in "".join(chunks), chunks           # nothing past the stop leaked
+    assert "".join(chunks) == reply                     # stream and return agree
+
+
+def test_stop_string_absent_returns_full_reply(llm):
+    """A stop string that never occurs must not truncate anything."""
+    llm.reset()
+    reply = llm.chat("只回答一个字：好", max_new=8, stop=["\n\n\n<<never>>"])
+    assert reply.strip()
+
+
 def test_multi_turn_recalls_context(llm):
     llm.reset()
     llm.chat("请记住数字 4271。", max_new=24)

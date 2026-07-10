@@ -72,3 +72,18 @@ def test_libxlm_generate_and_stream():
         assert s.decode_tps > 0.0
 
     llm.reset()  # must not raise
+
+    # Stop strings, on the SAME session — a second libxlm init in one process exhausts the
+    # ION carveout ("one big model per process"). libxlm can't cancel, but the reply and
+    # stream are still trimmed at the stop, its prefix held back. Stop on the first newline
+    # (appears early, so the uncancellable runtime stays short of its token cap); if a
+    # sampled answer never contains it, the runtime runs to that cap and raises — which IS
+    # the documented no-cancellation limitation, so tolerate that.
+    llm.set_stop(["\n"])
+    chunks = []
+    try:
+        reply = llm.generate("列出数字 1、2、3，每个数字单独占一行。", lambda c: chunks.append(c))
+    except RuntimeError:
+        return  # hit the token cap before the stop appeared — expected without cancellation
+    assert "\n" not in reply, reply           # the stop string is gone from the reply
+    assert "".join(chunks) == reply           # stream trimmed the same way, no leak

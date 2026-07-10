@@ -11,6 +11,7 @@
 #include "bllm/model_config.h"
 #include "bllm/native_engine.h"
 #include "bllm/native_hybrid_engine.h"
+#include "bllm/stop_match.h"
 #include "bllm/tokenizer.h"
 
 #include <functional>
@@ -48,6 +49,12 @@ class NativeLlm {
     sampling_.temp = temp; sampling_.top_p = top_p; sampling_.top_k = top_k;
     sampling_.rep_pen = rep_pen; sampling_.seed = seed;
   }
+
+  // Stop strings: end a turn as soon as any of them appears in the decoded text, and
+  // return the reply WITHOUT the stop string. Complements eos-token stopping (a stop
+  // string can span tokens, and need not be a token). Empty clears them. Persists across
+  // turns; a per-call `stop` argument overrides for that call only.
+  void set_stop(std::vector<std::string> stops) { stop_ = std::move(stops); }
   // BPU queue priority (0..255). Lowest (the default) lets a co-resident vision
   // pipeline jump the queue. Note: it orders the queue, it does not preempt a graph
   // that is already running — see native_detail::BpuSched.
@@ -71,15 +78,17 @@ class NativeLlm {
   }
 
   // Raw completion: continue `prompt`. Streams decoded text to on_text (delta) if set.
-  std::string generate(const std::string& prompt, int max_new = 256, const OnText& on_text = {}) {
+  std::string generate(const std::string& prompt, int max_new = 256, const OnText& on_text = {},
+                       const std::vector<std::string>& stop = {}) {
     feedIds(tk_.encode(prompt));
-    return streamDecode(max_new, on_text);
+    return streamDecode(max_new, on_text, stop);
   }
 
   // ChatML multi-turn: context persists across calls (feed only the new turn).
-  std::string chat(const std::string& msg, int max_new = 256, const OnText& on_text = {}) {
+  std::string chat(const std::string& msg, int max_new = 256, const OnText& on_text = {},
+                   const std::vector<std::string>& stop = {}) {
     if (cfg_.chat.format != "chatml" || cfg_.chat.im_start < 0)
-      return generate(msg, max_new, on_text);   // no template → raw
+      return generate(msg, max_new, on_text, stop);   // no template → raw
     const int S = cfg_.chat.im_start, E = cfg_.chat.im_end;
     std::vector<int> ids;
     auto add = [&](const std::vector<int>& v) { ids.insert(ids.end(), v.begin(), v.end()); };
@@ -89,7 +98,7 @@ class NativeLlm {
     add({S}); add(tk_.encode("assistant\n"));
     first_turn_ = false;
     feedIds(ids);
-    return streamDecode(max_new, on_text);
+    return streamDecode(max_new, on_text, stop);
   }
 
  private:
@@ -100,21 +109,35 @@ class NativeLlm {
   }
 
   // Generate up to max_new, streaming decoded deltas; returns the full reply text.
-  std::string streamDecode(int max_new, const OnText& on_text) {
+  // A stop string ends the turn and is trimmed from both the stream and the return value;
+  // its own prefix is held back from the stream until it completes or is ruled out.
+  std::string streamDecode(int max_new, const OnText& on_text,
+                           const std::vector<std::string>& stop) {
+    const StopMatcher matcher(stop.empty() ? stop_ : stop);
     std::vector<int> gen;
-    std::string emitted;
-    auto on_token = [&](int id) {
+    size_t emitted = 0;      // bytes already streamed to on_text
+    size_t cut = std::string::npos;
+    std::string full;
+    auto on_token = [&](int id) -> bool {
       gen.push_back(id);
-      std::string full = tk_.decode(gen);
-      if (on_text && full.size() > emitted.size()) on_text(full.substr(emitted.size()));
-      emitted = std::move(full);
+      full = tk_.decode(gen);
+      const auto sc = matcher.scan(full);
+      const size_t show = sc.cut != std::string::npos ? sc.cut : sc.safe;
+      if (on_text && show > emitted) on_text(full.substr(emitted, show - emitted));
+      emitted = std::max(emitted, show);
+      cut = sc.cut;
+      return cut != std::string::npos;           // stop string hit → break the loop
     };
     NativeSamplingParams sp = sampling_;
     sp.max_new = max_new;
     if (!cfg_.eos.empty()) sp.eos = cfg_.eos;
     if (hybrid_) hybrid_->generate(sp, on_token);
     else dense_->generate(sp, on_token);
-    return tk_.decode(gen);
+    if (cut != std::string::npos) return full.substr(0, cut);
+    // No stop string: flush any suffix held back mid-stream (a stop-prefix that never
+    // completed) so the stream ends up with the whole reply.
+    if (on_text && full.size() > emitted) on_text(full.substr(emitted));
+    return full.empty() ? tk_.decode(gen) : full;
   }
 
   ModelConfig cfg_;
@@ -122,6 +145,7 @@ class NativeLlm {
   std::unique_ptr<NativeHybridEngine> hybrid_;
   std::unique_ptr<NativeEngine> dense_;
   NativeSamplingParams sampling_;                 // default: greedy
+  std::vector<std::string> stop_;                 // persistent stop strings (default: none)
   bool first_turn_ = true;
 };
 
