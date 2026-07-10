@@ -81,6 +81,22 @@ def test_sampling_knobs_at_libxlm_parity(llm):
     llm.set_sampling()                                     # restore greedy for later tests
 
 
+def test_prompt_cache_round_trips_bit_identically(llm, tmp_path):
+    """save_state/load_state (libxlm's path_prompt_cache): feeding a prefix then saving,
+    reloading, and continuing must reproduce the in-one-go greedy continuation exactly."""
+    llm.reset(); llm.set_sampling()                        # greedy → deterministic
+    r1 = llm.generate("北京是", max_new=24)
+    llm.reset()
+    llm.generate("北京是", max_new=0)                       # feed the prefix, generate nothing
+    path = str(tmp_path / "state.bin")
+    llm.save_state(path)
+    llm.reset()
+    llm.load_state(path)
+    r2 = llm.generate("", max_new=24)                      # continue from the restored state
+    assert r1 == r2 and r1
+    llm.reset()
+
+
 def test_generate_async_returns_a_future(llm):
     """chat_async submits on a background thread and hands back a Future (libxlm's
     xlm_infer_async intent): it returns before generation finishes, result() blocks."""

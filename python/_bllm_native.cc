@@ -128,6 +128,11 @@ NB_MODULE(_bllm_native, m) {
           "text"_a,
           "Teacher-forced perplexity of raw text (no chat template). Resets the "
           "conversation. libxlm's xlm_ppl on the native path.")
+      .def("save_state", &bllm::NativeLlm::save_state, "path"_a,
+           "Save the conversation KV(+SSM) state to a file (libxlm's path_prompt_cache): "
+           "evaluate a shared prefix once, reload it later to skip re-prefill.")
+      .def("load_state", &bllm::NativeLlm::load_state, "path"_a,
+           "Restore a state saved by save_state(); generate() resumes bit-identically.")
       .def("set_sampling", &bllm::NativeLlm::set_sampling,
            "temp"_a = 0.0f, "top_p"_a = 1.0f, "top_k"_a = 0, "rep_pen"_a = 1.0f, "seed"_a = 1234,
            "min_p"_a = 0.0f, "typ_p"_a = 1.0f, "min_keep"_a = 1, "penalty_last_n"_a = 64,

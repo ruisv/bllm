@@ -407,6 +407,18 @@ if _HAVE_NATIVE:
             Resets the conversation. The native equivalent of libxlm's xlm_ppl."""
             return self._llm.perplexity(text)
 
+        def save_state(self, path: str) -> "NativeSession":
+            """Save the conversation's KV(+SSM) state to a file — libxlm's path_prompt_cache.
+            Feed a shared prefix once, save, and reload it later to skip re-prefill."""
+            self._llm.save_state(path)
+            return self
+
+        def load_state(self, path: str) -> "NativeSession":
+            """Restore a state written by save_state(); chat()/generate() resume from it
+            bit-identically. The state is bound to this model."""
+            self._llm.load_state(path)
+            return self
+
     def load_video(path: str, fps: float = 2.0, size: int = 448, max_frames: int = 10,
                    with_audio: bool = True, ffmpeg: str = "ffmpeg") -> dict:
         """Sample a video file into the ``videos=`` argument of NativeVlmSession.chat.

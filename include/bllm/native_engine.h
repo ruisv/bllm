@@ -28,6 +28,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <fstream>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -325,6 +326,55 @@ class NativeEngine {
       vRing_[l].flush(0, (uint64_t)cacheLen_ * rowV_, HB_SYS_MEM_CACHE_CLEAN);
     }
     P_ = 0; maxPos_ = -1; curLogits_ = nullptr;
+  }
+
+  // Save/restore the conversation's KV state to a file — libxlm's path_prompt_cache. A long
+  // shared prefix can be fed once, saved, and reloaded to skip re-prefill. The exact last
+  // logits are saved too, so generate() resumes bit-identically. Bound to this model's
+  // shape (rejected on load if it differs) and to a context within the window (P_ <=
+  // cache_len). Not for the sliding-window regime.
+  void save_state(const std::string& path) {
+    if (!curLogits_) throw std::runtime_error("[native] no state to save — feed a prompt first");
+    if (mode_ != InputMode::Token)
+      throw std::runtime_error("[native] save_state is only for the token path");
+    if (P_ > cacheLen_) throw std::runtime_error("[native] cannot snapshot a context past cache_len");
+    std::ofstream f(path, std::ios::binary);
+    if (!f) throw std::runtime_error("[native] cannot write state: " + path);
+    const int32_t hdr[] = {kStateMagic, nLayers_, (int32_t)rowK_, (int32_t)rowV_, vocab_,
+                           cacheLen_, P_, maxPos_};
+    f.write((const char*)hdr, sizeof(hdr));
+    const int D = filled();
+    for (int l = 0; l < nLayers_; ++l) {
+      kRing_[l].flush((uint64_t)(W_ + cacheLen_ - D) * rowK_, (uint64_t)D * rowK_, HB_SYS_MEM_CACHE_INVALIDATE);
+      f.write((const char*)kRow(l, W_ + cacheLen_ - D), (size_t)D * rowK_);
+      vRing_[l].flush((uint64_t)(W_ + cacheLen_ - D) * rowV_, (uint64_t)D * rowV_, HB_SYS_MEM_CACHE_INVALIDATE);
+      f.write((const char*)vRow(l, W_ + cacheLen_ - D), (size_t)D * rowV_);
+    }
+    f.write((const char*)curLogits_, (size_t)vocab_ * sizeof(int16_t));
+    if (!f) throw std::runtime_error("[native] failed writing state: " + path);
+  }
+
+  void load_state(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) throw std::runtime_error("[native] cannot read state: " + path);
+    int32_t hdr[8];
+    f.read((char*)hdr, sizeof(hdr));
+    if (!f || hdr[0] != kStateMagic || hdr[1] != nLayers_ || hdr[2] != (int32_t)rowK_ ||
+        hdr[3] != (int32_t)rowV_ || hdr[4] != vocab_ || hdr[5] != cacheLen_)
+      throw std::runtime_error("[native] state file does not match this model");
+    const int savedP = hdr[6], savedMax = hdr[7], D = savedP;   // P_ <= cache_len at save
+    reset();
+    for (int l = 0; l < nLayers_; ++l) {
+      f.read((char*)kRow(l, cacheLen_ - D), (size_t)D * rowK_);
+      kRing_[l].flush((uint64_t)(cacheLen_ - D) * rowK_, (uint64_t)D * rowK_, HB_SYS_MEM_CACHE_CLEAN);
+      f.read((char*)vRow(l, cacheLen_ - D), (size_t)D * rowV_);
+      vRing_[l].flush((uint64_t)(cacheLen_ - D) * rowV_, (uint64_t)D * rowV_, HB_SYS_MEM_CACHE_CLEAN);
+    }
+    savedLogits_.resize(vocab_);
+    f.read((char*)savedLogits_.data(), (size_t)vocab_ * sizeof(int16_t));
+    if (!f) throw std::runtime_error("[native] truncated state file: " + path);
+    P_ = savedP; maxPos_ = savedMax; W_ = 0;
+    curLogits_ = savedLogits_.data();      // generate() reads this until the first decode step
   }
 
   // Start the clock for the next reply's TTFT. feed() does this automatically;
@@ -645,6 +695,8 @@ class NativeEngine {
   float logitScale_ = 1.0f, embInvScale_ = 1.0f, ropeInvScale_ = 1.0f;
   int P_ = 0, maxPos_ = -1;
   const int16_t* curLogits_ = nullptr;
+  static constexpr int32_t kStateMagic = 0x424C4B31;   // "BLK1" — prompt-cache file tag
+  std::vector<int16_t> savedLogits_;                   // holds the restored last logits
   std::chrono::steady_clock::time_point tTurn_ = std::chrono::steady_clock::now();
   NativeStats stats_;
   std::function<void(int, float*)> embedder_;

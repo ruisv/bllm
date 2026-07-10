@@ -82,6 +82,17 @@ class NativeLlm {
     return hybrid_ ? hybrid_->perplexity(ids) : dense_->perplexity(ids);
   }
 
+  // Save/restore the conversation's KV (+ SSM) state — libxlm's path_prompt_cache. Evaluate
+  // a shared prefix once, save, and reload later to skip re-prefill; generate() resumes
+  // bit-identically. A state is bound to this model; loading one from another is rejected.
+  void save_state(const std::string& path) {
+    if (hybrid_) hybrid_->save_state(path); else dense_->save_state(path);
+  }
+  void load_state(const std::string& path) {
+    if (hybrid_) hybrid_->load_state(path); else dense_->load_state(path);
+    first_turn_ = false;                 // a restored context is mid-conversation
+  }
+
   double last_decode_tps() const {
     return hybrid_ ? hybrid_->last_stats().decode_tps : dense_->last_stats().decode_tps;
   }
