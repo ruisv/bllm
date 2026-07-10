@@ -74,6 +74,14 @@ class NativeLlm {
   // Tokens that still fit in this conversation's KV window.
   int context_left() const { return hybrid_ ? hybrid_->context_left() : dense_->context_left(); }
 
+  // Perplexity of `text` under the model (teacher-forced, raw text — no chat template).
+  // Resets the conversation. This is libxlm's xlm_ppl on the native path.
+  double perplexity(const std::string& text) {
+    const std::vector<int> ids = tk_.encode(text);
+    first_turn_ = true;
+    return hybrid_ ? hybrid_->perplexity(ids) : dense_->perplexity(ids);
+  }
+
   double last_decode_tps() const {
     return hybrid_ ? hybrid_->last_stats().decode_tps : dense_->last_stats().decode_tps;
   }

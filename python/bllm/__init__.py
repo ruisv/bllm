@@ -362,6 +362,11 @@ if _HAVE_NATIVE:
             s = list(stop) if stop else []
             return _stream(lambda cb: self._llm.generate(prompt, max_new, cb, s))
 
+        def perplexity(self, text: str) -> float:
+            """Teacher-forced perplexity of raw `text` under the model (no chat template).
+            Resets the conversation. The native equivalent of libxlm's xlm_ppl."""
+            return self._llm.perplexity(text)
+
     def load_video(path: str, fps: float = 2.0, size: int = 448, max_frames: int = 10,
                    with_audio: bool = True, ffmpeg: str = "ffmpeg") -> dict:
         """Sample a video file into the ``videos=`` argument of NativeVlmSession.chat.

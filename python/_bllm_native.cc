@@ -119,6 +119,15 @@ NB_MODULE(_bllm_native, m) {
           "Raw completion; on_text(str) streams decoded deltas. stop=[...] ends generation "
           "on any of those strings (trimmed from the reply).")
       .def("reset", &bllm::NativeLlm::reset, "Start a fresh conversation.")
+      .def(
+          "perplexity",
+          [](bllm::NativeLlm& llm, const std::string& text) {
+            double v; { nb::gil_scoped_release r; v = llm.perplexity(text); }
+            return v;
+          },
+          "text"_a,
+          "Teacher-forced perplexity of raw text (no chat template). Resets the "
+          "conversation. libxlm's xlm_ppl on the native path.")
       .def("set_sampling", &bllm::NativeLlm::set_sampling,
            "temp"_a = 0.0f, "top_p"_a = 1.0f, "top_k"_a = 0, "rep_pen"_a = 1.0f, "seed"_a = 1234,
            "min_p"_a = 0.0f, "typ_p"_a = 1.0f, "min_keep"_a = 1, "penalty_last_n"_a = 64,

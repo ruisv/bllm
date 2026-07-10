@@ -236,7 +236,41 @@ class NativeHybridEngine {
     }
   }
 
+  // Teacher-forced perplexity of `tokens` on a FRESH context (this reset()s the session):
+  // exp( mean over i of -log p(token_i | token_<i) ). libxlm's xlm_ppl equivalent, costing
+  // ~N decode steps (per-position log-probs need one token at a time).
+  double perplexity(const std::vector<int>& tokens) {
+    const int N = (int)tokens.size();
+    if (N < 2) throw std::runtime_error("[hybrid] perplexity needs >= 2 tokens");
+    reset();
+    if (N > CL_)
+      throw std::runtime_error("[hybrid] perplexity: " + std::to_string(N) +
+                               " tokens exceed cache_len " + std::to_string(CL_));
+    double lp = 0.0;
+    int count = 0;
+    step(tokens[0]);
+    for (int i = 1; i < N && curLogits_valid_ && P_ < CL_; ++i) {
+      lp += logProbOfNext(tokens[i]);
+      ++count;
+      if (i + 1 < N) step(tokens[i]);
+    }
+    return count > 0 ? std::exp(-lp / count) : 0.0;
+  }
+
  private:
+  double logProbOfNext(int tok) const {
+    auto L = [this](int i) -> double {
+      return logitType_ == HB_DNN_TENSOR_TYPE_F32
+                 ? reinterpret_cast<const float*>(curLogits_)[i]
+                 : reinterpret_cast<const int16_t*>(curLogits_)[i] * (double)logitScale_;
+    };
+    double m = L(0);
+    for (int v = 1; v < vocab_; ++v) { const double x = L(v); if (x > m) m = x; }
+    double se = 0.0;
+    for (int v = 0; v < vocab_; ++v) se += std::exp(L(v) - m);
+    return L(tok) - (m + std::log(se));
+  }
+
   static constexpr int kFixedIn = 4;            // x, cos, sin, mask
   static int dim(const hbDNNTensorProperties& p, int idx) { return p.validShape.dimensionSize[idx]; }
   static void fixStride(hbDNNTensorProperties& p) {

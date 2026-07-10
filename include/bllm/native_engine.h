@@ -361,6 +361,26 @@ class NativeEngine {
     feedEmbedsNoMark(rows, n, pos);
   }
 
+  // Teacher-forced perplexity of `tokens` on a FRESH context (this reset()s the session):
+  // exp( mean over i of -log p(token_i | token_<i) ). libxlm's xlm_ppl equivalent.
+  // Per-position log-probs need the decode graph one token at a time (prefill only yields
+  // the last position's logits), so this costs ~N decode steps.
+  double perplexity(const std::vector<int>& tokens) {
+    const int N = (int)tokens.size();
+    if (N < 2) throw std::runtime_error("[native] perplexity needs >= 2 tokens");
+    checkRoom(N);
+    reset();
+    double lp = 0.0;
+    int count = 0;
+    decodeStepToken(tokens[0]);                      // curLogits_ now predicts token 1
+    for (int i = 1; i < N && curLogits_ && P_ < cacheLen_; ++i) {
+      lp += logProbOfNext(tokens[i]);
+      ++count;
+      if (i + 1 < N) decodeStepToken(tokens[i]);
+    }
+    return count > 0 ? std::exp(-lp / count) : 0.0;
+  }
+
   // sample up to p.max_new tokens; stop on eos; call on_token(id) per token. on_token may
   // return true to stop after that token (e.g. a session-level stop string matched) —
   // this breaks before the next decode step, so nothing is generated past the stop.
@@ -394,6 +414,19 @@ class NativeEngine {
   }
 
  private:
+  // log p(tok) under a softmax over the FULL vocab of the current logits (exact
+  // normaliser: logit[tok] - logsumexp(all logits)). Both in the dequantised domain.
+  double logProbOfNext(int tok) const {
+    double m = curLogits_[0] * (double)logitScale_;
+    for (int v = 1; v < vocab_; ++v) {
+      const double x = curLogits_[v] * (double)logitScale_;
+      if (x > m) m = x;
+    }
+    double se = 0.0;
+    for (int v = 0; v < vocab_; ++v) se += std::exp(curLogits_[v] * (double)logitScale_ - m);
+    return curLogits_[tok] * (double)logitScale_ - (m + std::log(se));
+  }
+
   using Mem = native_detail::Mem;
 
   void checkRoom(int n) const {

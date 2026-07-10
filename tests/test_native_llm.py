@@ -81,6 +81,17 @@ def test_sampling_knobs_at_libxlm_parity(llm):
     llm.set_sampling()                                     # restore greedy for later tests
 
 
+def test_perplexity_ranks_coherent_below_scrambled(llm):
+    """Teacher-forced perplexity (libxlm's xlm_ppl on the native path): a fluent sentence
+    is more predictable than its shuffled words, so it must score lower."""
+    llm.reset()
+    coherent = llm.perplexity("北京是中华人民共和国的首都，是全国的政治、文化和国际交往中心。")
+    scrambled = llm.perplexity("首都 是 交往 北京 文化 的 政治 中华人民共和国 中心 国际。")
+    assert coherent > 1.0
+    assert scrambled > coherent
+    llm.reset()
+
+
 def test_multi_turn_recalls_context(llm):
     llm.reset()
     llm.chat("请记住数字 4271。", max_new=24)
