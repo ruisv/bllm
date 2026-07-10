@@ -62,6 +62,25 @@ def test_stop_string_absent_returns_full_reply(llm):
     assert reply.strip()
 
 
+def test_sampling_knobs_at_libxlm_parity(llm):
+    """The full libxlm knob set drives the native sampler: greedy is deterministic, and
+    min_p / typ_p / top-k/p with repeat+frequency+presence penalties still generate
+    coherently (unit-level correctness is in tests/test_native_sampler.cc)."""
+    llm.reset()
+    llm.set_sampling()                                    # all defaults => greedy
+    a = llm.chat("法国的首都是哪里？只答城市名。", max_new=8); llm.reset()
+    b = llm.chat("法国的首都是哪里？只答城市名。", max_new=8); llm.reset()
+    assert a == b and "巴黎" in a                          # greedy is reproducible
+
+    llm.set_sampling(temp=0.7, top_p=0.9, top_k=40, min_p=0.05, typ_p=0.95,
+                     penalty_last_n=64, rep_pen=1.1, penalty_freq=0.5, penalty_present=0.5,
+                     seed=1)
+    r = llm.chat("用一句话介绍北京。", max_new=40)
+    assert r.strip() and len(r) > 4                        # coherent, no crash
+    llm.reset()
+    llm.set_sampling()                                     # restore greedy for later tests
+
+
 def test_multi_turn_recalls_context(llm):
     llm.reset()
     llm.chat("请记住数字 4271。", max_new=24)

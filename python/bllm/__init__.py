@@ -302,9 +302,14 @@ if _HAVE_NATIVE:
             self._llm.reset()
 
         def set_sampling(self, temp: float = 0.0, top_p: float = 1.0, top_k: int = 0,
-                         rep_pen: float = 1.0, seed: int = 1234) -> "NativeSession":
-            """Configure sampling (temp<=0 => greedy). Returns self for chaining."""
-            self._llm.set_sampling(temp, top_p, top_k, rep_pen, seed)
+                         rep_pen: float = 1.0, seed: int = 1234, min_p: float = 0.0,
+                         typ_p: float = 1.0, min_keep: int = 1, penalty_last_n: int = 64,
+                         penalty_freq: float = 0.0, penalty_present: float = 0.0) -> "NativeSession":
+            """Configure sampling (temp<=0 => greedy). Full libxlm parity: top_k / top_p /
+            min_p / typ_p (min_keep floors each filter) and repeat / frequency / presence
+            penalties over the last penalty_last_n tokens. Returns self for chaining."""
+            self._llm.set_sampling(temp, top_p, top_k, rep_pen, seed, min_p, typ_p,
+                                   min_keep, penalty_last_n, penalty_freq, penalty_present)
             return self
 
         def set_stop(self, stop: "list[str]") -> "NativeSession":
@@ -436,8 +441,11 @@ if _HAVE_NATIVE:
             self._vlm.reset()
 
         def set_sampling(self, temp: float = 0.0, top_p: float = 1.0, top_k: int = 0,
-                         rep_pen: float = 1.0, seed: int = 1234) -> "NativeVlmSession":
-            self._vlm.set_sampling(temp, top_p, top_k, rep_pen, seed)
+                         rep_pen: float = 1.0, seed: int = 1234, min_p: float = 0.0,
+                         typ_p: float = 1.0, min_keep: int = 1, penalty_last_n: int = 64,
+                         penalty_freq: float = 0.0, penalty_present: float = 0.0) -> "NativeVlmSession":
+            self._vlm.set_sampling(temp, top_p, top_k, rep_pen, seed, min_p, typ_p,
+                                   min_keep, penalty_last_n, penalty_freq, penalty_present)
             return self
 
         def set_stop(self, stop: "list[str]") -> "NativeVlmSession":

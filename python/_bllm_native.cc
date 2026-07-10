@@ -29,7 +29,13 @@ NB_MODULE(_bllm_native, m) {
       .def_rw("temp", &bllm::NativeSamplingParams::temp)
       .def_rw("top_p", &bllm::NativeSamplingParams::top_p)
       .def_rw("top_k", &bllm::NativeSamplingParams::top_k)
+      .def_rw("min_p", &bllm::NativeSamplingParams::min_p)
+      .def_rw("typ_p", &bllm::NativeSamplingParams::typ_p)
+      .def_rw("min_keep", &bllm::NativeSamplingParams::min_keep)
       .def_rw("rep_pen", &bllm::NativeSamplingParams::rep_pen)
+      .def_rw("penalty_last_n", &bllm::NativeSamplingParams::penalty_last_n)
+      .def_rw("penalty_freq", &bllm::NativeSamplingParams::penalty_freq)
+      .def_rw("penalty_present", &bllm::NativeSamplingParams::penalty_present)
       .def_rw("max_new", &bllm::NativeSamplingParams::max_new)
       .def_rw("seed", &bllm::NativeSamplingParams::seed)
       .def_rw("eos", &bllm::NativeSamplingParams::eos);
@@ -115,7 +121,11 @@ NB_MODULE(_bllm_native, m) {
       .def("reset", &bllm::NativeLlm::reset, "Start a fresh conversation.")
       .def("set_sampling", &bllm::NativeLlm::set_sampling,
            "temp"_a = 0.0f, "top_p"_a = 1.0f, "top_k"_a = 0, "rep_pen"_a = 1.0f, "seed"_a = 1234,
-           "Set sampling (temp<=0 => greedy). Applies to the next generate()/chat().")
+           "min_p"_a = 0.0f, "typ_p"_a = 1.0f, "min_keep"_a = 1, "penalty_last_n"_a = 64,
+           "penalty_freq"_a = 0.0f, "penalty_present"_a = 0.0f,
+           "Set sampling (temp<=0 => greedy). Full libxlm parity: top_k/top_p/min_p/typ_p "
+           "(min_keep floors each filter) + repeat/freq/presence penalties over penalty_last_n. "
+           "Applies to the next generate()/chat().")
       .def("set_stop", &bllm::NativeLlm::set_stop, "stop"_a,
            "Persistent stop strings for every following turn (a per-call stop=[...] overrides).")
       .def("set_bpu_priority", &bllm::NativeLlm::set_bpu_priority, "priority"_a,
@@ -228,7 +238,9 @@ NB_MODULE(_bllm_native, m) {
       .def_prop_ro("video_tokens_per_second", &bllm::NativeVlm::video_tokens_per_second)
       .def("reset", &bllm::NativeVlm::reset, "Start a fresh conversation.")
       .def("set_sampling", &bllm::NativeVlm::set_sampling,
-           "temp"_a = 0.0f, "top_p"_a = 1.0f, "top_k"_a = 0, "rep_pen"_a = 1.0f, "seed"_a = 1234)
+           "temp"_a = 0.0f, "top_p"_a = 1.0f, "top_k"_a = 0, "rep_pen"_a = 1.0f, "seed"_a = 1234,
+           "min_p"_a = 0.0f, "typ_p"_a = 1.0f, "min_keep"_a = 1, "penalty_last_n"_a = 64,
+           "penalty_freq"_a = 0.0f, "penalty_present"_a = 0.0f)
       .def("set_stop", &bllm::NativeVlm::set_stop, "stop"_a,
            "Persistent stop strings for every following turn (a per-call stop=[...] overrides).")
       .def("set_bpu_priority", &bllm::NativeVlm::set_bpu_priority, "priority"_a,

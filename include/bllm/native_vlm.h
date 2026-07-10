@@ -93,9 +93,15 @@ class NativeVlm {
   double last_decode_tps() const { return text_->last_stats().decode_tps; }
   double last_ttft_ms() const { return text_->last_stats().ttft_ms; }
 
-  void set_sampling(float temp, float top_p, int top_k, float rep_pen, uint64_t seed) {
+  void set_sampling(float temp, float top_p, int top_k, float rep_pen, uint64_t seed,
+                    float min_p = 0.0f, float typ_p = 1.0f, int min_keep = 1,
+                    int penalty_last_n = 64, float penalty_freq = 0.0f,
+                    float penalty_present = 0.0f) {
     sampling_.temp = temp; sampling_.top_p = top_p; sampling_.top_k = top_k;
     sampling_.rep_pen = rep_pen; sampling_.seed = seed;
+    sampling_.min_p = min_p; sampling_.typ_p = typ_p; sampling_.min_keep = min_keep;
+    sampling_.penalty_last_n = penalty_last_n; sampling_.penalty_freq = penalty_freq;
+    sampling_.penalty_present = penalty_present;
   }
 
   // Stop strings: end the answer as soon as any appears, trimmed from stream and return.

@@ -39,6 +39,8 @@
 #include <utility>
 #include <vector>
 
+#include "bllm/native_sampler.h"   // bllm::NativeSamplingParams + bllm::Sampler
+
 namespace bllm {
 namespace native_detail {
 
@@ -188,13 +190,7 @@ inline int argmaxS16(const int16_t* row, int n) {
 
 }  // namespace native_detail
 
-// Sampling knobs (temp<=0 => greedy).
-struct NativeSamplingParams {
-  float temp = 0.0f, top_p = 1.0f, rep_pen = 1.0f;
-  int top_k = 0, max_new = 200;
-  uint64_t seed = 1234;
-  std::vector<int> eos = {151645, 151643};
-};
+// NativeSamplingParams now lives in native_sampler.h (shared with bllm::Sampler).
 
 struct NativeStats { double ttft_ms = 0, decode_tps = 0; int ntok = 0; };
 
@@ -370,9 +366,9 @@ class NativeEngine {
   // this breaks before the next decode step, so nothing is generated past the stop.
   std::vector<int> generate(const NativeSamplingParams& p,
                             const std::function<bool(int)>& on_token = {}) {
-    Sampler s;
-    s.temp = p.temp; s.topp = p.top_p; s.rep_pen = p.rep_pen; s.topk = p.top_k;
-    s.rng.seed(p.seed);
+    Sampler s(p);
+    // Reads the CURRENT logits each call — decodeStepToken advances curLogits_ per step.
+    auto logit = [this](int i) { return curLogits_[i] * logitScale_; };
     std::unordered_set<int> eos(p.eos.begin(), p.eos.end());
     std::vector<int> gen;
     using clk = std::chrono::steady_clock;
@@ -381,7 +377,7 @@ class NativeEngine {
     clk::time_point tFirst;
     // Stop at the window rather than evict — see context_left().
     for (int step = 0; step < p.max_new && curLogits_ && P_ < cacheLen_; ++step) {
-      int tok = s.pick(curLogits_, logitScale_, vocab_);
+      int tok = s.pick(logit, vocab_);
       if (eos.count(tok)) break;
       if (gen.empty()) { tFirst = clk::now(); stats_.ttft_ms = std::chrono::duration<double>(tFirst - tTurn_).count() * 1000.0; }
       gen.push_back(tok);
@@ -398,41 +394,6 @@ class NativeEngine {
   }
 
  private:
-  struct Sampler {
-    float temp = 0, topp = 1, rep_pen = 1; int topk = 0;
-    std::mt19937 rng{1234u};
-    std::unordered_set<int> seen;
-    std::vector<int> idxbuf;
-    void record(int id) { if (rep_pen != 1.0f) seen.insert(id); }
-    bool stochastic() const { return temp > 0 || rep_pen != 1 || topk > 0 || topp < 1; }
-    int pick(const int16_t* lg, float scale, int n) {
-      using native_detail::argmaxS16;
-      if (!stochastic()) return argmaxS16(lg, n);
-      const int k = topk > 0 ? std::min(topk, n) : std::min(n, 512);
-      if ((int)idxbuf.size() != n) { idxbuf.resize(n); for (int i = 0; i < n; ++i) idxbuf[i] = i; }
-      std::nth_element(idxbuf.begin(), idxbuf.begin() + k, idxbuf.end(),
-                       [&](int a, int b) { return lg[a] > lg[b]; });
-      std::vector<std::pair<float, int>> cand(k);
-      for (int i = 0; i < k; ++i) {
-        int id = idxbuf[i]; float v = lg[id] * scale;
-        if (rep_pen != 1.0f && seen.count(id)) v = v > 0 ? v / rep_pen : v * rep_pen;
-        cand[i] = {v, id};
-      }
-      std::sort(cand.begin(), cand.end(),
-                [](const std::pair<float,int>&a, const std::pair<float,int>&b){ return a.first > b.first; });
-      const float T = temp > 0 ? temp : 1.0f; const float mx = cand[0].first;
-      std::vector<double> pr(k); double sum = 0;
-      for (int i = 0; i < k; ++i) { pr[i] = std::exp((cand[i].first - mx) / T); sum += pr[i]; }
-      double cum = 0; int keep = k;
-      for (int i = 0; i < k; ++i) { cum += pr[i] / sum; if (cum >= topp) { keep = i + 1; break; } }
-      double ks = 0; for (int i = 0; i < keep; ++i) ks += pr[i];
-      std::uniform_real_distribution<double> U(0.0, ks);
-      double r = U(rng), acc = 0;
-      for (int i = 0; i < keep; ++i) { acc += pr[i]; if (r <= acc) return cand[i].second; }
-      return cand[keep - 1].second;
-    }
-  };
-
   using Mem = native_detail::Mem;
 
   void checkRoom(int n) const {
