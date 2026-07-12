@@ -42,7 +42,9 @@ if(BLLM_HAVE_NATIVE)
   # Gated so a plain `cmake --install` on a dev host doesn't scribble into a site-packages.
   if(BLLM_INSTALL_PYTHON)
     set(_bllm_sp "lib/python${Python_VERSION_MAJOR}.${Python_VERSION_MINOR}/site-packages")
-    install(TARGETS _bllm_native LIBRARY DESTINATION "${_bllm_sp}")
+    # The extension goes INSIDE the package dir — bllm/__init__.py imports it relatively
+    # (`from ._bllm_native import ...`), so it must land at site-packages/bllm/, not the root.
+    install(TARGETS _bllm_native LIBRARY DESTINATION "${_bllm_sp}/bllm")
     install(DIRECTORY bllm/ DESTINATION "${_bllm_sp}/bllm"
             FILES_MATCHING PATTERN "*.py" PATTERN "*.pyi"
             PATTERN "__pycache__" EXCLUDE)
