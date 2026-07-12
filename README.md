@@ -140,12 +140,19 @@ llm.set_bpu_priority(0)      # 最低,让视觉抢占 BPU 队列
 
 ## 从源码构建
 
-在主机开发、板上构建运行（运行时只在板上）：
+多数用户直接 `conda install bllm` 即可（见[安装](#安装)）。想改源码/自行构建，则**在板上**
+克隆并构建（运行时只在板上）：
 
 ```bash
-scripts/sync.sh                    # 同步工作树到板（BOARD ssh 别名）
-scripts/board_build.sh [--python]  # 板上 cmake + ninja
-scripts/board_test.sh              # 同步、构建、设性能模式、pytest
+# 在 RDK S100 / S100P / S600 板上
+git clone https://github.com/ruisv/bllm.git && cd bllm
+
+# 构建依赖（示例，从我们的 conda 源）
+conda install -c https://mirrors.ruis.ai/conda -c conda-forge \
+    cmake ninja cxx-compiler nlohmann_json hobot-dnn tokenizers-cpp nanobind numpy
+
+scripts/build.sh --python          # cmake + ninja；产物在 build/
+export PYTHONPATH="$PWD/python"     # 就地 import；或 scripts/build.sh --python --install
 ```
 
 一个 CMake 目标 `bllm::native`，只依赖板载通用 hobot 运行时（+ `tokenizers-cpp` 做字符串 I/O）：

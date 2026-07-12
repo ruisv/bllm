@@ -1,7 +1,7 @@
 """The native text runtime: the dense and hybrid engines, no libxlm.
 
 Point BLLM_TEST_NATIVE_DIR at a model directory (`model.json`); everything skips
-otherwise. Run via `scripts/board_test.sh`.
+otherwise. Run pytest on the board with the `BLLM_TEST_*` env vars set (see CONTRIBUTING.md).
 
 **One big model per process.** A session pins its weights in the BPU's ION carveout
 until it is destroyed — a hybrid session plus a 448 px omni session at once exhausted

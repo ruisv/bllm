@@ -153,12 +153,19 @@ tokenizer config.
 
 ## Build from source
 
-Develop on a host, build & run on the board (the runtime lives only there):
+Most users just `conda install bllm` (see [Install](#install)). To hack on the source, clone
+and build **on the board** (the runtime lives only there):
 
 ```bash
-scripts/sync.sh                    # rsync the working tree to the board (BOARD ssh alias)
-scripts/board_build.sh [--python]  # cmake + ninja on the board
-scripts/board_test.sh              # sync, build, set perf mode, pytest
+# on an RDK S100 / S100P / S600 board
+git clone https://github.com/ruisv/bllm.git && cd bllm
+
+# build dependencies (example, from our conda channel)
+conda install -c https://mirrors.ruis.ai/conda -c conda-forge \
+    cmake ninja cxx-compiler nlohmann_json hobot-dnn tokenizers-cpp nanobind numpy
+
+scripts/build.sh --python          # cmake + ninja; artifacts in build/
+export PYTHONPATH="$PWD/python"     # import in-tree; or scripts/build.sh --python --install
 ```
 
 One CMake target, `bllm::native`, needing only the board's generic hobot runtime (plus

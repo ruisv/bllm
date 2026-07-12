@@ -2,7 +2,7 @@
 removed; the design notes, tag v-libxlm-final).
 
 The native engine may be absent from a dev-host checkout, so its tests are gated. Model
-tests are skipped unless a model is pointed at via env — see `scripts/board_test.sh`.
+tests are skipped unless a model is pointed at via env — set the `BLLM_TEST_*` env vars (see CONTRIBUTING.md).
 
 **One big model per process.** A session pins its weights in the BPU's ION carveout until
 it is destroyed, so the native LLM and VLM tests live in separate modules (pytest finalises

@@ -11,6 +11,11 @@
 # agent instructions
 AGENTS.md
 CLAUDE.md
+# our internal remote-dev workflow (edit-on-host / rsync-to-board); customers build
+# directly on the board with scripts/build.sh, so these stay local, not tracked
+scripts/sync.sh
+scripts/board_build.sh
+scripts/board_test.sh
 # machine table / ssh aliases / server + board usage (private)
 CLAUDE.local.md
 # infra topology: hostnames, IPs, convert-host workflow (private)

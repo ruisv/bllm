@@ -37,10 +37,13 @@ cmake/         FindHobot / FindTokenizers / package config
 
 ## Build & test
 
+Clone and build **on the board** (see the README's *Build from source* for the dependency
+install), then run the tests there:
+
 ```bash
-scripts/sync.sh                    # rsync the working tree to the board (BOARD ssh alias)
-scripts/board_build.sh [--python]  # cmake + ninja on the board
-scripts/board_test.sh              # sync, build, set perf mode, pytest
+scripts/build.sh --python          # cmake + ninja on the board
+export PYTHONPATH="$PWD/python"
+python -m pytest tests/ -q -rs     # model tests skip cleanly unless BLLM_TEST_* is set
 ```
 
 Off-board (any host), the metadata/routing logic can be checked without hardware:
@@ -65,7 +68,7 @@ Any behaviour change adds or updates tests:
 - Pin logic with an **offline** test where possible (metadata synthesis, backend routing,
   the sampler, stop-string matching) — these run on any host.
 - For anything that touches a model, add a **board end-to-end** test that **skips cleanly**
-  when its model isn't present (see `scripts/board_test.sh`'s `BLLM_TEST_*` env vars).
+  when its model isn't present (set the `BLLM_TEST_*` env vars for the model tests).
 
 ## Commits & pull requests
 

@@ -1,7 +1,7 @@
 """The native multimodal runtime (arch="omni"): text + image, and the live-stream budget.
 
 Point BLLM_TEST_OMNI_DIR at an omni model directory (and optionally BLLM_TEST_IMAGE);
-everything skips otherwise. Run via `scripts/board_test.sh`.
+everything skips otherwise. Run pytest on the board (see CONTRIBUTING.md).
 
 Kept in its own module because a VLM session pins the text tower, the vision tower and
 the 1.2 GB embedding table in the BPU's ION carveout for as long as it lives — see the
