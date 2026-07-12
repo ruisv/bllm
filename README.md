@@ -66,7 +66,13 @@ std::string reply = llm.chat("你好", 400, [](const std::string& s){ std::cout 
 
 REPL: [`examples/chat_native.cc`](examples/chat_native.cc) (`bllm_chat_native --model <dir>`).
 
-## Usage — libxlm runtime
+## Usage — libxlm runtime (deprecated)
+
+> **Deprecated — being removed.** The native runtime is a validated superset
+> ([`docs/PARITY.md`](docs/PARITY.md): 6/6 official models, native ≥ libxlm). Prefer
+> `bllm.load(<.hbm>, tokenizer_dir=...)`, which now drives native. The Python
+> `LlmSession`/`OmniSession`/`VlmSession` emit a `DeprecationWarning`; the libxlm backend
+> and these classes are scheduled for deletion (see [`docs/MIGRATION.md`](docs/MIGRATION.md)).
 
 ```cpp
 #include "bllm/bllm.h"

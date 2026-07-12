@@ -21,7 +21,18 @@ from __future__ import annotations
 
 import queue
 import threading
+import warnings
 from typing import Callable, Iterator, Optional
+
+
+def _warn_libxlm_deprecated(what: str) -> None:
+    """libxlm is being retired (docs/MIGRATION.md); the native runtime is a validated
+    superset (docs/PARITY.md). One release of overlap, then the libxlm path is removed."""
+    warnings.warn(
+        f"{what} uses the legacy libxlm backend, which is deprecated and will be removed. "
+        "Use bllm.load(<.hbm>, tokenizer_dir=...) — it now runs the native runtime, a "
+        "validated superset (see docs/PARITY.md).",
+        DeprecationWarning, stacklevel=3)
 
 # The libxlm-backed sessions need the OE-LLM SDK; the native engine + unified
 # NativeSession need only the hobot runtime + the C++ tokenizer. Either may be
@@ -125,6 +136,7 @@ class LlmSession:
         backend: str = "any",
         priority: str = "normal",
     ) -> None:
+        _warn_libxlm_deprecated("LlmSession")
         self._s = _LlmSession(
             model_path,
             tokenizer_dir,
@@ -212,6 +224,7 @@ class OmniSession:
         backend: str = "any",
         priority: str = "normal",
     ) -> None:
+        _warn_libxlm_deprecated("OmniSession")
         self._s = _OmniSession(
             text_model, visual_model, audio_model, embed_tokens, tokenizer_dir,
             system_prompt=system_prompt, context_size=context_size,
@@ -263,6 +276,7 @@ class VlmSession:
         backend: str = "any",
         priority: str = "normal",
     ) -> None:
+        _warn_libxlm_deprecated("VlmSession")
         self._s = _VlmSession(
             model_path, tokenizer_dir, config_path=config_path,
             model_type=model_type, system_prompt=system_prompt,
