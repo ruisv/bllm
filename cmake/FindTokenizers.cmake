@@ -17,8 +17,13 @@
 
 set(TOKENIZERS_ROOT "$ENV{HOME}/projects/tokenizers-cpp" CACHE PATH "tokenizers-cpp checkout")
 
-find_path(TOKENIZERS_INCLUDE_DIR tokenizers_cpp.h HINTS "${TOKENIZERS_ROOT}/include")
-find_library(TOKENIZERS_SO tokenizers_hf HINTS "${TOKENIZERS_ROOT}/build")
+# Two layouts, in priority order: a board dev checkout (headers in include/, the .so in
+# build/), or a conda/system prefix where the `tokenizers-cpp` package installed the .so
+# into lib/ and the header into include/ ($CONDA_PREFIX / CMAKE_INSTALL_PREFIX).
+find_path(TOKENIZERS_INCLUDE_DIR tokenizers_cpp.h
+  HINTS "${TOKENIZERS_ROOT}/include" "$ENV{CONDA_PREFIX}/include" "${CMAKE_INSTALL_PREFIX}/include")
+find_library(TOKENIZERS_SO tokenizers_hf
+  HINTS "${TOKENIZERS_ROOT}/build" "$ENV{CONDA_PREFIX}/lib" "${CMAKE_INSTALL_PREFIX}/lib")
 
 include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(Tokenizers DEFAULT_MSG
