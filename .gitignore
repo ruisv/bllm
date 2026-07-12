@@ -67,4 +67,4 @@ __pycache__/
 .DS_Store
 
 # model-conversion method — CLOSED (we publish finished .hbm, not the how-to)
-host_toolchain/convert/
+host_toolchain/
