@@ -16,6 +16,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 option(BLLM_BUILD_EXAMPLES "Build the example programs" ON)
 option(BLLM_BUILD_PYTHON   "Build the nanobind Python bindings" OFF)
+option(BLLM_INSTALL_PYTHON "Install the Python package into site-packages (for conda/pip)" OFF)
 
 # BLLM is the self-built native engine driving `.hbm` graphs straight on hbDNN/hbUCP —
 # the same runtime bcdl/vision uses — plus, for string I/O, the C++ tokenizer. The old

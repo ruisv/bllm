@@ -36,4 +36,15 @@ if(BLLM_HAVE_NATIVE)
   endif()
   target_link_options(_bllm_native PRIVATE -Wl,--unresolved-symbols=ignore-all)
   set_target_properties(_bllm_native PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${BLLM_PY_PKG}")
+
+  # Install the extension + the pure-Python package into site-packages, so a conda/pip
+  # build lands an importable `bllm` (the in-tree layout above is for PYTHONPATH dev use).
+  # Gated so a plain `cmake --install` on a dev host doesn't scribble into a site-packages.
+  if(BLLM_INSTALL_PYTHON)
+    set(_bllm_sp "lib/python${Python_VERSION_MAJOR}.${Python_VERSION_MINOR}/site-packages")
+    install(TARGETS _bllm_native LIBRARY DESTINATION "${_bllm_sp}")
+    install(DIRECTORY bllm/ DESTINATION "${_bllm_sp}/bllm"
+            FILES_MATCHING PATTERN "*.py" PATTERN "*.pyi"
+            PATTERN "__pycache__" EXCLUDE)
+  endif()
 endif()
