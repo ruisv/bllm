@@ -9,6 +9,11 @@
 
 它是视觉库 [bcdl](https://github.com/ruisv/bcdl)（RDK BPU 视觉推理）的大模型姊妹库。
 
+<p align="center">
+  <img src="docs/demo.gif" width="760" alt="Qwen3.5-0.8B 混合 SSM 在 RDK S100P BPU 上流式对话"><br>
+  <em>Qwen3.5-0.8B（混合 SSM）在 RDK S100P BPU 上原生流式对话 · ~14 tok/s</em>
+</p>
+
 > 📖 English README: [README.en.md](README.en.md) ·
 > API 文档: [中文](docs/API.zh.md) / [English](docs/API.en.md)
 

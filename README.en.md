@@ -10,6 +10,11 @@ decode loop — behind a clean C++ / Python task-style API. **No extra LLM SDK r
 It is the large-language-model sibling of [bcdl](https://github.com/ruisv/bcdl) (RDK BPU
 computer-vision runtime).
 
+<p align="center">
+  <img src="docs/demo.gif" width="760" alt="Qwen3.5-0.8B hybrid SSM streaming chat on the RDK S100P BPU"><br>
+  <em>Qwen3.5-0.8B (hybrid SSM) streaming natively on the RDK S100P BPU · ~14 tok/s</em>
+</p>
+
 > 📖 中文 README: [README.md](README.md) ·
 > API docs: [English](docs/API.en.md) / [中文](docs/API.zh.md)
 
