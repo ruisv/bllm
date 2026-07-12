@@ -1,8 +1,6 @@
-# nanobind extension modules, placed next to the pure-Python package so `python/`
+# nanobind extension module, placed next to the pure-Python package so `python/`
 # is importable in-tree (PYTHONPATH=.../python) and installable later.
-#
-# The two backends are separate modules on purpose: `import bllm` works with only
-# one of them present (see python/bllm/__init__.py, which imports each in a try).
+# `import bllm` still tolerates the module's absence (see python/bllm/__init__.py).
 
 find_package(Python 3.8 REQUIRED COMPONENTS Interpreter Development.Module)
 
@@ -23,17 +21,6 @@ find_package(nanobind CONFIG REQUIRED)
 # Drop built modules into the in-tree package dir so `import bllm` works with
 # PYTHONPATH=<repo>/python without an install step.
 set(BLLM_PY_PKG "${CMAKE_CURRENT_SOURCE_DIR}/bllm")
-
-# ── libxlm backend module ────────────────────────────────────────────────────
-if(BLLM_HAVE_RUNTIME)
-  nanobind_add_module(_bllm STABLE_ABI NB_STATIC _bllm.cc)
-  target_link_libraries(_bllm PRIVATE bllm::bllm oellm::xlm)
-  # The module has legitimately-undefined symbols from two sources resolved at
-  # load time: CPython (provided by the interpreter) and libxlm's sibling libs.
-  target_link_options(_bllm PRIVATE -Wl,--unresolved-symbols=ignore-all)
-  set_target_properties(_bllm PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${BLLM_PY_PKG}")
-  message(STATUS "_bllm: libxlm sessions")
-endif()
 
 # ── native backend module ────────────────────────────────────────────────────
 if(BLLM_HAVE_NATIVE)

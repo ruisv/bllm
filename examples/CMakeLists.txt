@@ -1,19 +1,5 @@
-# Demos for both backends. Each is gated on what its backend actually needs, so a
-# board with only the hobot runtime (no OE-LLM SDK) still builds the native ones.
-
-# ── libxlm backend ───────────────────────────────────────────────────────────
-if(BLLM_HAVE_RUNTIME)
-  # Each executable links libxlm.so, which has undefined refs to its
-  # (runtime-loaded) sibling libs — relax the unresolved-symbol check.
-  foreach(demo chat omni vlm)
-    add_executable(bllm_${demo} ${demo}.cc)
-    target_link_libraries(bllm_${demo} PRIVATE bllm::bllm)
-    target_link_options(bllm_${demo} PRIVATE -Wl,-unresolved-symbols=ignore-in-shared-libs)
-  endforeach()
-endif()
-
-# ── native backend (no libxlm) ───────────────────────────────────────────────
-# bllm::native carries the include dirs, hobot::dnn, the tokenizer and the fp16 flag.
+# Native-runtime demos. bllm::native carries the include dirs, hobot::dnn, the tokenizer
+# and the fp16 flag; each is gated on what it actually needs.
 if(BLLM_HAVE_NATIVE)
   add_executable(bllm_selfengine selfengine.cc)          # token ids in/out
   target_link_libraries(bllm_selfengine PRIVATE bllm::native)

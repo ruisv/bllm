@@ -17,48 +17,17 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 option(BLLM_BUILD_EXAMPLES "Build the example programs" ON)
 option(BLLM_BUILD_PYTHON   "Build the nanobind Python bindings" OFF)
 
-# BLLM has TWO independent backends, and either can be built without the other:
+# BLLM is the self-built native engine driving `.hbm` graphs straight on hbDNN/hbUCP —
+# the same runtime bcdl/vision uses — plus, for string I/O, the C++ tokenizer. The old
+# libxlm (OE-LLM SDK) backend was removed after native proved a validated superset (tag
+# `v-libxlm-final`, docs/PARITY.md); nothing here probes for the SDK anymore.
 #
-#   bllm::bllm    — the libxlm sessions. Needs the OE-LLM SDK (board only).
-#   bllm::native  — the self-built engine driving `.hbm` graphs straight on
-#                   hbDNN/hbUCP. Needs only the generic hobot runtime (the same
-#                   one bcdl/vision uses) plus, for string I/O, the C++ tokenizer.
-#
-# Off-board (a Mac checkout) neither is found: we still configure, so editors and
+# Off-board (a Mac checkout) the runtime isn't found: we still configure, so editors and
 # `cmake --build` on the docs/tests keep working.
-find_package(OELLM QUIET)       # libxlm + its bundled libdnn/libhbucp
 find_package(Hobot QUIET)       # hbDNN / hbUCP / HBRT4
 find_package(Tokenizers QUIET)  # HuggingFace `tokenizers` (Rust) via tokenizers-cpp
 
-# ── libxlm backend ───────────────────────────────────────────────────────────
-if(OELLM_FOUND)
-  message(STATUS "BLLM: OE-LLM SDK ${OELLM_VERSION} at ${OELLM_LIB_DIR} — building libxlm backend")
-  add_library(bllm
-    src/common.cc
-    src/types.cc
-    src/package.cc
-    src/llm_session.cc
-    src/omni_session.cc
-    src/vlm_session.cc)
-  target_include_directories(bllm PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-  # xlm.h is an implementation detail — link it PRIVATE so downstream users of
-  # bllm's headers never need the OE-LLM SDK headers.
-  target_link_libraries(bllm PRIVATE oellm::xlm)
-  set(BLLM_HAVE_RUNTIME ON)
-else()
-  message(STATUS "BLLM: OE-LLM SDK not found — libxlm backend is headers-only "
-                 "(set -DBLLM_OELLM_SDK=<...>/oellm_runtime on the board)")
-  add_library(bllm INTERFACE)
-  target_include_directories(bllm INTERFACE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-  set(BLLM_HAVE_RUNTIME OFF)
-endif()
-add_library(bllm::bllm ALIAS bllm)
-
-# ── native backend (no libxlm) ───────────────────────────────────────────────
+# ── native backend ───────────────────────────────────────────────────────────
 # The engines are header-only, but `model.json` parsing is not, so this is a real
 # compiled target. Downstream links ONE thing and gets the include dirs, the hobot
 # runtime, the tokenizer and the fp16 ISA flag.
@@ -96,19 +65,19 @@ if(Hobot_FOUND)
   endif()
 endif()
 
-if(NOT BLLM_HAVE_RUNTIME AND NOT BLLM_HAVE_NATIVE)
-  message(WARNING "BLLM: neither backend is buildable here — headers only. "
+if(NOT BLLM_HAVE_NATIVE)
+  message(WARNING "BLLM: the native backend isn't buildable here — headers only. "
                   "This is expected on a dev host; build on the board.")
 endif()
 
 # ── examples / python ────────────────────────────────────────────────────────
-if(BLLM_BUILD_EXAMPLES AND (BLLM_HAVE_RUNTIME OR BLLM_HAVE_NATIVE))
+if(BLLM_BUILD_EXAMPLES AND BLLM_HAVE_NATIVE)
   add_subdirectory(examples)
 endif()
 
 if(BLLM_BUILD_PYTHON)
-  if(NOT BLLM_HAVE_RUNTIME AND NOT BLLM_HAVE_NATIVE)
-    message(FATAL_ERROR "BLLM_BUILD_PYTHON needs at least one backend (board only).")
+  if(NOT BLLM_HAVE_NATIVE)
+    message(FATAL_ERROR "BLLM_BUILD_PYTHON needs the native backend (board only).")
   endif()
   add_subdirectory(python)
 endif()
@@ -120,19 +89,16 @@ set(BLLM_CMAKE_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/bllm)
 
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
-set(BLLM_TARGETS bllm)
 if(BLLM_HAVE_NATIVE)
-  list(APPEND BLLM_TARGETS bllm_native)
+  install(TARGETS bllm_native EXPORT bllmTargets
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+  install(EXPORT bllmTargets NAMESPACE bllm:: DESTINATION ${BLLM_CMAKE_DIR})
 endif()
-install(TARGETS ${BLLM_TARGETS} EXPORT bllmTargets
-  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-install(EXPORT bllmTargets NAMESPACE bllm:: DESTINATION ${BLLM_CMAKE_DIR})
 
-# The exported targets name hobot::dnn / tokenizers::tokenizers / oellm::xlm, so a
-# consumer needs the Find modules that create them.
+# The exported target names hobot::dnn / tokenizers::tokenizers, so a consumer needs
+# the Find modules that create them.
 install(FILES
-  cmake/FindOELLM.cmake
   cmake/FindHobot.cmake
   cmake/FindTokenizers.cmake
   DESTINATION ${BLLM_CMAKE_DIR})

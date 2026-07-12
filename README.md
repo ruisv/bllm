@@ -1,8 +1,9 @@
 # BLLM — BPU LLM Runtime for RDK S100
 
 **BLLM** (BPU LLM) is a C++17 on-board **LLM / VLM runtime** library for
-D-Robotics RDK S100 / S100P / S600. It wraps the board's OpenExplorer OE-LLM
-runtime (`libxlm.so`) behind an ergonomic, task-style C++/Python API.
+D-Robotics RDK S100 / S100P / S600. It drives compiled `.hbm` LLM graphs directly on the
+board's generic hbDNN/hbUCP BPU stack — a **self-built native runtime** — behind an
+ergonomic, task-style C++/Python API.
 
 It is the large-language-model sibling of two vision libraries:
 
@@ -10,36 +11,37 @@ It is the large-language-model sibling of two vision libraries:
 |---------|--------|---------|-------|
 | [bcdl](https://github.com/ruisv/bcdl) | RDK S100 BPU | `hbDNN` / `hbUCP` | computer vision (detect / seg / depth / OCR / pose …) |
 | ccdl | NVIDIA | TensorRT / CUDA | computer vision |
-| **bllm** | RDK S100 BPU | **`libxlm.so`** (OE-LLM) | **LLM / VLM chat** |
+| **bllm** | RDK S100 BPU | **hbDNN / hbUCP** (self-built) | **LLM / VLM chat** |
+
+> **One runtime.** BLLM used to also wrap the OpenExplorer OE-LLM runtime (`libxlm.so`).
+> That backend was **removed** once the native runtime proved a validated superset — it runs
+> the same `.hbm` at comparable throughput, adds the Qwen3.5 hybrid SSM / embeddings /
+> stop-early that libxlm structurally couldn't, and needs no second version-pinned SDK.
+> The evidence is [`docs/PARITY.md`](docs/PARITY.md) (6/6 native ≥ libxlm) and the plan is
+> [`docs/MIGRATION.md`](docs/MIGRATION.md). Recover libxlm at tag **`v-libxlm-final`**.
 
 ## Why a separate library from bcdl?
 
 On-board LLMs do **not** run on bcdl's static-shape vision graph
 (`hbDNNInferV2`). Autoregressive decoding needs a KV-cache, dynamic sequence
-length, a tokenizer, and a sampling loop. D-Robotics ships this as a distinct
-runtime — `libxlm.so` (OE-LLM / LeapLLM) — that holds a prefill/decode
-dual-graph internally. BLLM wraps that runtime's C API (`xlm.h`). Both stacks
-share the same BPU driver and `hbUCP` memory system, so CV and LLM can co-exist
-on one board, but they are two different runtimes at the API layer.
+length, a tokenizer, and a sampling loop — so BLLM carries its own KV/SSM cache, sampler
+and decode loop over the same BPU driver and `hbUCP` memory system that bcdl uses. CV and
+LLM co-exist on one board; they are just different graph-execution patterns at the API layer.
 
 ## Status
 
-Two runtimes behind one library:
+One runtime, the self-built native engine: it drives compiled `.hbm` graphs directly on the
+hbDNN/hbUCP BPU stack, with our own KV/SSM cache, sampler and loop. It runs the official text
+models (Qwen2.5-1.5B/**7B**, DeepSeek-R1-Distill-Qwen-1.5B, InternLM2, GLM-Edge, Phi4-mini)
+at ~libxlm throughput (see [`docs/PARITY.md`](docs/PARITY.md)), **and the Qwen3.5-0.8B hybrid
+(Gated-DeltaNet + attention) that libxlm structurally could not** — strict **100 % on the
+BPU** at **~21 tok/s**. Wrapped in a one-line, string-in `bllm::NativeLlm` /
+`bllm.NativeSession` with a C++ tokenizer, ChatML, streaming, multi-turn and sampling, plus
+`bllm::NativeVlm` for Qwen2.5-Omni (text + image + audio + video).
 
-- **Native runtime (self-built, no libxlm)** — drives compiled `.hbm` graphs directly
-  on the generic hbDNN/hbUCP BPU stack, with our own KV/SSM cache, sampler and loop.
-  It runs the official text models (Qwen2.5-1.5B/**7B**, DeepSeek-R1-Distill-Qwen-1.5B,
-  InternLM2) at ~libxlm throughput, **and the Qwen3.5-0.8B hybrid (Gated-DeltaNet +
-  attention) that libxlm structurally cannot run** — strict **100 % on the BPU** at
-  **~21 tok/s**. Wrapped in a one-line, string-in `bllm::NativeLlm` / `bllm.NativeSession`
-  with a C++ tokenizer, ChatML, streaming, multi-turn and sampling.
-- **libxlm runtime** — the original `bllm::LlmSession` over the OE-LLM SDK; validated on
-  board (`Qwen2.5-1.5B` ~24 tok/s), plus `Omni`/`Vlm` multimodal sessions. **Being retired:**
-  the native runtime is now a validated superset, so libxlm is scheduled for removal — see
-  [`docs/MIGRATION.md`](docs/MIGRATION.md).
-
-See [`docs/NATIVE_RUNTIME.md`](docs/NATIVE_RUNTIME.md) (native SE-track + libxlm parity audit),
-[`docs/MIGRATION.md`](docs/MIGRATION.md) (retiring libxlm → native-only),
+See [`docs/NATIVE_RUNTIME.md`](docs/NATIVE_RUNTIME.md) (the SE-track + the libxlm parity audit),
+[`docs/MIGRATION.md`](docs/MIGRATION.md) (how libxlm was retired → native-only),
+[`docs/PARITY.md`](docs/PARITY.md) (the native ≥ libxlm evidence),
 [`docs/LLM_ONBOARD.md`](docs/LLM_ONBOARD.md) (bring-up + ION/perf gotchas),
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), and [`docs/PLAN.md`](docs/PLAN.md) (roadmap).
 
@@ -66,68 +68,7 @@ std::string reply = llm.chat("你好", 400, [](const std::string& s){ std::cout 
 
 REPL: [`examples/chat_native.cc`](examples/chat_native.cc) (`bllm_chat_native --model <dir>`).
 
-## Usage — libxlm runtime (deprecated)
-
-> **Deprecated — being removed.** The native runtime is a validated superset
-> ([`docs/PARITY.md`](docs/PARITY.md): 6/6 official models, native ≥ libxlm). Prefer
-> `bllm.load(<.hbm>, tokenizer_dir=...)`, which now drives native. The Python
-> `LlmSession`/`OmniSession`/`VlmSession` emit a `DeprecationWarning`; the libxlm backend
-> and these classes are scheduled for deletion (see [`docs/MIGRATION.md`](docs/MIGRATION.md)).
-
-```cpp
-#include "bllm/bllm.h"
-
-bllm::SessionOptions o;
-o.model_path         = "Qwen2.5_1.5B_Instruct_1024.hbm";
-o.tokenizer_dir      = "Qwen2.5_1.5B_Instruct_config/";
-o.chat_template_path = "Qwen2.5_1.5B_Instruct_config/Qwen2.5_1.5B_Instruct.jinja";
-// model_type auto-detected from the path; set o.model_type to be explicit.
-
-bllm::LlmSession llm(o);
-std::string reply = llm.generate("你好", [](std::string_view t) {
-  std::cout << t << std::flush;          // stream tokens as they decode
-});
-llm.reset();                              // start a fresh conversation
-```
-
-A ready REPL is in [`examples/chat.cc`](examples/chat.cc) (built as `bllm_chat`).
-
-### Python
-
-```python
-import bllm
-
-llm = bllm.LlmSession(
-    "Qwen2.5_1.5B_Instruct_1024.hbm",
-    "Qwen2.5_1.5B_Instruct_config/",      # model_type + template auto-detected
-)
-for chunk in llm.stream("你好"):           # streaming generator
-    print(chunk, end="", flush=True)
-print(llm.last_stats.decode_tps)
-llm.reset()
-```
-
-Build the module with `scripts/board_build.sh --python` (needs `nanobind` in the
-env), then `export PYTHONPATH=<repo>/python`. REPL: `python examples/chat.py`.
-
 ### Multimodal (Qwen2.5-Omni)
-
-```python
-omni = bllm.OmniSession(text_hbm, visual_hbm, audio_hbm, embed_bin, config_dir)
-reply = omni.generate([
-    bllm.Content.image("scene.jpg"),
-    bllm.Content.text("这张图里有什么？"),
-])                                        # also .video(...), .audio(...)
-```
-
-C++: `bllm::OmniSession` + `bllm::Content` (`bllm/omni_session.h`); CLI:
-`bllm_omni`. Handles text / image / audio / video files (offline path).
-
-For image VLMs (InternVL / Qwen-VL) there's `bllm::VlmSession` /
-`bllm.VlmSession` (`vlm.describe("img.jpg", "...")`, CLI `bllm_vlm`) — API-ready,
-but SDK 1.0.0 ships no such model yet, so it's compile/guard-validated only.
-
-### Multimodal on the native runtime (no libxlm)
 
 The self-built engine also does **text + image + audio + video**, driving the Omni
 towers on plain hbDNN. Media may be file paths **or raw arrays** — `HxWx3` uint8
@@ -240,7 +181,7 @@ the offline conversion pipeline is not part of this repo. Deployment guide:
 
 ## Build, test, and consume
 
-Develop on a host, build & run on the board — both runtimes exist only there:
+Develop on a host, build & run on the board — the runtime exists only there:
 
 ```bash
 scripts/sync.sh                    # rsync working tree to the board (set BOARD ssh alias)
@@ -248,23 +189,22 @@ scripts/board_build.sh [--python]  # cmake + ninja on the board
 scripts/board_test.sh              # sync, build, set BPU performance mode, pytest
 ```
 
-The two backends are independent CMake targets, and either builds without the other:
+One CMake target, `bllm::native`, needing only the board's generic hobot runtime (plus
+`tokenizers-cpp` for string I/O) — no OE-LLM SDK:
 
 | target | needs | gives |
 |---|---|---|
-| `bllm::bllm` | the OE-LLM SDK | `LlmSession` / `OmniSession` / `VlmSession` |
-| `bllm::native` | the hobot runtime (+ tokenizers-cpp for strings) | `NativeLlm` / `NativeVlm`, no libxlm |
+| `bllm::native` | the hobot runtime (+ tokenizers-cpp for strings) | `NativeLlm` / `NativeVlm` |
 
-Downstream consumers get them through `find_package`; the config reports which
-backends the install actually carries, and pulls in the runtimes they need:
+Downstream consumers get it through `find_package`:
 
 ```cmake
-find_package(bllm REQUIRED)          # sets BLLM_HAVE_NATIVE / BLLM_HAVE_LIBXLM
+find_package(bllm REQUIRED)          # sets BLLM_HAVE_NATIVE
 target_link_libraries(app PRIVATE bllm::native)
 ```
 
-In Python, `import bllm` works with either backend, both, or neither (a dev host);
-`bllm.available_backends()` says which.
+In Python, `import bllm` works whether or not the extension is built (a dev host has
+neither); `bllm.available_backends()` returns `("native",)` or `()`.
 
 ### Making a model directory
 

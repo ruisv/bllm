@@ -23,25 +23,24 @@ DEFAULT_PROMPT = "请用中文写一段关于人工智能如何改变日常生�
 
 def bench_one(name: str, hbm: str, tok: str, prompt: str, warmup: bool) -> dict:
     t0 = time.perf_counter()
-    llm = bllm.LlmSession(hbm, tok)
+    llm = bllm.load(hbm, tokenizer_dir=tok)     # native (a bare .hbm + tokenizer dir)
     load_s = time.perf_counter() - t0
 
     if warmup:
-        llm.generate("你好")
+        llm.chat("你好")
         llm.reset()
 
     t1 = time.perf_counter()
-    reply = llm.generate(prompt)
+    reply = llm.chat(prompt)
     wall_s = time.perf_counter() - t1
-    s = llm.last_stats
     return {
         "name": name,
-        "model_type": llm.model_type,
+        "model_type": llm.arch,
         "load_s": load_s,
         "wall_s": wall_s,
-        "ttft_ms": s.ttft_ms,
-        "decode_tps": s.decode_tps,
-        "tokens": s.decode_tokens,
+        "ttft_ms": 0.0,                          # native surfaces only decode tok/s
+        "decode_tps": llm.last_decode_tps,
+        "tokens": 0,
         "chars": len(reply),
     }
 
