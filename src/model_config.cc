@@ -48,6 +48,7 @@ ModelConfig loadModelConfig(const std::string& dir) {
     c.chat.format = ch.value("format", "chatml");
     c.chat.im_start = ch.value("im_start", -1);
     c.chat.im_end = ch.value("im_end", -1);
+    c.chat.bos = ch.value("bos", -1);
     c.chat.system = ch.value("system", c.chat.system);
   }
   if (c.hbm.empty()) throw std::runtime_error("[bllm] model.json missing 'hbm'");

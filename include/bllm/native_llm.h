@@ -118,8 +118,12 @@ class NativeLlm {
     const int S = cfg_.chat.im_start, E = cfg_.chat.im_end;
     std::vector<int> ids;
     auto add = [&](const std::vector<int>& v) { ids.insert(ids.end(), v.begin(), v.end()); };
-    if (first_turn_) { add({S}); add(tk_.encode("system\n" + cfg_.chat.system)); add({E}); }
-    else             { add({E}); }               // close the previous assistant turn
+    // Some models (InternLM2) prepend a BOS before the first role block; ChatML models
+    // (Qwen) do not. cfg_.chat.bos carries it when needed, -1 otherwise.
+    if (first_turn_) {
+      if (cfg_.chat.bos >= 0) add({cfg_.chat.bos});
+      add({S}); add(tk_.encode("system\n" + cfg_.chat.system)); add({E});
+    } else            { add({E}); }              // close the previous assistant turn
     add({S}); add(tk_.encode("user\n" + msg)); add({E});
     add({S}); add(tk_.encode("assistant\n"));
     first_turn_ = false;

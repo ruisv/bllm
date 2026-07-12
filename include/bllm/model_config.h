@@ -14,6 +14,7 @@ namespace bllm {
 struct ChatConfig {
   std::string format = "chatml";                 // "chatml" | "none" (raw completion)
   int im_start = -1, im_end = -1;                // ChatML special-token ids
+  int bos = -1;                                  // BOS id prepended once (e.g. InternLM2 <s>=1); -1 = none
   std::string system = "You are a helpful assistant.";
 };
 
