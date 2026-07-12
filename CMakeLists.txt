@@ -21,7 +21,7 @@ option(BLLM_INSTALL_PYTHON "Install the Python package into site-packages (for c
 # BLLM is the self-built native engine driving `.hbm` graphs straight on hbDNN/hbUCP —
 # the same runtime bcdl/vision uses — plus, for string I/O, the C++ tokenizer. The old
 # libxlm (OE-LLM SDK) backend was removed after native proved a validated superset (tag
-# `v-libxlm-final`, docs/PARITY.md); nothing here probes for the SDK anymore.
+# `v-libxlm-final`, the design notes); nothing here probes for the SDK anymore.
 #
 # Off-board (a Mac checkout) the runtime isn't found: we still configure, so editors and
 # `cmake --build` on the docs/tests keep working.

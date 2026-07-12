@@ -14,7 +14,7 @@ whose manifest is synthesized on the fly) — and hands back a uniform chat/stre
     print(llm.chat("你好"))
 
 The old libxlm (OE-LLM SDK) backend was removed once the native runtime proved a validated
-superset — see docs/MIGRATION.md (tag ``v-libxlm-final``) and docs/PARITY.md.
+superset.
 """
 
 from __future__ import annotations
@@ -375,7 +375,7 @@ if _HAVE_NATIVE:
 
 
 def _reject_libxlm(backend_field: str) -> None:
-    """The libxlm backend is gone (docs/MIGRATION.md, tag v-libxlm-final); everything runs
+    """The libxlm backend is gone (tag v-libxlm-final); everything runs
     native. A leftover backend="libxlm" pin — in a call or a model.json — is a hard error
     so it's noticed, not silently reinterpreted."""
     if backend_field == "libxlm":
@@ -414,7 +414,7 @@ def load(path: str, *, backend: str = "auto", **kwargs):
         s = bllm.load("Qwen2.5_1.5B.hbm", tokenizer_dir="Qwen2.5_1.5B_config/")  # -> dense
         s.chat("你好")
 
-    The libxlm backend was removed (docs/MIGRATION.md); `backend="libxlm"` is a hard error.
+    The libxlm backend was removed; `backend="libxlm"` is a hard error.
     """
     _reject_libxlm(backend)
     if not _HAVE_NATIVE:

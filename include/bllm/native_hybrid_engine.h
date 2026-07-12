@@ -15,7 +15,7 @@
 //     they need NO cache flush. Only the small CPU-written inputs (x/cos/sin/mask)
 //     are cleaned and the logits output invalidated.
 //   * Embedding lookup is host-side from an fp16 table (aarch64 native __fp16).
-// See docs/NATIVE_RUNTIME.md (SE4).
+//
 #pragma once
 
 #include "bllm/native_engine.h"   // native_detail::{Mem, check, elemSize, alignUp, kAlign}

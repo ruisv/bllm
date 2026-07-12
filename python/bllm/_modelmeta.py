@@ -1,6 +1,6 @@
 """Synthesize a native model package from a bare `.hbm` + a tokenizer dir.
 
-This is Blocker A of the libxlm retirement (docs/MIGRATION.md): native needs a `model.json`
+This is the libxlm retirement: native needs a `model.json`
 directory, but an OE-LLM package is a bare `.hbm` + a tokenizer dir + a `config.json`. This
 module bridges the gap at load time — it reads the tokenizer, resolves the stop tokens and
 the ChatML markers exactly as the offline `scripts/make_model_dir.py` does, writes a

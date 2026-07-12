@@ -17,7 +17,7 @@
 //                   what makes VLM possible: vision/audio rows are spliced into
 //                   the embedding stream, and mrope 3-D positions are ours to pick.
 //
-// See docs/NATIVE_RUNTIME.md.
+//
 #pragma once
 
 #include <hobot/dnn/hb_dnn.h>

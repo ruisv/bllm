@@ -10,7 +10,6 @@
 // preserve_precision build reorders that 5-way ranking and still retrieves as well as fp32
 // — nDCG@10 0.8437 vs 0.8469 — while the build with int16 RMSNorm variance collapses to
 // 0.3358. What separates them is the cosine, not the ranking. The real gate is
-// host_toolchain/convert/embed/eval_retrieval.py.
 #include "bllm/native_embedder.h"
 
 #include <algorithm>

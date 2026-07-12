@@ -1,7 +1,7 @@
 @PACKAGE_INIT@
 
 # BLLM is the self-built hbDNN runtime — `bllm::native` (the libxlm backend was removed;
-# see docs/MIGRATION.md, tag v-libxlm-final). These flags say what the install carries.
+# see the design notes, tag v-libxlm-final). These flags say what the install carries.
 set(BLLM_HAVE_NATIVE     @BLLM_HAVE_NATIVE@)
 set(BLLM_HAVE_TOKENIZERS @BLLM_HAVE_TOKENIZERS@)
 

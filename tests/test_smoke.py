@@ -1,5 +1,5 @@
 """Surface tests for the native runtime — the only runtime now (the libxlm backend was
-removed; docs/MIGRATION.md, tag v-libxlm-final).
+removed; the design notes, tag v-libxlm-final).
 
 The native engine may be absent from a dev-host checkout, so its tests are gated. Model
 tests are skipped unless a model is pointed at via env — see `scripts/board_test.sh`.

@@ -1,8 +1,7 @@
 // bllm::ModelConfig — the `model.json` manifest that makes a model self-describing:
 // arch, backend, the .hbm + tokenizer + (hybrid) embed table, eos ids, cache_len,
-// rope, and the chat template. This is the seam between the host_toolchain (which
-// emits model.json at convert time) and the runtime (which loads a model in one call
-// instead of guessing). See docs/PLAN.md (usability, Phase 1).
+// rope, and the chat template. This is the seam between offline conversion (which emits model.json) and the runtime (which loads a model in one call
+// instead of guessing).
 #pragma once
 
 #include <stdexcept>
@@ -43,7 +42,7 @@ struct ModelConfig {
 
 // Which runtime drives a model.json package. There is only one now — the native hbDNN
 // engine; the libxlm backend was removed after native proved a validated superset (see
-// docs/MIGRATION.md, tag v-libxlm-final). A leftover `backend: "libxlm"` in a manifest is
+// the design notes, tag v-libxlm-final). A leftover `backend: "libxlm"` in a manifest is
 // a hard error so it's noticed, not silently reinterpreted.
 inline std::string chooseBackend(const ModelConfig& c) {
   if (c.backend == "libxlm")

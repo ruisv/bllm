@@ -11,7 +11,7 @@
 // embedding restarts each window, so long audio is just independent chunks — which
 // is exactly why the graph could be compiled at a fixed 2 s.
 //
-// Two contract details established by probing the real graph (see docs/NATIVE_RUNTIME.md):
+// Two contract details established by probing the real graph:
 //   * `valid` is boolean — only zero vs non-zero matters (all-1s and all-2s give a
 //     bit-identical result).
 //   * it does NOT gate the mel: conv leaks a garbage tail across the boundary

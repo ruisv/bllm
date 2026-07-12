@@ -1,5 +1,5 @@
 // Unit test for bllm::chooseBackend — native-only now (the libxlm backend was removed;
-// docs/MIGRATION.md, tag v-libxlm-final). Pure logic on a ModelConfig struct, no file IO
+// the design notes, tag v-libxlm-final). Pure logic on a ModelConfig struct, no file IO
 // and no hobot deps, so it builds and runs on the Mac.
 //
 //   c++ -std=c++17 -I include tests/test_choose_backend.cc -o /tmp/t && /tmp/t

@@ -15,7 +15,7 @@
 //   3. assigns 3-D mrope positions — scalar for text, (t, t+row, t+col) for image
 //      patches — and feeds the whole stream to prefill/decode.
 //
-// See docs/NATIVE_RUNTIME.md (SE5).
+//
 #pragma once
 
 #include "bllm/model_config.h"

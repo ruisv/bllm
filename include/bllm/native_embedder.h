@@ -19,7 +19,7 @@
 // Matryoshka (MRL): the model was trained so a truncated prefix of the vector is still
 // a valid embedding — truncate, then renormalise. `dim = 0` keeps the full width.
 //
-// See docs/NATIVE_RUNTIME.md (SE10).
+//
 #pragma once
 
 #include "bllm/model_config.h"

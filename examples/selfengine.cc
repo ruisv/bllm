@@ -2,7 +2,7 @@
 // drive a compiled `.hbm` directly on the generic hbDNN/hbUCP BPU runtime, with
 // our own KV cache and sampling, WITHOUT libxlm. The engine itself lives in the
 // header so this CLI and the Python binding (python/_bllm_native) share one
-// implementation. See docs/NATIVE_RUNTIME.md.
+// implementation.
 //
 // Build (project):  ninja -C build bllm_selfengine   (gated on FindHobot)
 // One-shot:  ./bllm_selfengine --hbm m.hbm --ids "785,6722,315,9625,374" --max-new 24

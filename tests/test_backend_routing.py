@@ -1,4 +1,4 @@
-"""bllm.load() routing — native-only now (the libxlm backend was removed; docs/MIGRATION.md).
+"""bllm.load() routing — native-only now (the libxlm backend was removed; the design notes).
 The decisions and error paths, no model needed. A test that actually loads a model and
 confirms it runs lives in test_native_llm.py (hardware)."""
 
