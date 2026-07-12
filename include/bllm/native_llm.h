@@ -118,13 +118,17 @@ class NativeLlm {
     const int S = cfg_.chat.im_start, E = cfg_.chat.im_end;
     std::vector<int> ids;
     auto add = [&](const std::vector<int>& v) { ids.insert(ids.end(), v.begin(), v.end()); };
-    // Some models (InternLM2) prepend a BOS before the first role block; ChatML models
-    // (Qwen) do not. cfg_.chat.bos carries it when needed, -1 otherwise.
+    // Canonical ChatML: every role block is `<|im_start|>role\n{content}<|im_end|>\n`. The
+    // newline after <|im_end|> matters — omitting it leaves the model with a malformed
+    // boundary (InternLM2 echoes the prompt without it; Qwen is more forgiving but this is
+    // its real template too). Some models (InternLM2) also prepend a BOS before the first
+    // block; ChatML models (Qwen) do not — cfg_.chat.bos carries it, -1 otherwise.
+    const std::vector<int> NL = tk_.encode("\n");
     if (first_turn_) {
       if (cfg_.chat.bos >= 0) add({cfg_.chat.bos});
-      add({S}); add(tk_.encode("system\n" + cfg_.chat.system)); add({E});
-    } else            { add({E}); }              // close the previous assistant turn
-    add({S}); add(tk_.encode("user\n" + msg)); add({E});
+      add({S}); add(tk_.encode("system\n" + cfg_.chat.system)); add({E}); add(NL);
+    } else            { add({E}); add(NL); }     // close the previous assistant turn
+    add({S}); add(tk_.encode("user\n" + msg)); add({E}); add(NL);
     add({S}); add(tk_.encode("assistant\n"));
     first_turn_ = false;
     feedIds(ids);
