@@ -34,9 +34,12 @@ Two runtimes behind one library:
   **~21 tok/s**. Wrapped in a one-line, string-in `bllm::NativeLlm` / `bllm.NativeSession`
   with a C++ tokenizer, ChatML, streaming, multi-turn and sampling.
 - **libxlm runtime** — the original `bllm::LlmSession` over the OE-LLM SDK; validated on
-  board (`Qwen2.5-1.5B` ~24 tok/s), plus `Omni`/`Vlm` multimodal sessions.
+  board (`Qwen2.5-1.5B` ~24 tok/s), plus `Omni`/`Vlm` multimodal sessions. **Being retired:**
+  the native runtime is now a validated superset, so libxlm is scheduled for removal — see
+  [`docs/MIGRATION.md`](docs/MIGRATION.md).
 
-See [`docs/NATIVE_RUNTIME.md`](docs/NATIVE_RUNTIME.md) (native SE-track),
+See [`docs/NATIVE_RUNTIME.md`](docs/NATIVE_RUNTIME.md) (native SE-track + libxlm parity audit),
+[`docs/MIGRATION.md`](docs/MIGRATION.md) (retiring libxlm → native-only),
 [`docs/LLM_ONBOARD.md`](docs/LLM_ONBOARD.md) (bring-up + ION/perf gotchas),
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), and [`docs/PLAN.md`](docs/PLAN.md) (roadmap).
 
