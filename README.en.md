@@ -2,6 +2,14 @@
 
 # BLLM — On-board LLM / VLM Runtime for RDK BPU
 
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![C++](https://img.shields.io/badge/C%2B%2B-17-00599C.svg)](CMakeLists.txt)
+[![Python](https://img.shields.io/badge/python-3.9%E2%80%933.14-3776AB.svg)](python/CMakeLists.txt)
+[![Platform](https://img.shields.io/badge/platform-RDK%20S100%20%2F%20S100P%20%2F%20S600%20(aarch64)-0A7BBB.svg)](#install)
+[![Version](https://img.shields.io/badge/version-0.1.0-informational.svg)](CHANGELOG.md)
+
+[简体中文](README.md) | **English**
+
 **BLLM** (BPU LLM) is a C++17 on-board **LLM / VLM runtime** for D-Robotics
 **RDK S100 / S100P / S600**. It runs compiled `.hbm` model graphs directly on the board's
 BPU (hbDNN / hbUCP) — a self-built native engine with its own KV / SSM cache, sampler and
@@ -15,8 +23,14 @@ computer-vision runtime).
   <em>Qwen3.5-0.8B (hybrid SSM) streaming natively on the RDK S100P BPU · ~14 tok/s</em>
 </p>
 
-> 📖 中文 README: [README.md](README.md) ·
-> API docs: [English](docs/API.en.md) / [中文](docs/API.zh.md)
+> 📖 API docs: [English](docs/API.en.md) · [中文](docs/API.zh.md)
+
+## Contents
+
+- [Features](#features) · [Install](#install) · [Quick start](#quick-start)
+- [Multimodal](#multimodal-qwen25-omni) · [Sharing the BPU](#sharing-the-bpu-with-a-vision-pipeline)
+- [Supported models](#supported-models) · [Build from source](#build-from-source)
+- [Community](#community) · [Contributing](#contributing) · [Acknowledgements](#acknowledgements) · [License](#license)
 
 ## Features
 
@@ -172,6 +186,44 @@ scripts/make_model_dir.py dense ~/models/qwen2.5-1.5b \
 
 `hybrid` (Qwen3.5 SSM) and `omni` (multimodal) pass their extra towers/embed tables as flags.
 
+## Community
+
+Join the **BPU tech chat group** to discuss RDK / BPU on-device deployment and this project
+(shared community group with [bcdl](https://github.com/ruisv/bcdl)).
+
+<img src="docs/assets/bllm-group-qr.jpg" alt="BPU tech chat group QR" width="240">
+
+> WeChat group QR codes expire — if it has, please open an [Issue](../../issues) and we'll
+> refresh it; you're also welcome to just discuss in [Issues](../../issues).
+
+## Contributing
+
+Contributions welcome — issues and pull requests alike. See [`CONTRIBUTING.md`](CONTRIBUTING.md);
+in brief:
+
+- **Develop anywhere, build & run on the board.** The hobot runtime exists only on RDK
+  hardware, so the C++ library, the Python extension and the board tests must build and run
+  on an S100 / S100P / S600; the pure-metadata unit tests (`tests/test_modelmeta.py` etc.) run
+  on any host.
+- **Conventions** — headers `.h`, impl `.cc`, namespace `bllm`, errors via `BLLM_CHECK(...)`;
+  match the surrounding style.
+- **Tests** — any behaviour change adds/updates tests: pin logic with the offline metadata/
+  routing tests, and add a board end-to-end test that skips cleanly when its model is absent.
+- **Commits** — keep them focused; follow the [Conventional Commits](https://www.conventionalcommits.org/)
+  style already in the log.
+
+## Acknowledgements
+
+- **D-Robotics** — the RDK S100 / S100P / S600 platform and the hobot runtime (`hbDNN` /
+  `hbUCP` / `HBRT`) BLLM builds on.
+- **[nanobind](https://github.com/wjakob/nanobind)** — the Python binding layer.
+- **[mlc-ai/tokenizers-cpp](https://github.com/mlc-ai/tokenizers-cpp)** +
+  **[HuggingFace tokenizers](https://github.com/huggingface/tokenizers)** — C++ tokenization.
+- The upstream authors of the models it runs — **Qwen** (Qwen2.5 / Qwen3.5 / Qwen2.5-Omni,
+  Alibaba), **DeepSeek**, **InternLM** (Shanghai AI Lab), **GLM** (Zhipu), **Phi** (Microsoft).
+  Each weight is under its own upstream license.
+
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+BLLM is licensed under the **Apache License 2.0** — see [`LICENSE`](LICENSE). This covers
+BLLM's own source only; the `.hbm` model weights are under their own upstream licenses.
