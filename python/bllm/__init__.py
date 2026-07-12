@@ -619,12 +619,15 @@ def load(path: str, *, backend: str = "auto", **kwargs):
     Routing (see bllm.chooseBackend rule):
       * a native package (a directory with model.json) → NativeSession (dense/hybrid) or
         NativeVlmSession (omni), by its `arch`;
-      * a bare libxlm `.hbm` / OE-LLM package → LlmSession (libxlm).
+      * a bare `.hbm` + tokenizer_dir (an OE-LLM package) → NativeSession, by synthesizing a
+        dense model.json from the `.hbm` + tokenizer dir (bllm._modelmeta). Pass
+        `backend="libxlm"` to force the legacy runtime instead.
     `backend="native"|"libxlm"` forces one and errors if it is impossible. Extra kwargs go
     to the chosen session's constructor.
 
         s = bllm.load("qwen3.5-0.8b")      # -> NativeSession (hybrid; libxlm can't run it)
-        s = bllm.load("Qwen2.5_1.5B.hbm", tokenizer_dir="Qwen2.5_1.5B_config/")  # -> libxlm
+        s = bllm.load("Qwen2.5_1.5B.hbm", tokenizer_dir="Qwen2.5_1.5B_config/")  # -> native
+        s = bllm.load("Qwen2.5_1.5B.hbm", tokenizer_dir="...", backend="libxlm")  # -> libxlm
         s.chat("你好")                      # uniform surface either way
     """
     manifest = _read_manifest(path)
@@ -653,12 +656,33 @@ def load(path: str, *, backend: str = "auto", **kwargs):
                              "NativeEmbedder C++ API (no Python binding yet)")
         return NativeSession(path, **kwargs)   # dense or hybrid
 
-    # Not a native package → a bare libxlm .hbm or OE-LLM package.
-    if backend == "native":
-        raise ValueError("backend='native' needs a model.json directory, not a bare .hbm")
-    if not _HAVE_LIBXLM:
-        raise RuntimeError(f"this install has no libxlm backend (available: {available_backends()})")
-    return LlmSession(path, **kwargs)
+    # Not a native package → a bare `.hbm` / OE-LLM package (a `.hbm` + a tokenizer dir).
+    # Blocker A: native consumes this directly now — synthesize a dense model.json from the
+    # `.hbm` + tokenizer dir (bllm._modelmeta) and load it — so `bllm.load(<.hbm>)` runs
+    # native, not libxlm. `backend="libxlm"` remains the explicit escape hatch.
+    tokenizer_dir = kwargs.pop("tokenizer_dir", "") or kwargs.pop("tokenizer", "")
+
+    want_libxlm = backend == "libxlm" or (backend == "auto" and not _HAVE_NATIVE)
+    if want_libxlm:
+        if not _HAVE_LIBXLM:
+            raise RuntimeError("this install has no libxlm backend (available: "
+                               f"{available_backends()})")
+        return LlmSession(path, tokenizer_dir, **kwargs)
+
+    if not _HAVE_NATIVE:                      # backend == "native" but it isn't built
+        raise RuntimeError(f"this install has no native backend (available: {available_backends()})")
+    if not tokenizer_dir:
+        raise ValueError(
+            "loading a bare .hbm on the native backend needs tokenizer_dir=<dir> "
+            "(a directory with tokenizer.json, ideally generation_config.json too). "
+            "A hybrid (Qwen3.5) or omni package instead needs a model.json built with "
+            "scripts/make_model_dir.py — its host embed table isn't inside the .hbm.")
+    from ._modelmeta import native_dir_for
+    system = kwargs.pop("system_prompt", None) or kwargs.pop("system", None)
+    d = native_dir_for(path, tokenizer_dir, name=kwargs.pop("name", None),
+                       eos=kwargs.pop("eos", None),
+                       system=system or "You are a helpful assistant.")
+    return NativeSession(str(d), **kwargs)
 
 
 # ── public surface, per backend actually present ─────────────────────────────

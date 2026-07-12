@@ -55,11 +55,12 @@ def test_load_rejects_impossible_requests(tmp_path):
     if bllm._HAVE_NATIVE:
         with pytest.raises(ValueError, match="encoder"):
             bllm.load(_pkg(tmp_path, "embed", "auto"))
-    # Forcing native on a bare .hbm has no manifest to read.
+    # Native on a bare .hbm now synthesizes a manifest (Blocker A) but needs a tokenizer dir.
     hbm = tmp_path / "bare.hbm"
     hbm.write_bytes(b"\x00")
-    with pytest.raises(ValueError, match="model.json"):
-        bllm.load(str(hbm), backend="native")
+    if bllm._HAVE_NATIVE:
+        with pytest.raises(ValueError, match="tokenizer_dir"):
+            bllm.load(str(hbm), backend="native")
 
 
 def test_load_reports_a_missing_backend(tmp_path):
