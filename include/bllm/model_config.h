@@ -11,9 +11,13 @@
 namespace bllm {
 
 struct ChatConfig {
-  std::string format = "chatml";                 // "chatml" | "none" (raw completion)
+  std::string format = "chatml";                 // "chatml" | "phi" | "none" (raw completion)
   int im_start = -1, im_end = -1;                // ChatML special-token ids
   int bos = -1;                                  // BOS id prepended once (e.g. InternLM2 <s>=1); -1 = none
+  // Phi-style role markers (format=="phi"): each turn is `<role>content<end>`, no role
+  // text and no newline — the marker itself IS the role. Generation ends on <end> (which
+  // is also an eos), so a prior assistant turn is closed by re-emitting <end> next turn.
+  int r_user = -1, r_assistant = -1, r_system = -1, r_end = -1;
   std::string system = "You are a helpful assistant.";
 };
 

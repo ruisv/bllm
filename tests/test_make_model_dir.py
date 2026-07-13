@@ -136,6 +136,32 @@ def test_chat_format_none_without_chatml_markers(tmp_path):
     assert cfg["chat"] == {"format": "none"}
 
 
+PHI_ADDED = [
+    {"content": "<|endoftext|>", "id": 199999, "special": True},
+    {"content": "<|end|>", "id": 200020, "special": True},
+    {"content": "<|user|>", "id": 200021, "special": True},
+    {"content": "<|assistant|>", "id": 200019, "special": True},
+    {"content": "<|system|>", "id": 200022, "special": True},
+]
+
+
+def test_chat_format_phi_from_role_markers(tmp_path):
+    """Phi-4-mini declares <|user|>/<|assistant|>/<|end|> instead of ChatML markers."""
+    src = tmp_path / "src"
+    src.mkdir()
+    tok = write_tokenizer(src, added=PHI_ADDED)
+    (src / "generation_config.json").write_text('{"eos_token_id": [200020, 199999]}')
+    hbm = src / "m.hbm"
+    hbm.write_bytes(b"\0")
+    assert _run(["dense", str(tmp_path / "o"), "--hbm", str(hbm), "--tokenizer", str(tok)]) == 0
+    cfg = json.loads((tmp_path / "o" / "model.json").read_text())
+    assert cfg["chat"] == {"format": "phi", "r_user": 200021, "r_assistant": 200019,
+                           "r_end": 200020, "r_system": 200022,
+                           "system": "You are a helpful assistant."}
+    # <|end|> must be an eos, or a phi turn never stops.
+    assert 200020 in cfg["eos"]
+
+
 def test_omni_requires_its_towers(tmp_path):
     src = tmp_path / "src"
     src.mkdir()

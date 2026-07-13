@@ -113,11 +113,28 @@ class NativeLlm {
   // ChatML multi-turn: context persists across calls (feed only the new turn).
   std::string chat(const std::string& msg, int max_new = 256, const OnText& on_text = {},
                    const std::vector<std::string>& stop = {}) {
+    std::vector<int> ids;
+    auto add = [&](const std::vector<int>& v) { ids.insert(ids.end(), v.begin(), v.end()); };
+    // Phi-style template: `<|system|>sys<|end|><|user|>msg<|end|><|assistant|>`. No role
+    // text, no newline — the marker token is the role. Generation stops on <|end|> (an eos),
+    // which is therefore NOT in the cache, so a prior assistant turn is closed by prepending
+    // <|end|> again on the next turn (mirrors the ChatML close below).
+    if (cfg_.chat.format == "phi" && cfg_.chat.r_user >= 0) {
+      const int U = cfg_.chat.r_user, A = cfg_.chat.r_assistant;
+      const int SY = cfg_.chat.r_system, PE = cfg_.chat.r_end;
+      if (first_turn_) {
+        if (cfg_.chat.bos >= 0) add({cfg_.chat.bos});
+        if (SY >= 0) { add({SY}); add(tk_.encode(cfg_.chat.system)); add({PE}); }
+      } else            { add({PE}); }              // close the previous assistant turn
+      add({U}); add(tk_.encode(msg)); add({PE});
+      add({A});
+      first_turn_ = false;
+      feedIds(ids);
+      return streamDecode(max_new, on_text, stop);
+    }
     if (cfg_.chat.format != "chatml" || cfg_.chat.im_start < 0)
       return generate(msg, max_new, on_text, stop);   // no template → raw
     const int S = cfg_.chat.im_start, E = cfg_.chat.im_end;
-    std::vector<int> ids;
-    auto add = [&](const std::vector<int>& v) { ids.insert(ids.end(), v.begin(), v.end()); };
     // Canonical ChatML: every role block is `<|im_start|>role\n{content}<|im_end|>\n`. The
     // newline after <|im_end|> matters — omitting it leaves the model with a malformed
     // boundary (InternLM2 echoes the prompt without it; Qwen is more forgiving but this is

@@ -6,7 +6,15 @@ All notable changes to BLLM are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.1.0]
+## [0.1.1]
+
+### Added
+
+- **Phi chat template** — a third chat format (`phi`, alongside `chatml` and raw `none`)
+  for models that mark roles with `<|user|>` / `<|assistant|>` / `<|system|>` / `<|end|>`
+  tokens instead of ChatML. `make_model_dir.py` auto-detects the markers and emits it, so
+  **Phi-4-mini** now ships as a first-class multi-turn chat package (previously it only ran
+  as raw completion). Existing ChatML models are unaffected.
 
 First public release — an on-board LLM / VLM runtime for D-Robotics RDK S100 / S100P / S600,
 driving compiled `.hbm` graphs natively on the BPU (hbDNN / hbUCP), no extra LLM SDK.
@@ -28,5 +36,6 @@ driving compiled `.hbm` graphs natively on the BPU (hbDNN / hbUCP), no extra LLM
 - **Packaging** — conda packages (`bllm`, `libbllm`, `tokenizers-cpp`) for linux-aarch64;
   `find_package(bllm)` for C++ consumers.
 
-[Unreleased]: https://github.com/ruisv/bllm/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ruisv/bllm/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/ruisv/bllm/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ruisv/bllm/releases/tag/v0.1.0

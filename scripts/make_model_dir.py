@@ -41,6 +41,9 @@ from pathlib import Path
 # contains a literal "</s>" at id 128247; using it as eos yields a model that never stops.
 EOS_CANDIDATES = ["<|im_end|>", "<|endoftext|>", "<｜end▁of▁sentence｜>", "<|end|>", "<|eot_id|>"]
 CHATML_START, CHATML_END = "<|im_start|>", "<|im_end|>"
+# Phi-style role markers: each turn is `<role>content<|end|>`, no role text (the marker
+# is the role). Detected when the tokenizer declares <|user|>/<|assistant|>/<|end|>.
+PHI_USER, PHI_ASSISTANT, PHI_SYSTEM, PHI_END = "<|user|>", "<|assistant|>", "<|system|>", "<|end|>"
 # Legacy sentencepiece tokenizers carry no added_tokens at all (InternLM2); there the
 # stop token genuinely does live in the vocabulary.
 SENTENCEPIECE_EOS = ["</s>", "<eos>"]
@@ -160,10 +163,16 @@ def main() -> int:
     if args.cache_len:
         cfg["cache_len"] = args.cache_len
 
-    # ChatML only when the tokenizer actually has the markers.
+    # Pick the chat template from the markers the tokenizer actually declares.
     if CHATML_START in specials and CHATML_END in specials:
         cfg["chat"] = {"format": "chatml", "im_start": specials[CHATML_START],
                        "im_end": specials[CHATML_END], "system": args.system}
+    elif PHI_USER in specials and PHI_ASSISTANT in specials and PHI_END in specials:
+        cfg["chat"] = {"format": "phi", "r_user": specials[PHI_USER],
+                       "r_assistant": specials[PHI_ASSISTANT], "r_end": specials[PHI_END],
+                       "system": args.system}
+        if PHI_SYSTEM in specials:
+            cfg["chat"]["r_system"] = specials[PHI_SYSTEM]
     else:
         cfg["chat"] = {"format": "none"}
         print(f"[warn] {tokenizer_src.name} has no ChatML markers — chat.format=none "
