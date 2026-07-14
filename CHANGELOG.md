@@ -6,6 +6,8 @@ All notable changes to BLLM are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-07-14
+
 ### Added
 
 - **Reusable-prefix path** — `NativeSession.set_prefix()` / `ask()`: prefill a shared prefix
@@ -20,6 +22,10 @@ All notable changes to BLLM are documented here. The format follows
 - **`encode()` / `decode()`** on the session (the model's C++ tokenizer).
 - **Qwen3.5-2B / 4B** (hybrid Gated-DeltaNet/SSM) validated on-board, 100% on-BPU int8
   (~14.5 / 6.9 tok/s), joining the 0.8B.
+- **S600 multi-core BPU** — an `.hbm` compiled for N BPU cores (nash-p, N ∈ {1, 2, 4}) is
+  recorded via `make_model_dir.py --bpu-cores N` (`model.json` `bpu_cores`). A large model
+  saturates 4 cores (Qwen3.5-4B, 27 tok/s on S600); small models stay single-core. See
+  [`docs/S600_RESULTS.md`](docs/S600_RESULTS.md).
 
 ## [0.1.1]
 
@@ -51,6 +57,7 @@ driving compiled `.hbm` graphs natively on the BPU (hbDNN / hbUCP), no extra LLM
 - **Packaging** — conda packages (`bllm`, `libbllm`, `tokenizers-cpp`) for linux-aarch64;
   `find_package(bllm)` for C++ consumers.
 
-[Unreleased]: https://github.com/ruisv/bllm/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/ruisv/bllm/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/ruisv/bllm/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/ruisv/bllm/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ruisv/bllm/releases/tag/v0.1.0
