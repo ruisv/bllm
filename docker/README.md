@@ -69,7 +69,21 @@ flight at a time (BPU = single prefill/decode graph); requests serialize. Run a
 | `BLLM_API_KEY` | — | if set, require `Authorization: Bearer <key>` |
 | `BLLM_BPU_PRIORITY` | — | `set_bpu_priority()` at startup |
 | `BLLM_PERF_MODE` | `0` | `1` = poke BPU perf registers (needs `--privileged`; prefer doing it on the host) |
+| `BLLM_CORS_ORIGINS` | `*` | allowed CORS origins (comma-separated); default open for browser clients |
 | `BLLM_PORT` / `BLLM_HOST` | `8000` / `0.0.0.0` | bind |
+
+### Chat from a browser / existing client
+
+No UI is bundled — the API is OpenAI-compatible and CORS is enabled, so point
+any existing client at `http://<board-ip>:8000/v1`:
+
+- **[chatbox-lite](https://github.com/lfbear/chatbox-lite)** — a single HTML
+  file, fully client-side; add an "OpenAI-compatible" provider with base URL
+  `http://<board-ip>:8000/v1` (any API key unless `BLLM_API_KEY` is set).
+- Desktop **Chatbox**, **Open WebUI**, **LibreChat**, or the OpenAI SDK
+  (`base_url="http://<board-ip>:8000/v1"`) all work the same way.
+
+For a locked-down deployment, set `BLLM_API_KEY` and narrow `BLLM_CORS_ORIGINS`.
 
 ## Host prerequisites (once, outside the container)
 
