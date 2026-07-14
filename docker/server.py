@@ -14,7 +14,7 @@ Config via env:
     BLLM_MODEL          model directory (with model.json) OR a bare .hbm     [required]
     BLLM_TOKENIZER_DIR  tokenizer dir, only when BLLM_MODEL is a bare .hbm
     BLLM_BACKEND        load backend, default "auto"
-    BLLM_MAX_NEW        default max_new tokens when a request omits it (400)
+    BLLM_MAX_NEW        default max_new tokens when a request omits it (1024)
     BLLM_API_KEY        if set, require "Authorization: Bearer <key>"
     BLLM_BPU_PRIORITY   optional int, set_bpu_priority() at startup
 
@@ -73,7 +73,7 @@ class Engine:
         if prio:  # empty string (unset env in compose) counts as no priority
             self.sess.set_bpu_priority(int(prio))
         self.name = getattr(self.sess, "name", None) or os.path.basename(model.rstrip("/"))
-        self.default_max_new = int(os.environ.get("BLLM_MAX_NEW", "400"))
+        self.default_max_new = int(os.environ.get("BLLM_MAX_NEW", "1024"))
         self.lock = asyncio.Lock()  # one generation in flight at a time
 
     def _stream_sync(self, prompt: str, max_new: int, stop: list[str],
@@ -169,16 +169,20 @@ async def chat_completions(request: Request,
                                    **samp)
 
     if stream:
-        return StreamingResponse(_sse(cid, created, gen),
+        return StreamingResponse(_sse(cid, created, gen, max_new),
                                  media_type="text/event-stream")
 
     # non-streaming: accumulate under the lock
     async with engine.lock:
-        text, ntok = await _collect(gen)
+        try:
+            text, ntok = await _collect(gen)
+        except Exception as exc:  # return a proper OpenAI error, not a bare 500
+            status, body = _error_payload(exc)
+            return JSONResponse(status_code=status, content=body)
     completion = {
         "id": cid, "object": "chat.completion", "created": created, "model": engine.name,
         "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
-                     "finish_reason": "stop"}],
+                     "finish_reason": "length" if ntok >= max_new else "stop"}],
         "usage": {"prompt_tokens": _approx_tok(prompt), "completion_tokens": ntok,
                   "total_tokens": _approx_tok(prompt) + ntok},
     }
@@ -186,6 +190,31 @@ async def chat_completions(request: Request,
 
 
 # --- streaming/thread bridge ------------------------------------------------
+class _StreamError:
+    """Carries an exception from the pump thread to the SSE consumer, so a
+    mid-stream failure (e.g. context overflow) surfaces as an error event
+    instead of a silent, empty ``finish_reason: stop``."""
+
+    __slots__ = ("exc",)
+
+    def __init__(self, exc: BaseException) -> None:
+        self.exc = exc
+
+
+def _error_payload(exc: BaseException) -> tuple[int, dict]:
+    """(http_status, OpenAI-style error body) for an exception."""
+    msg = str(exc)
+    code = "context_length_exceeded" if "context overflow" in msg else None
+    status = 400 if code else 500
+    return status, {"error": {"message": msg, "type": exc.__class__.__name__, "code": code}}
+
+
+def _error_event(exc: BaseException) -> str:
+    import json
+    _, body = _error_payload(exc)
+    return f"data: {json.dumps(body, ensure_ascii=False)}\n\n"
+
+
 async def _collect(gen_factory) -> tuple[str, int]:
     loop = asyncio.get_running_loop()
 
@@ -196,7 +225,7 @@ async def _collect(gen_factory) -> tuple[str, int]:
     return await loop.run_in_executor(None, run)
 
 
-async def _sse(cid: str, created: int, gen_factory):
+async def _sse(cid: str, created: int, gen_factory, max_new: int):
     """Drive the blocking generator in a thread; emit OpenAI SSE chunks."""
     async with engine.lock:
         loop = asyncio.get_running_loop()
@@ -206,6 +235,8 @@ async def _sse(cid: str, created: int, gen_factory):
             try:
                 for piece in gen_factory():
                     q.put(piece)
+            except Exception as exc:  # surface generation errors (e.g. context overflow) to the client
+                q.put(_StreamError(exc))
             finally:
                 q.put(None)  # sentinel
 
@@ -213,12 +244,20 @@ async def _sse(cid: str, created: int, gen_factory):
 
         # role delta first (OpenAI convention)
         yield _chunk(cid, created, {"role": "assistant"})
+        ntok = 0
         while True:
             piece = await loop.run_in_executor(None, q.get)
             if piece is None:
                 break
+            if isinstance(piece, _StreamError):
+                # emit an OpenAI-style error event instead of a silent clean stop
+                yield _error_event(piece.exc)
+                yield "data: [DONE]\n\n"
+                return
+            ntok += 1
             yield _chunk(cid, created, {"content": piece})
-        yield _chunk(cid, created, {}, finish_reason="stop")
+        # "length" when the generation was cut at the max_new cap, else natural "stop"
+        yield _chunk(cid, created, {}, finish_reason="length" if ntok >= max_new else "stop")
         yield "data: [DONE]\n\n"
 
 

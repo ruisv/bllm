@@ -157,7 +157,7 @@ print(r.choices[0].message.content)
 |---|---|---|
 | `BLLM_MODEL` | 交付镜像已内置 | 模型目录(含 `model.json`)或裸 `.hbm` 的容器内路径 |
 | `BLLM_TOKENIZER_DIR` | — | 仅当 `BLLM_MODEL` 是裸 `.hbm` 时需要 |
-| `BLLM_MAX_NEW` | `400` | 请求没给 `max_tokens` 时的默认生成上限 |
+| `BLLM_MAX_NEW` | `1024` | 请求没给 `max_tokens` 时的默认生成上限 |
 | `BLLM_API_KEY` | — | 设了就强制 `Authorization: Bearer <key>` |
 | `BLLM_CORS_ORIGINS` | `*` | 允许的 CORS 源(逗号分隔),默认全开给浏览器客户端 |
 | `BLLM_BPU_PRIORITY` | — | 启动时设 BPU 优先级 |
@@ -191,3 +191,4 @@ docker stats bllm-serve             # 资源占用
 | 加载报 `.so` 找不到符号 / GLIBC | 板子 BSP/驱动升级了,镜像里的 `/usr/hobot/lib` 闭包 ABI 不匹配 → 需重新构建镜像 |
 | decode 偏慢 | 主机开 BPU 性能模式(第 1 步 ③);上下文越长 decode 越慢是 BPU 静态图特性 |
 | 上下文超了报错 | 全注意力模型越过 KV 窗口会**抛异常**而非丢 token;选更大 ctx 的交付镜像(如 ctx4k) |
+| 回答写一半被截断 | 命中生成上限(默认 `BLLM_MAX_NEW=1024`);调大请求的 `max_tokens`,或起容器时 `-e BLLM_MAX_NEW=2048`。返回里 `finish_reason:"length"` 即表示是长度截断(`"stop"` 才是自然结束)。注意 prompt+生成要一起装进 ctx 窗口 |

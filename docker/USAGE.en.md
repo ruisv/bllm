@@ -170,7 +170,7 @@ existing client at `http://<board-ip>:8866/v1`:
 |---|---|---|
 | `BLLM_MODEL` | preset in delivery images | model dir (with `model.json`) or a bare `.hbm`, path inside the container |
 | `BLLM_TOKENIZER_DIR` | — | only when `BLLM_MODEL` is a bare `.hbm` |
-| `BLLM_MAX_NEW` | `400` | default generation cap when a request omits `max_tokens` |
+| `BLLM_MAX_NEW` | `1024` | default generation cap when a request omits `max_tokens` |
 | `BLLM_API_KEY` | — | if set, require `Authorization: Bearer <key>` |
 | `BLLM_CORS_ORIGINS` | `*` | allowed CORS origins (comma-separated); open by default for browser clients |
 | `BLLM_BPU_PRIORITY` | — | set BPU priority at startup |
@@ -206,3 +206,4 @@ change the `-v` mount + `BLLM_MODEL` and rerun.
 | Load fails on missing `.so` symbol / GLIBC | board BSP/driver was upgraded and the image's `/usr/hobot/lib` closure no longer matches the ABI → rebuild the image |
 | Decode is slow | enable BPU performance mode on the host (step 1 ③); note longer context = slower decode, a BPU static-graph property |
 | Context-overflow error | full-attention models **raise** rather than drop tokens past the KV window; use a larger-ctx delivery image (e.g. ctx4k) |
+| Reply cut off mid-sentence | hit the generation cap (default `BLLM_MAX_NEW=1024`); raise the request's `max_tokens` or launch with `-e BLLM_MAX_NEW=2048`. `finish_reason:"length"` in the response means it was length-truncated (`"stop"` = natural end). Prompt + generation must fit the ctx window together |

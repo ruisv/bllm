@@ -97,7 +97,7 @@ flight at a time (BPU = single prefill/decode graph); requests serialize. Run a
 | `BLLM_MODEL` | — (required) | model dir (with `model.json`) or a bare `.hbm`, path inside the container |
 | `BLLM_TOKENIZER_DIR` | — | tokenizer dir, only when `BLLM_MODEL` is a bare `.hbm` |
 | `BLLM_BACKEND` | `auto` | `bllm.load` backend |
-| `BLLM_MAX_NEW` | `400` | default `max_tokens` when a request omits it |
+| `BLLM_MAX_NEW` | `1024` | default `max_tokens` when a request omits it |
 | `BLLM_API_KEY` | — | if set, require `Authorization: Bearer <key>` |
 | `BLLM_BPU_PRIORITY` | — | `set_bpu_priority()` at startup |
 | `BLLM_PERF_MODE` | `0` | `1` = poke BPU perf registers (needs `--privileged`; prefer doing it on the host) |
