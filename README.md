@@ -39,7 +39,7 @@
 - **多模态**：Qwen2.5-Omni 的 文本 + 图像 + 音频 + 视频，支持文件路径或原始数组（相机/麦克风零拷贝）。
 - **一行式会话**：`bllm.load(...)` / `NativeSession`，内置 C++ tokenizer、ChatML 模板、流式、多轮、采样。
 - **完整采样**：贪心 / 温度 / top-k / top-p / min-p / typical-p / 重复·频率·存在惩罚，可复现。
-- **生产特性**：困惑度、异步提交、提示缓存（KV+SSM 状态存取，逐位一致）、停止串（提前停止）、
+- **生产特性**：困惑度、异步提交、提示缓存（KV+SSM 状态存取，逐位一致）、停止串（命中即停）、
   与视觉流水线共享 BPU 的优先级/时间片控制。
 
 ## 安装
@@ -132,11 +132,30 @@ llm.set_bpu_priority(0)      # 最低,让视觉抢占 BPU 队列
 - **Qwen2.5** 1.5B / 7B（Base + Instruct）
 - **DeepSeek-R1-Distill-Qwen** 1.5B / 7B
 - **InternLM2-1.8B** · **GLM-Edge** · **Phi-4-mini**
-- **Qwen3.5-0.8B**（混合 SSM，原生独有）
+- **Qwen3.5-0.8B / 2B / 4B**（混合 SSM，原生独有；100% 落 BPU int8）
 - **Qwen2.5-Omni-3B**（多模态）
 
 在 q8/q4 × 上下文 1024/4096 等变体上验证。模型转换（`.hbm` 如何产出）是离线流程，不在本仓范围；
 本仓消费成品 `.hbm` + tokenizer 配置。
+
+> **S600 多核**：大模型可绑定多个 BPU 核并行 decode——Qwen3.5-4B 用满 4 核 **27 tok/s**、
+> 0.8B 单核 **42.7 tok/s**。板端实测见 [`docs/S600_RESULTS.md`](docs/S600_RESULTS.md)。
+
+### 预编译模型下载
+
+我们把一批**编译好、可直接 `bllm.load()` 的模型包**放在网盘（每个是一个目录：`model.hbm` +
+`tokenizer.json` + `model.json`，混合模型另含 `embed_tokens.bin`）。文件名已标注**上下文长度 /
+目标板子 / 量化位宽**，一看即知：
+
+**📦 [Google Drive — 模型下载](https://drive.google.com/drive/folders/1tR3MtP0iriptqpeHOSzdpRMT_ckdqDQ8)**
+
+下载后校验、解压即可加载（以 Qwen3.5-4B 为例）：
+
+```bash
+sha256sum -c qwen3.5-4b-ctx512-int8-s100.tar.gz.sha256   # 完整性校验
+tar xzf qwen3.5-4b-ctx512-int8-s100.tar.gz
+python -c "import bllm; s=bllm.load('qwen3.5-4b-ctx512-int8-s100'); print(s.chat('你好'))"
+```
 
 ## 从源码构建
 
