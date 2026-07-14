@@ -19,15 +19,16 @@ Base is `ubuntu:22.04` because the D-Robotics BPU libs hard-require
 
 ## Build + run (on the board, via docker compose)
 
-One-time prep: stage the proprietary BPU lib closure from the board's
-`/usr/hobot/lib` into `docker/_stage/` (gitignored) — compose bundles it but
-can't copy host files itself:
+Everything lives in this `docker/` dir — run the commands from here. One-time
+prep stages the proprietary BPU lib closure from the board's `/usr/hobot/lib`
+into `_stage/` (gitignored) — compose bundles it but can't copy host files:
 
 ```bash
-docker/stage-libs.sh
+cd docker
+./stage-libs.sh
 ```
 
-Then build + start (from the repo root, where `compose.yaml` lives):
+Then build + start:
 
 ```bash
 MODEL_DIR=~/models/qwen3.5-2b docker compose up -d --build
@@ -80,6 +81,6 @@ flight at a time (BPU = single prefill/decode graph); requests serialize. Run a
 
 ## Rebuild triggers
 
-Re-run `docker/stage-libs.sh && docker compose up -d --build` when the board's
-**BSP / BPU driver** is upgraded — the bundled `/usr/hobot/lib` closure must
-match the running kernel driver ABI.
+Re-run `./stage-libs.sh && docker compose up -d --build` (from `docker/`) when
+the board's **BSP / BPU driver** is upgraded — the bundled `/usr/hobot/lib`
+closure must match the running kernel driver ABI.

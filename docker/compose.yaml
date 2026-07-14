@@ -1,8 +1,8 @@
 # bllm-serve — OpenAI-compatible LLM inference server for RDK S100/S100P/S600.
 #
-# One-time prep (stages the proprietary BPU userspace libs from the board's
-# /usr/hobot/lib into docker/_stage/, which the image bundles):
-#   docker/stage-libs.sh
+# Run everything from this docker/ dir. One-time prep stages the proprietary
+# BPU userspace libs from the board's /usr/hobot/lib into _stage/ (bundled):
+#   ./stage-libs.sh
 #
 # Build + run:
 #   MODEL_DIR=~/models/qwen3.5-2b docker compose up -d --build
@@ -15,7 +15,7 @@ services:
     image: bllm-serve:latest
     build:
       context: .
-      dockerfile: docker/Dockerfile
+      dockerfile: Dockerfile
       network: host
     container_name: bllm-serve
     network_mode: host
