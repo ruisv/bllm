@@ -63,6 +63,17 @@ The baked image is base (~760 MB) + the model package (Qwen3.5-2B ≈ 2.8 GB, in
 `docker image ls` because the containerd store keeps both the compressed blob and
 the unpacked snapshot. Still needs the BPU/ION device passthrough at run time.
 
+### Deliverable images
+
+| Tag | Contents | ~push/`save` size |
+|-----|----------|-------------------|
+| `bllm-serve:0.1.2` (+ `latest`) | general runtime — model via volume | ~760 MB |
+| `bllm-serve:qwen3.5-0.8b-ctx2k-int8-s100p` | + Qwen3.5-0.8B baked in | ~2.1 GB |
+| `bllm-serve:qwen3.5-2b-ctx512-int8-s100p` | + Qwen3.5-2B baked in | ~3.5 GB |
+
+The general image is the base the baked ones layer on (`bake-model.sh` builds it
+as `bllm-serve:latest`; tag it by the bllm version, e.g. `bllm-serve:0.1.2`).
+
 ### API
 
 ```bash
