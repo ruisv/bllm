@@ -31,6 +31,7 @@ from typing import Any, Iterator, Optional
 
 import bllm
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 # --- ChatML rendering -------------------------------------------------------
@@ -90,6 +91,16 @@ engine: Engine  # set on startup
 
 # --- FastAPI app ------------------------------------------------------------
 app = FastAPI(title="bllm-serve", version="1")
+
+# CORS so browser-based OpenAI-compatible clients (chatbox-lite, Open WebUI, …)
+# can hit the API cross-origin. Default open (it's a test/edge service); narrow
+# via BLLM_CORS_ORIGINS="https://a.com,https://b.com".
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in os.environ.get("BLLM_CORS_ORIGINS", "*").split(",") if o.strip()],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.on_event("startup")
