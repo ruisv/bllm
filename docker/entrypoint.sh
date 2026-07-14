@@ -23,5 +23,5 @@ fi
 
 exec uvicorn server:app \
     --host "${BLLM_HOST:-0.0.0.0}" \
-    --port "${BLLM_PORT:-8000}" \
+    --port "${BLLM_PORT:-8866}" \
     --workers 1

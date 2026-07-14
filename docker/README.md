@@ -42,14 +42,35 @@ both at build and run. The BPU/ION device nodes and model volume are declared in
 the compose file; per-deploy knobs go through env vars (`MODEL_DIR`, `BLLM_PORT`,
 `BLLM_API_KEY`, …) or a `.env` file next to `compose.yaml`.
 
+### Self-contained image (model baked in)
+
+For a distributable "just `docker run` and chat" deliverable, bake a model into
+the image with `bake-model.sh` (builds the agnostic base, then layers the model
+on top). Tag it by the delivery convention `<name>:<model>-<ctx>-<quant>-<board>`
+(read the pieces off `model.json`):
+
+```bash
+cd docker
+./bake-model.sh ~/models/qwen3.5-2b bllm-serve:qwen3.5-2b-ctx512-int8-s100p
+docker run -d --name bllm-serve --network host \
+  --device /dev/bpu --device /dev/bpu_core0 --device /dev/ion \
+  --device /dev/ipcdrv --device /dev/dcore0_rpmsg_bpu \
+  bllm-serve:qwen3.5-2b-ctx512-int8-s100p     # no volume, no MODEL_DIR
+```
+
+The baked image is base (~760 MB) + the model package (Qwen3.5-2B ≈ 2.8 GB, incl.
+`embed_tokens.bin`), so ~3.5 GB to push/`docker save`. On-disk it reads larger in
+`docker image ls` because the containerd store keeps both the compressed blob and
+the unpacked snapshot. Still needs the BPU/ION device passthrough at run time.
+
 ### API
 
 ```bash
-curl localhost:8000/health
-curl localhost:8000/v1/models
-curl localhost:8000/v1/chat/completions -H 'Content-Type: application/json' \
+curl localhost:8866/health
+curl localhost:8866/v1/models
+curl localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"你好"}]}'
-curl -N localhost:8000/v1/chat/completions -H 'Content-Type: application/json' \
+curl -N localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"数到5"}],"stream":true}'
 ```
 
@@ -70,18 +91,18 @@ flight at a time (BPU = single prefill/decode graph); requests serialize. Run a
 | `BLLM_BPU_PRIORITY` | — | `set_bpu_priority()` at startup |
 | `BLLM_PERF_MODE` | `0` | `1` = poke BPU perf registers (needs `--privileged`; prefer doing it on the host) |
 | `BLLM_CORS_ORIGINS` | `*` | allowed CORS origins (comma-separated); default open for browser clients |
-| `BLLM_PORT` / `BLLM_HOST` | `8000` / `0.0.0.0` | bind |
+| `BLLM_PORT` / `BLLM_HOST` | `8866` / `0.0.0.0` | bind |
 
 ### Chat from a browser / existing client
 
 No UI is bundled — the API is OpenAI-compatible and CORS is enabled, so point
-any existing client at `http://<board-ip>:8000/v1`:
+any existing client at `http://<board-ip>:8866/v1`:
 
 - **[chatbox-lite](https://github.com/lfbear/chatbox-lite)** — a single HTML
   file, fully client-side; add an "OpenAI-compatible" provider with base URL
-  `http://<board-ip>:8000/v1` (any API key unless `BLLM_API_KEY` is set).
+  `http://<board-ip>:8866/v1` (any API key unless `BLLM_API_KEY` is set).
 - Desktop **Chatbox**, **Open WebUI**, **LibreChat**, or the OpenAI SDK
-  (`base_url="http://<board-ip>:8000/v1"`) all work the same way.
+  (`base_url="http://<board-ip>:8866/v1"`) all work the same way.
 
 For a locked-down deployment, set `BLLM_API_KEY` and narrow `BLLM_CORS_ORIGINS`.
 

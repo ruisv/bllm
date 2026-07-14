@@ -18,7 +18,7 @@ Config via env:
     BLLM_API_KEY        if set, require "Authorization: Bearer <key>"
     BLLM_BPU_PRIORITY   optional int, set_bpu_priority() at startup
 
-Run:  uvicorn server:app --host 0.0.0.0 --port 8000   (single worker only)
+Run:  uvicorn server:app --host 0.0.0.0 --port 8866   (single worker only)
 """
 from __future__ import annotations
 
