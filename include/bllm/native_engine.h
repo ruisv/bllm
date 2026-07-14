@@ -34,6 +34,7 @@
 #include <cstring>
 #include <functional>
 #include <random>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -334,12 +335,35 @@ class NativeEngine {
   // shape (rejected on load if it differs) and to a context within the window (P_ <=
   // cache_len). Not for the sliding-window regime.
   void save_state(const std::string& path) {
+    std::ofstream f(path, std::ios::binary);
+    if (!f) throw std::runtime_error("[native] cannot write state: " + path);
+    writeState(f);
+    if (!f) throw std::runtime_error("[native] failed writing state: " + path);
+  }
+  void load_state(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) throw std::runtime_error("[native] cannot read state: " + path);
+    readState(f);
+  }
+  // In-memory snapshot of the current context — same payload as save_state, as a byte blob.
+  // Backs the cheap prefix-reuse path (snapshot a prefilled prefix once, restore before each
+  // query) without a temp file.
+  std::string snapshot() const {
+    std::ostringstream os(std::ios::binary);
+    const_cast<NativeEngine*>(this)->writeState(os);
+    return os.str();
+  }
+  void restore(const std::string& blob) {
+    std::istringstream is(blob, std::ios::binary);
+    readState(is);
+  }
+
+ private:
+  void writeState(std::ostream& f) {
     if (!curLogits_) throw std::runtime_error("[native] no state to save — feed a prompt first");
     if (mode_ != InputMode::Token)
       throw std::runtime_error("[native] save_state is only for the token path");
     if (P_ > cacheLen_) throw std::runtime_error("[native] cannot snapshot a context past cache_len");
-    std::ofstream f(path, std::ios::binary);
-    if (!f) throw std::runtime_error("[native] cannot write state: " + path);
     const int32_t hdr[] = {kStateMagic, nLayers_, (int32_t)rowK_, (int32_t)rowV_, vocab_,
                            cacheLen_, P_, maxPos_};
     f.write((const char*)hdr, sizeof(hdr));
@@ -351,17 +375,13 @@ class NativeEngine {
       f.write((const char*)vRow(l, W_ + cacheLen_ - D), (size_t)D * rowV_);
     }
     f.write((const char*)curLogits_, (size_t)vocab_ * sizeof(int16_t));
-    if (!f) throw std::runtime_error("[native] failed writing state: " + path);
   }
-
-  void load_state(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) throw std::runtime_error("[native] cannot read state: " + path);
+  void readState(std::istream& f) {
     int32_t hdr[8];
     f.read((char*)hdr, sizeof(hdr));
     if (!f || hdr[0] != kStateMagic || hdr[1] != nLayers_ || hdr[2] != (int32_t)rowK_ ||
         hdr[3] != (int32_t)rowV_ || hdr[4] != vocab_ || hdr[5] != cacheLen_)
-      throw std::runtime_error("[native] state file does not match this model");
+      throw std::runtime_error("[native] state does not match this model");
     const int savedP = hdr[6], savedMax = hdr[7], D = savedP;   // P_ <= cache_len at save
     reset();
     for (int l = 0; l < nLayers_; ++l) {
@@ -372,10 +392,12 @@ class NativeEngine {
     }
     savedLogits_.resize(vocab_);
     f.read((char*)savedLogits_.data(), (size_t)vocab_ * sizeof(int16_t));
-    if (!f) throw std::runtime_error("[native] truncated state file: " + path);
+    if (!f) throw std::runtime_error("[native] truncated / corrupt state");
     P_ = savedP; maxPos_ = savedMax; W_ = 0;
     curLogits_ = savedLogits_.data();      // generate() reads this until the first decode step
   }
+
+ public:
 
   // Start the clock for the next reply's TTFT. feed() does this automatically;
   // call it earlier when work precedes the feed (e.g. a VLM's vision encode).

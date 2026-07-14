@@ -50,8 +50,28 @@ llm = bllm.NativeSession(model_dir)          # 或 bllm.load(...)
 | `chat_async(...)` / `generate_async(...)` -> `concurrent.futures.Future[str]` | 非阻塞提交（释放 GIL）；每会话同一时刻一个生成。 |
 | `perplexity(text) -> float` | 原文（不套模板）的教师强制困惑度；会重置会话。 |
 | `save_state(path)` / `load_state(path)` | 保存/恢复会话的 KV(+SSM) 状态 + 末次 logits，恢复后逐位一致（跳过重复 prefill）。 |
+| `set_prefix(shared_context="")` | 把系统提示 + 可选 `shared_context`（一篇文档/固定工具上下文/少样本示例）**prefill 一次**并内存快照。之后每次 `ask()` 复用它。 |
+| `ask(query, max_new=400, on_text=None, stop=None) -> str` | 针对 `set_prefix` 的前缀回答 `query`，**每次独立不累积**（每次恢复前缀，从不重复 prefill 前缀）。 |
+| `stream_ask(query, max_new=400, stop=None) -> Iterator[str]` | `ask` 的惰性生成器版本。 |
+| `has_prefix -> bool` / `clear_prefix()` | 是否已设前缀 / 丢弃缓存的前缀。 |
+| `encode(text) -> list[int]` / `decode(ids) -> str` | 用模型的 C++ 分词器编/解码。 |
+| `set_thinking(enabled)` | Qwen3.5 思考开关。`False` 在 assistant 处预填空 `<think></think>` → **直接作答**(更快、更省 token);`True`(默认)推理并显示 `<think>…</think>`。(消息里的 `/no_think` 软开关对本 checkpoint 不可靠,预填才可靠。) |
 
-C++：`bllm::NativeLlm`（`bllm/native_llm.h`）。
+```python
+llm.set_thinking(False)                 # 关思考：直接作答,4B 快很多
+```
+
+**前缀复用示例**（多问答共享一篇文档，前缀只 prefill 一次）：
+
+```python
+llm = bllm.load("/models/qwen3.5-4b")
+llm.set_prefix(open("report.txt").read())     # 一次性 prefill 这篇文档
+print(llm.ask("这份报告的结论是什么？"))
+print(llm.ask("它提到了哪些风险？"))            # 复用前缀，不再重复 prefill
+```
+
+C++：`bllm::NativeLlm`（`bllm/native_llm.h`）。`set_prefix`/`ask` 由引擎内存快照
+`snapshot()`/`restore()`（`bllm::NativeHybridEngine` 与 `bllm::NativeEngine`）支撑。
 
 ## `bllm.NativeVlmSession` — 多模态（Qwen2.5-Omni）
 

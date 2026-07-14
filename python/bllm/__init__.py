@@ -131,6 +131,18 @@ if _HAVE_NATIVE:
                                    min_keep, penalty_last_n, penalty_freq, penalty_present)
             return self
 
+        def set_thinking(self, enabled: bool) -> "NativeSession":
+            """Qwen3.5 reasoning toggle. enabled=False prefills an empty <think></think> so the
+            model answers DIRECTLY (faster, fewer tokens, clean output). enabled=True (default)
+            reasons and shows the <think>...</think>. The in-message /no_think soft switch is
+            unreliable on this checkpoint; this prefill is."""
+            self._llm.set_thinking(bool(enabled))
+            return self
+
+        @property
+        def thinking(self) -> bool:
+            return self._llm.thinking
+
         def set_stop(self, stop: "list[str]") -> "NativeSession":
             """Persistent stop strings: end each turn as soon as any appears in the reply,
             trimmed from both the stream and the return value. A per-call ``stop=`` on
@@ -212,6 +224,45 @@ if _HAVE_NATIVE:
             bit-identically. The state is bound to this model."""
             self._llm.load_state(path)
             return self
+
+        def set_prefix(self, shared_context: str = "") -> "NativeSession":
+            """Prefill the system prompt + optional `shared_context` ONCE and snapshot it in
+            memory. Then ask() each query against it without re-prefilling the (possibly long)
+            prefix — RAG over a document, a fixed system/tool context, few-shot exemplars.
+            The one-time prefix prefill runs here; chunked prefill (roadmap) speeds that up."""
+            self._llm.set_prefix(shared_context)
+            return self
+
+        def ask(self, query: str, max_new: int = 400,
+                on_text: "Optional[Callable[[str], None]]" = None,
+                stop: "Optional[list[str]]" = None) -> str:
+            """Answer `query` against the set_prefix() prefix, INDEPENDENTLY (each ask restores
+            the prefix — no accumulation). Returns the full reply (and streams to on_text)."""
+            return self._llm.ask(query, max_new, on_text, list(stop) if stop else [])
+
+        def stream_ask(self, query: str, max_new: int = 400,
+                       stop: "Optional[list[str]]" = None) -> "Iterator[str]":
+            """ask() as a lazy generator of decoded text chunks."""
+            s = list(stop) if stop else []
+            return _stream(lambda cb: self._llm.ask(query, max_new, cb, s))
+
+        @property
+        def has_prefix(self) -> bool:
+            """Whether a reusable prefix is set (via set_prefix())."""
+            return self._llm.has_prefix
+
+        def clear_prefix(self) -> "NativeSession":
+            """Drop the cached prefix set by set_prefix()."""
+            self._llm.clear_prefix()
+            return self
+
+        def encode(self, text: str) -> "list[int]":
+            """Tokenize `text` to token ids with the model's C++ tokenizer."""
+            return self._llm.encode(text)
+
+        def decode(self, ids: "list[int]") -> str:
+            """Detokenize `ids` back to text with the model's C++ tokenizer."""
+            return self._llm.decode(list(ids))
 
     def load_video(path: str, fps: float = 2.0, size: int = 448, max_frames: int = 10,
                    with_audio: bool = True, ffmpeg: str = "ffmpeg") -> dict:

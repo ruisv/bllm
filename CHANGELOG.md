@@ -6,6 +6,21 @@ All notable changes to BLLM are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Reusable-prefix path** — `NativeSession.set_prefix()` / `ask()`: prefill a shared prefix
+  (a document, a fixed system + tools context, few-shot exemplars) **once**, then answer many
+  queries against it without re-prefilling — each `ask()` restores the prefix and is independent.
+  ~3–4× per query on repeated asks over a shared context. Backed by in-memory `snapshot()` /
+  `restore()` on the engines (the file-based `save_state`/`load_state` share the same core).
+- **Thinking toggle** — `NativeSession.set_thinking(False)` prefills an empty `<think></think>`
+  (the official template's `enable_thinking=False`) so Qwen3.5 reasoning models answer directly
+  — faster, fewer tokens. Default reasons and shows the block. (The in-message `/no_think` soft
+  switch is unreliable on the current checkpoints; this prefill is.)
+- **`encode()` / `decode()`** on the session (the model's C++ tokenizer).
+- **Qwen3.5-2B / 4B** (hybrid Gated-DeltaNet/SSM) validated on-board, 100% on-BPU int8
+  (~14.5 / 6.9 tok/s), joining the 0.8B.
+
 ## [0.1.1]
 
 ### Added

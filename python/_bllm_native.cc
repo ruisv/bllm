@@ -133,6 +133,29 @@ NB_MODULE(_bllm_native, m) {
            "evaluate a shared prefix once, reload it later to skip re-prefill.")
       .def("load_state", &bllm::NativeLlm::load_state, "path"_a,
            "Restore a state saved by save_state(); generate() resumes bit-identically.")
+      .def(
+          "set_prefix",
+          [](bllm::NativeLlm& llm, const std::string& shared_context) {
+            nb::gil_scoped_release r; llm.set_prefix(shared_context);
+          },
+          "shared_context"_a = std::string(),
+          "Prefill the system prompt + optional shared_context ONCE and snapshot it in memory. "
+          "Then ask() each query against it without re-prefilling the prefix (RAG over a "
+          "document, fixed system/tool context, few-shot exemplars). One-time cost here.")
+      .def(
+          "ask",
+          [run](bllm::NativeLlm& llm, const std::string& query, int max_new, nb::object on_text,
+                const std::vector<std::string>& stop) {
+            return run([](bllm::NativeLlm& l, const std::string& t, int n,
+                          const std::function<void(const std::string&)>& c,
+                          const std::vector<std::string>& st) { return l.ask(t, n, c, st); },
+                       llm, query, max_new, on_text, stop);
+          },
+          "query"_a, "max_new"_a = 400, "on_text"_a = nb::none(), "stop"_a = std::vector<std::string>(),
+          "Answer query against the set_prefix() prefix, INDEPENDENTLY (does not accumulate "
+          "across asks). Restores the prefix snapshot, so the prefix is never re-prefilled.")
+      .def("clear_prefix", &bllm::NativeLlm::clear_prefix, "Drop the cached prefix.")
+      .def_prop_ro("has_prefix", &bllm::NativeLlm::has_prefix)
       .def("set_sampling", &bllm::NativeLlm::set_sampling,
            "temp"_a = 0.0f, "top_p"_a = 1.0f, "top_k"_a = 0, "rep_pen"_a = 1.0f, "seed"_a = 1234,
            "min_p"_a = 0.0f, "typ_p"_a = 1.0f, "min_keep"_a = 1, "penalty_last_n"_a = 64,
@@ -142,6 +165,11 @@ NB_MODULE(_bllm_native, m) {
            "Applies to the next generate()/chat().")
       .def("set_stop", &bllm::NativeLlm::set_stop, "stop"_a,
            "Persistent stop strings for every following turn (a per-call stop=[...] overrides).")
+      .def("set_thinking", &bllm::NativeLlm::set_thinking, "enabled"_a,
+           "Qwen3.5 reasoning: enabled=False prefills an empty <think></think> so the model "
+           "answers directly (faster, fewer tokens). enabled=True (default) reasons and shows "
+           "the <think>...</think>. (/no_think in-message is unreliable; this prefill is.)")
+      .def_prop_ro("thinking", &bllm::NativeLlm::thinking)
       .def("set_bpu_priority", &bllm::NativeLlm::set_bpu_priority, "priority"_a,
            "BPU queue priority 0..255 (default 0 = lowest, yields to a vision pipeline). "
            "Orders the queue; does not preempt a running graph.")

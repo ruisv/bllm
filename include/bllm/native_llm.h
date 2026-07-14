@@ -62,6 +62,15 @@ class NativeLlm {
   // string can span tokens, and need not be a token). Empty clears them. Persists across
   // turns; a per-call `stop` argument overrides for that call only.
   void set_stop(std::vector<std::string> stops) { stop_ = std::move(stops); }
+
+  // Thinking control (Qwen3.5 reasoning models). `enabled=false` prefills a closed empty
+  // `<think></think>` after the assistant marker (== the official template's
+  // enable_thinking=False) so the model answers DIRECTLY, no reasoning — faster, fewer
+  // tokens. When enabled (the default), the model reasons and the `<think>...</think>` block
+  // IS shown — if you asked for thinking, you get to see it. Note: the in-message `/no_think`
+  // soft switch is NOT reliable on this checkpoint; this prefill is.
+  void set_thinking(bool enabled) { thinking_ = enabled; }
+  bool thinking() const { return thinking_; }
   // BPU queue priority (0..255). Lowest (the default) lets a co-resident vision
   // pipeline jump the queue. Note: it orders the queue, it does not preempt a graph
   // that is already running — see native_detail::BpuSched.
@@ -147,12 +156,88 @@ class NativeLlm {
     } else            { add({E}); add(NL); }     // close the previous assistant turn
     add({S}); add(tk_.encode("user\n" + msg)); add({E}); add(NL);
     add({S}); add(tk_.encode("assistant\n"));
+    if (!thinking_) add(tk_.encode("<think>\n\n</think>\n\n"));   // enable_thinking=False: answer directly
     first_turn_ = false;
     feedIds(ids);
     return streamDecode(max_new, on_text, stop);
   }
 
+  // ---- Reusable-prefix path (prompt cache × fixed prefix) -----------------------------
+  // For workloads that ask MANY independent questions against ONE shared context (RAG over a
+  // document, a fixed system prompt + tool defs, few-shot exemplars): prefill the shared
+  // prefix ONCE with set_prefix(), then ask() each query — each restores the snapshot instead
+  // of re-prefilling the (possibly long) prefix. Unlike chat(), ask() does NOT accumulate:
+  // every call starts from the same prefix. The one-time prefix prefill still runs here at the
+  // current speed; chunked prefill (roadmap) accelerates that single ingest.
+
+  // Prefill the system block + optional shared context and snapshot it as the reusable base.
+  void set_prefix(const std::string& shared_context = "") {
+    reset();
+    std::vector<int> ids;
+    buildPrefix(ids, shared_context);
+    if (ids.empty())
+      throw std::runtime_error("[bllm] set_prefix needs a system prompt or shared context "
+                               "(the model's chat.format is \"none\" and shared_context is empty)");
+    feedIds(ids);
+    prefix_ = engineSnapshot();      // requires valid logits — feedIds ran >=1 step
+    prefixSet_ = true;
+  }
+
+  // Answer `query` against the fixed prefix, independently (does not accumulate across asks).
+  std::string ask(const std::string& query, int max_new = 256, const OnText& on_text = {},
+                  const std::vector<std::string>& stop = {}) {
+    if (!prefixSet_) throw std::runtime_error("[bllm] ask() needs set_prefix() first");
+    engineRestore(prefix_);          // back to the prefix; discard any previous ask's tail
+    std::vector<int> ids;
+    buildUserTurn(ids, query);
+    feedIds(ids);
+    return streamDecode(max_new, on_text, stop);
+  }
+
+  bool has_prefix() const { return prefixSet_; }
+  void clear_prefix() { prefix_.clear(); prefixSet_ = false; }
+
  private:
+  std::string engineSnapshot() const { return hybrid_ ? hybrid_->snapshot() : dense_->snapshot(); }
+  void engineRestore(const std::string& blob) {
+    if (hybrid_) hybrid_->restore(blob); else dense_->restore(blob);
+  }
+
+  // Build the reusable prefix: BOS (if any) + a system block carrying cfg system prompt and,
+  // appended, the shared context. Mirrors chat()'s first-turn opener for each format.
+  void buildPrefix(std::vector<int>& ids, const std::string& shared) {
+    auto add = [&](const std::vector<int>& v) { ids.insert(ids.end(), v.begin(), v.end()); };
+    std::string sys = cfg_.chat.system;
+    if (!shared.empty()) sys += (sys.empty() ? "" : "\n\n") + shared;
+    if (cfg_.chat.format == "phi" && cfg_.chat.r_user >= 0) {
+      if (cfg_.chat.bos >= 0) add({cfg_.chat.bos});
+      if (cfg_.chat.r_system >= 0 && !sys.empty()) { add({cfg_.chat.r_system}); add(tk_.encode(sys)); add({cfg_.chat.r_end}); }
+      return;
+    }
+    if (cfg_.chat.format == "chatml" && cfg_.chat.im_start >= 0) {
+      if (cfg_.chat.bos >= 0) add({cfg_.chat.bos});
+      if (!sys.empty()) { add({cfg_.chat.im_start}); add(tk_.encode("system\n" + sys)); add({cfg_.chat.im_end}); add(tk_.encode("\n")); }
+      return;
+    }
+    if (!shared.empty()) add(tk_.encode(shared));    // no template: shared text is the raw prefix
+  }
+
+  // Build one user turn (query) opening the assistant, per format. Same wire form chat() uses.
+  void buildUserTurn(std::vector<int>& ids, const std::string& msg) {
+    auto add = [&](const std::vector<int>& v) { ids.insert(ids.end(), v.begin(), v.end()); };
+    if (cfg_.chat.format == "phi" && cfg_.chat.r_user >= 0) {
+      add({cfg_.chat.r_user}); add(tk_.encode(msg)); add({cfg_.chat.r_end}); add({cfg_.chat.r_assistant});
+      return;
+    }
+    if (cfg_.chat.format == "chatml" && cfg_.chat.im_start >= 0) {
+      add({cfg_.chat.im_start}); add(tk_.encode("user\n" + msg)); add({cfg_.chat.im_end}); add(tk_.encode("\n"));
+      add({cfg_.chat.im_start}); add(tk_.encode("assistant\n"));
+      if (!thinking_) add(tk_.encode("<think>\n\n</think>\n\n"));
+      return;
+    }
+    add(tk_.encode(msg));                            // no template: raw completion
+  }
+
   // Ingest prompt/turn tokens into the engine (leaving the last logits for sampling).
   void feedIds(const std::vector<int>& ids) {
     if (hybrid_) hybrid_->feed(ids);
@@ -198,6 +283,9 @@ class NativeLlm {
   NativeSamplingParams sampling_;                 // default: greedy
   std::vector<std::string> stop_;                 // persistent stop strings (default: none)
   bool first_turn_ = true;
+  bool thinking_ = true;                          // Qwen3.5 reasoning: prefill empty <think> when false
+  std::string prefix_;                            // in-memory snapshot of the reusable prefix
+  bool prefixSet_ = false;
 };
 
 }  // namespace bllm

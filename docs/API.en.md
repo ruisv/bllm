@@ -56,8 +56,28 @@ llm = bllm.NativeSession(model_dir)          # or bllm.load(...)
 | `chat_async(...)` / `generate_async(...)` -> `concurrent.futures.Future[str]` | Non-blocking submit (releases the GIL); one generation at a time per session. |
 | `perplexity(text) -> float` | Teacher-forced perplexity of raw text (no template); resets the session. |
 | `save_state(path)` / `load_state(path)` | Save/restore the session KV(+SSM) state + last logits; resumes bit-identically (skips re-prefill). |
+| `set_prefix(shared_context="")` | Prefill the system prompt + optional `shared_context` (a document / fixed tool context / few-shot exemplars) ONCE and snapshot it in memory; each `ask()` reuses it. |
+| `ask(query, max_new=400, on_text=None, stop=None) -> str` | Answer `query` against the `set_prefix` prefix, INDEPENDENTLY (each call restores the prefix; never re-prefills it). |
+| `stream_ask(query, max_new=400, stop=None) -> Iterator[str]` | Generator form of `ask`. |
+| `has_prefix -> bool` / `clear_prefix()` | Whether a prefix is set / drop the cached prefix. |
+| `encode(text) -> list[int]` / `decode(ids) -> str` | Tokenize / detokenize with the model's C++ tokenizer. |
+| `set_thinking(enabled)` | Qwen3.5 reasoning toggle. `False` prefills an empty `<think></think>` so the model **answers directly** (faster, fewer tokens); `True` (default) reasons and shows the `<think>...</think>`. (The in-message `/no_think` soft switch is unreliable on this checkpoint; this prefill is.) |
 
-C++: `bllm::NativeLlm` (`bllm/native_llm.h`).
+```python
+llm.set_thinking(False)                 # no reasoning: direct answers (much faster on 4B)
+```
+
+**Prefix reuse** (many questions over one shared document; the prefix is prefilled once):
+
+```python
+llm = bllm.load("/models/qwen3.5-4b")
+llm.set_prefix(open("report.txt").read())     # one-time prefill of the document
+print(llm.ask("What are the conclusions?"))
+print(llm.ask("Which risks are mentioned?"))  # reuses the prefix, no re-prefill
+```
+
+C++: `bllm::NativeLlm` (`bllm/native_llm.h`); `set_prefix`/`ask` are backed by the engine
+in-memory `snapshot()`/`restore()` (`bllm::NativeHybridEngine` and `bllm::NativeEngine`).
 
 ## `bllm.NativeVlmSession` — multimodal (Qwen2.5-Omni)
 

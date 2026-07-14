@@ -24,6 +24,7 @@
 #include <cmath>
 #include <cstdint>
 #include <fstream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -126,40 +127,59 @@ class NativeHybridEngine {
     P_ = 0; phase_ = false; curLogits_ = nullptr;
   }
 
-  // Save/restore the mixed SSM+KV state to a file — libxlm's path_prompt_cache for the
-  // hybrid engine. The current cache set (GDN state+conv and attention KV, all layers) plus
-  // the last logits are dumped wholesale, so generate() resumes bit-identically. Bound to
-  // this model's cache layout (rejected on load if it differs).
+  // Save/restore the mixed SSM+KV state — libxlm's path_prompt_cache for the hybrid engine.
+  // The current cache set (GDN state+conv and attention KV, all layers) plus the last logits
+  // are dumped wholesale, so generate() resumes bit-identically. Bound to this model's cache
+  // layout (rejected on load if it differs). File variants wrap the stream/in-memory core;
+  // the in-memory snapshot()/restore() back the cheap prefix-reuse path (no temp file).
   void save_state(const std::string& path) {
-    if (!curLogits_valid_) throw std::runtime_error("[hybrid] no state to save — feed a prompt first");
     std::ofstream f(path, std::ios::binary);
     if (!f) throw std::runtime_error("[hybrid] cannot write state: " + path);
-    const int64_t logitBytes = out_[0].properties.alignedByteSize;
-    const int32_t hdr[] = {kStateMagic, nCache_, vocab_, P_, (int32_t)logitBytes};
+    writeState(f);
+    if (!f) throw std::runtime_error("[hybrid] failed writing state: " + path);
+  }
+  void load_state(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) throw std::runtime_error("[hybrid] cannot read state: " + path);
+    readState(f);
+  }
+  // In-memory snapshot of the current context — same payload as save_state, as a byte blob.
+  // For prefix reuse: snapshot() a prefilled prefix once, restore() it before each query so
+  // the shared prefix is never re-prefilled. Cheap (a memcpy of the caches), no file I/O.
+  std::string snapshot() const {
+    std::ostringstream os(std::ios::binary);
+    writeState(os);
+    return os.str();
+  }
+  void restore(const std::string& blob) {
+    std::istringstream is(blob, std::ios::binary);
+    readState(is);
+  }
+
+ private:
+  void writeState(std::ostream& f) const {
+    if (!curLogits_valid_) throw std::runtime_error("[hybrid] no state to save — feed a prompt first");
+    const int32_t logitBytes = (int32_t)out_[0].properties.alignedByteSize;
+    const int32_t hdr[] = {kStateMagic, nCache_, vocab_, P_, logitBytes};
     f.write((const char*)hdr, sizeof(hdr));
     for (int c = 0; c < nCache_; ++c) {
       const int32_t b = (int32_t)inBytes_[kFixedIn + c];
       f.write((const char*)&b, sizeof(b));
     }
-    std::vector<Mem>& cur = phase_ ? bufB_ : bufA_;   // holds the latest post-step state
+    const std::vector<Mem>& cur = phase_ ? bufB_ : bufA_;   // holds the latest post-step state
     for (int c = 0; c < nCache_; ++c) {
-      cur[c].inval();                                  // BPU-written; make the CPU read current
+      const_cast<Mem&>(cur[c]).inval();                     // BPU-written; make the CPU read current
       f.write((const char*)cur[c].p(), (size_t)inBytes_[kFixedIn + c]);
     }
-    logitMem_.inval();
+    const_cast<Mem&>(logitMem_).inval();
     f.write((const char*)logitMem_.p(), (size_t)logitBytes);
-    if (!f) throw std::runtime_error("[hybrid] failed writing state: " + path);
   }
-
-  void load_state(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) throw std::runtime_error("[hybrid] cannot read state: " + path);
+  void readState(std::istream& f) {
     int32_t hdr[5];
     f.read((char*)hdr, sizeof(hdr));
-    const int64_t logitBytes = out_[0].properties.alignedByteSize;
-    if (!f || hdr[0] != kStateMagic || hdr[1] != nCache_ || hdr[2] != vocab_ ||
-        hdr[4] != (int32_t)logitBytes)
-      throw std::runtime_error("[hybrid] state file does not match this model");
+    const int32_t logitBytes = (int32_t)out_[0].properties.alignedByteSize;
+    if (!f || hdr[0] != kStateMagic || hdr[1] != nCache_ || hdr[2] != vocab_ || hdr[4] != logitBytes)
+      throw std::runtime_error("[hybrid] state does not match this model");
     for (int c = 0; c < nCache_; ++c) {
       int32_t b; f.read((char*)&b, sizeof(b));
       if (b != (int32_t)inBytes_[kFixedIn + c])
@@ -171,9 +191,11 @@ class NativeHybridEngine {
       bufA_[c].clean();                                 // CPU-written; make the BPU read it
     }
     f.read((char*)logitMem_.p(), (size_t)logitBytes);
-    if (!f) throw std::runtime_error("[hybrid] truncated state file: " + path);
+    if (!f) throw std::runtime_error("[hybrid] truncated / corrupt state");
     P_ = hdr[3]; phase_ = false; curLogits_ = logitMem_.p(); curLogits_valid_ = true;
   }
+
+ public:
 
   // ingest prompt tokens (updates caches; keeps the last logits for sampling).
   void feed(const std::vector<int>& ids) {
