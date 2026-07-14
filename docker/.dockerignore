@@ -1,0 +1,9 @@
+# Build context is this docker/ dir. Only requirements.txt, server.py,
+# entrypoint.sh and _stage/ are COPYed; exclude the build-time-only files so
+# they don't bloat the context or bust the cache.
+README.md
+compose.yaml
+stage-libs.sh
+.dockerignore
+**/__pycache__/
+**/*.pyc

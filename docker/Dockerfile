@@ -10,8 +10,9 @@
 # What is NOT baked : the kernel BPU driver + /dev nodes (mapped from the board
 #                     at run time) and the .hbm model (mounted as a volume).
 #
-# Build via docker/build.sh (it stages the /usr/hobot lib closure into
-# docker/_stage/ first — those libs are proprietary and gitignored).
+# Build context is this docker/ dir. Run stage-libs.sh first (it stages the
+# /usr/hobot lib closure into _stage/ — proprietary, gitignored), then
+# `docker compose up -d --build` from here.
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -39,18 +40,18 @@ RUN curl -Ls "https://micro.mamba.pm/api/micromamba/linux-aarch64/${MAMBA_VERSIO
     && find /opt/conda -type d -name '__pycache__' -exec rm -rf {} +
 
 # --- pure-python HTTP layer -------------------------------------------------
-COPY serve/requirements.txt /tmp/req.txt
+COPY requirements.txt /tmp/req.txt
 RUN /opt/conda/bin/pip install --no-cache-dir -r /tmp/req.txt
 
 # --- bundled BPU userspace libs (staged from board /usr/hobot/lib) ----------
 # Mirror the board path so any hard-coded RPATH (=/usr/hobot/lib) resolves too.
-COPY docker/_stage/hobot/lib/ /usr/hobot/lib/
+COPY _stage/hobot/lib/ /usr/hobot/lib/
 ENV LD_LIBRARY_PATH=/usr/hobot/lib:/opt/conda/lib
 
 # --- server -----------------------------------------------------------------
-COPY serve/ /app/serve/
-COPY docker/entrypoint.sh /entrypoint.sh
+COPY server.py /app/server.py
+COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
-WORKDIR /app/serve
+WORKDIR /app
 EXPOSE 8000
 ENTRYPOINT ["/entrypoint.sh"]
