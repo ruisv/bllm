@@ -1,0 +1,47 @@
+# bllm-serve — OpenAI-compatible LLM inference server for RDK S100/S100P/S600.
+#
+# One-time prep (stages the proprietary BPU userspace libs from the board's
+# /usr/hobot/lib into docker/_stage/, which the image bundles):
+#   docker/stage-libs.sh
+#
+# Build + run:
+#   MODEL_DIR=~/models/qwen3.5-2b docker compose up -d --build
+#   curl localhost:8000/v1/chat/completions -d '{"messages":[{"role":"user","content":"你好"}]}'
+#
+# network_mode/build.network are host because this board's kernel lacks the
+# iptables `raw` table — Docker's default bridge fails both at build and run.
+services:
+  bllm-serve:
+    image: bllm-serve:latest
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      network: host
+    container_name: bllm-serve
+    network_mode: host
+    # BPU/ION device nodes mapped from the board (kernel driver stays on host).
+    devices:
+      - /dev/bpu
+      - /dev/bpu_core0
+      - /dev/ion
+      - /dev/ipcdrv
+      - /dev/dcore0_rpmsg_bpu
+    volumes:
+      # A model package dir (with model.json) or a dir holding the .hbm.
+      - ${MODEL_DIR:?set MODEL_DIR to a model package dir}:/models:ro
+    environment:
+      BLLM_MODEL: /models
+      BLLM_PORT: ${BLLM_PORT:-8000}
+      # Optional: bearer-token auth, BPU priority, perf-mode register poke.
+      BLLM_API_KEY: ${BLLM_API_KEY:-}
+      BLLM_BPU_PRIORITY: ${BLLM_BPU_PRIORITY:-}
+      BLLM_PERF_MODE: ${BLLM_PERF_MODE:-0}   # =1 needs `privileged: true` below
+    # Uncomment for BLLM_PERF_MODE=1 (writes physical perf registers via /dev/mem):
+    # privileged: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 90s

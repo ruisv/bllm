@@ -40,6 +40,12 @@ models/
 oellm_runtime/
 
 # =============================================================================
+# Docker build staging — proprietary D-Robotics BPU libs copied from the board
+# at build time (docker/build.sh); never commit.
+# =============================================================================
+docker/_stage/
+
+# =============================================================================
 # SDK mirror for IntelliSense (mirror of board /usr/include/hobot)
 # =============================================================================
 third_party/

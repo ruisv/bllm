@@ -1,0 +1,4 @@
+# bllm-serve HTTP layer. bllm / libbllm / tokenizers-cpp come from the conda
+# channel (see docker/Dockerfile); these are the pure-python server deps.
+fastapi>=0.110
+uvicorn[standard]>=0.29
