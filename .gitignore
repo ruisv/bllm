@@ -20,6 +20,8 @@ scripts/board_test.sh
 CLAUDE.local.md
 # infra topology: hostnames, IPs, convert-host workflow (private)
 docs/INFRA.md
+# S600 on-board test record: sandbox creds + dgx2 paths (private)
+docs/S600_ONBOARD.md
 # any *.local override files
 *.local
 

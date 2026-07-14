@@ -144,12 +144,33 @@ auto chat template, per-model quirks like int8 KV handled internally):
 - **Qwen2.5** 1.5B / 7B (Base + Instruct)
 - **DeepSeek-R1-Distill-Qwen** 1.5B / 7B
 - **InternLM2-1.8B** · **GLM-Edge** · **Phi-4-mini**
-- **Qwen3.5-0.8B** (hybrid SSM, native-only)
+- **Qwen3.5-0.8B / 2B / 4B** (hybrid SSM, native-only; strict 100% on-BPU int8)
 - **Qwen2.5-Omni-3B** (multimodal)
 
 Validated across q8/q4 × context 1024/4096 variants. Model conversion (how a `.hbm` is
 produced) is an offline process, out of scope here; this repo consumes a finished `.hbm` +
 tokenizer config.
+
+> **S600 multi-core**: a large model can bind several BPU cores and decode in parallel —
+> Qwen3.5-4B saturates 4 cores at **27 tok/s**, the 0.8B does **42.7 tok/s** on one core. See
+> the on-board measurements in [`docs/S600_RESULTS.md`](docs/S600_RESULTS.md).
+
+### Pre-compiled model downloads
+
+We publish **ready-to-`bllm.load()` model packages** (each a directory: `model.hbm` +
+`tokenizer.json` + `model.json`, plus `embed_tokens.bin` for hybrid models). The file names
+already encode **context length / target board / quantization width**, so they read for
+themselves:
+
+**📦 [Google Drive — model downloads](https://drive.google.com/drive/folders/1tR3MtP0iriptqpeHOSzdpRMT_ckdqDQ8)**
+
+Verify, extract, and load (Qwen3.5-4B as an example):
+
+```bash
+sha256sum -c qwen3.5-4b-ctx512-int8-s100.tar.gz.sha256   # integrity check
+tar xzf qwen3.5-4b-ctx512-int8-s100.tar.gz
+python -c "import bllm; s=bllm.load('qwen3.5-4b-ctx512-int8-s100'); print(s.chat('Hello'))"
+```
 
 ## Build from source
 

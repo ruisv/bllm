@@ -126,6 +126,9 @@ def main() -> int:
     ap.add_argument("--graph", help="graph name inside the .hbm (hybrid; default qwen35)")
     ap.add_argument("--rope-theta", type=float, help="rope base (default: 1e7 hybrid, 1e6 omni)")
     ap.add_argument("--cache-len", type=int, default=0, help="informational")
+    ap.add_argument("--bpu-cores", type=int, choices=[1, 2, 4],
+                    help="BPU core count the .hbm was compiled for (S600/nash-p; a "
+                         "core_num=N hbm must be bound to N specific cores at runtime)")
     ap.add_argument("--mrope-section", type=int, nargs=3, metavar=("T", "H", "W"),
                     help="omni rope dim split (default 16 24 24)")
     ap.add_argument("--eos", type=int, nargs="+", help="override the stop-token ids")
@@ -154,6 +157,7 @@ def main() -> int:
         "name": args.name or out.name,
         "arch": args.arch,
         "backend": "native",
+        **({"bpu_cores": args.bpu_cores} if args.bpu_cores else {}),
         "hbm": "model.hbm",
         "tokenizer": "tokenizer.json",
         "eos": eos,
