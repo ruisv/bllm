@@ -26,7 +26,7 @@
 
 ## 目录
 
-- [特性](#特性) · [安装](#安装) · [快速上手](#快速上手)
+- [特性](#特性) · [安装](#安装) · [快速上手](#快速上手) · [服务化部署](#服务化部署openai-兼容-http)
 - [多模态](#多模态qwen25-omni) · [与视觉流水线共享 BPU](#与视觉流水线共享-bpu)
 - [支持的模型](#支持的模型) · [从源码构建](#从源码构建)
 - [社区交流](#社区交流) · [参与贡献](#参与贡献) · [致谢](#致谢) · [许可证](#许可证)
@@ -83,6 +83,37 @@ std::string reply = llm.chat("你好", 400, [](const std::string& s){ std::cout 
 ```
 
 REPL：`bllm_chat_native --model <dir>`（见 [`examples/chat_native.cc`](examples/chat_native.cc)）。
+
+## 服务化部署（OpenAI 兼容 HTTP）
+
+把运行时打包成 OpenAI 兼容的推理服务（`/v1/chat/completions`，流式 + 非流式），容器化部署在板上。
+完整说明见 [`docker/README.md`](docker/README.md)。
+
+**自包含镜像（模型烤进去，开箱即用）** —— `docker run` 直接对话，无需挂载模型：
+
+```bash
+cd docker
+./bake-model.sh ~/models/qwen3.5-2b bllm-serve:qwen3.5-2b-ctx512-int8-s100p
+docker run -d --network host \
+  --device /dev/bpu --device /dev/bpu_core0 --device /dev/ion \
+  --device /dev/ipcdrv --device /dev/dcore0_rpmsg_bpu \
+  bllm-serve:qwen3.5-2b-ctx512-int8-s100p
+```
+
+**模型无关镜像（模型走 volume，一个镜像跑任意模型）** —— 用 docker compose：
+
+```bash
+cd docker && ./stage-libs.sh
+MODEL_DIR=~/models/qwen3.5-2b docker compose up -d --build
+```
+
+服务默认监听 `:8866`，已开 CORS。用任意 OpenAI 兼容客户端指向 `http://<板子IP>:8866/v1` 即可
+（[chatbox-lite](https://github.com/lfbear/chatbox-lite)、桌面 Chatbox、Open WebUI、OpenAI SDK…）：
+
+```bash
+curl localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"你好"}]}'
+```
 
 ## 多模态（Qwen2.5-Omni）
 

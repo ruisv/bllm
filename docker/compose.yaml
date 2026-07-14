@@ -6,7 +6,7 @@
 #
 # Build + run:
 #   MODEL_DIR=~/models/qwen3.5-2b docker compose up -d --build
-#   curl localhost:8000/v1/chat/completions -d '{"messages":[{"role":"user","content":"你好"}]}'
+#   curl localhost:8866/v1/chat/completions -d '{"messages":[{"role":"user","content":"你好"}]}'
 #
 # network_mode/build.network are host because this board's kernel lacks the
 # iptables `raw` table — Docker's default bridge fails both at build and run.
@@ -31,7 +31,7 @@ services:
       - ${MODEL_DIR:?set MODEL_DIR to a model package dir}:/models:ro
     environment:
       BLLM_MODEL: /models
-      BLLM_PORT: ${BLLM_PORT:-8000}
+      BLLM_PORT: ${BLLM_PORT:-8866}
       # Optional: bearer-token auth, BPU priority, perf-mode register poke.
       BLLM_API_KEY: ${BLLM_API_KEY:-}
       BLLM_BPU_PRIORITY: ${BLLM_BPU_PRIORITY:-}
@@ -40,7 +40,7 @@ services:
     # privileged: true
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:${BLLM_PORT:-8866}/health || exit 1"]
       interval: 30s
       timeout: 3s
       retries: 3

@@ -1,0 +1,11 @@
+# Bake a specific model package into the runtime image -> a self-contained,
+# tagged deliverable: `docker run` and chat, no volume mount needed.
+#
+# Built by bake-model.sh, which builds the model-agnostic base first, then
+# stages the model dir into _model/ and layers it on top here.
+ARG BASE=bllm-serve:latest
+FROM ${BASE}
+
+# The whole model package (model.json + .hbm + embed_tokens.bin + tokenizer.json).
+COPY _model/ /models/
+ENV BLLM_MODEL=/models

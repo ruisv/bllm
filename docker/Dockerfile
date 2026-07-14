@@ -53,5 +53,5 @@ COPY server.py /app/server.py
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 WORKDIR /app
-EXPOSE 8000
+EXPOSE 8866
 ENTRYPOINT ["/entrypoint.sh"]

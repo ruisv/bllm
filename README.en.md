@@ -27,7 +27,7 @@ computer-vision runtime).
 
 ## Contents
 
-- [Features](#features) · [Install](#install) · [Quick start](#quick-start)
+- [Features](#features) · [Install](#install) · [Quick start](#quick-start) · [Serving](#serving-openai-compatible-api)
 - [Multimodal](#multimodal-qwen25-omni) · [Sharing the BPU](#sharing-the-bpu-with-a-vision-pipeline)
 - [Supported models](#supported-models) · [Build from source](#build-from-source)
 - [Community](#community) · [Contributing](#contributing) · [Acknowledgements](#acknowledgements) · [License](#license)
@@ -91,6 +91,40 @@ std::string reply = llm.chat("Hello", 400, [](const std::string& s){ std::cout <
 ```
 
 REPL: `bllm_chat_native --model <dir>` (see [`examples/chat_native.cc`](examples/chat_native.cc)).
+
+## Serving (OpenAI-compatible API)
+
+Package the runtime as an OpenAI-compatible inference server
+(`/v1/chat/completions`, streaming + non-streaming) and deploy it on the board in
+a container. Full details in [`docker/README.md`](docker/README.md).
+
+**Self-contained image (model baked in)** — `docker run` and chat, no volume:
+
+```bash
+cd docker
+./bake-model.sh ~/models/qwen3.5-2b bllm-serve:qwen3.5-2b-ctx512-int8-s100p
+docker run -d --network host \
+  --device /dev/bpu --device /dev/bpu_core0 --device /dev/ion \
+  --device /dev/ipcdrv --device /dev/dcore0_rpmsg_bpu \
+  bllm-serve:qwen3.5-2b-ctx512-int8-s100p
+```
+
+**Model-agnostic image (mount any model)** — via docker compose:
+
+```bash
+cd docker && ./stage-libs.sh
+MODEL_DIR=~/models/qwen3.5-2b docker compose up -d --build
+```
+
+The server listens on `:8866` with CORS enabled — point any OpenAI-compatible
+client at `http://<board-ip>:8866/v1`
+([chatbox-lite](https://github.com/lfbear/chatbox-lite), desktop Chatbox,
+Open WebUI, the OpenAI SDK, …):
+
+```bash
+curl localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"hello"}]}'
+```
 
 ## Multimodal (Qwen2.5-Omni)
 
