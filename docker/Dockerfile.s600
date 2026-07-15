@@ -1,0 +1,64 @@
+# bllm-serve (S600 / nash-p) — OpenAI-compatible HTTP inference server for the
+# BLLM native runtime on RDK **S600** (aarch64). Sibling of ./Dockerfile (S100).
+#
+# Why a separate S600 image (see docs / the s600 notes):
+#   * The BPU runtime differs: nash-p .hbm are compiled with hbdk4 4.10.1 and load
+#     ONLY against libhbrt4/libhbtl 4.10.1. On S100 that runtime is hobot-dnn 4.0.5
+#     (HBRT 4.8.1); on S600 it is the `hobot-dnn-s600` conda package (HBRT 4.10.1).
+#     So we install `bllm-s600` (which depends on hobot-dnn-s600), NOT `bllm`.
+#   * Base is ubuntu:24.04 (glibc 2.39): the S600 board HAL libs staged below need
+#     GLIBC_2.38, which ubuntu:22.04 (glibc 2.35) cannot provide.
+#   * We stage ONLY the device-facing HAL (libbpu/libhbmem/libvdsp/…) from the S600
+#     board — NOT libdnn/libhbrt4/libhbtl/libhbucp, which come from hobot-dnn-s600
+#     at 4.10.1. Staging the board's 4.8.1 libhbrt4 here would shadow it and break
+#     nash-p loading.
+#
+# What is baked in : ubuntu24.04 + python3.12 + bllm-s600 stack (incl. HBRT 4.10.1
+#                    via hobot-dnn-s600) + the S600 HAL closure.
+# What is NOT baked : kernel BPU driver + /dev nodes (mapped at run time) and the
+#                     .hbm model (mounted as a volume; general image).
+#
+# Build context is this docker/ dir. Run stage-libs-s600.sh first (stages the S600
+# HAL from the board into _stage_s600/ — proprietary, gitignored), then:
+#   docker build -f Dockerfile.s600 -t bllm-serve-s600:latest .
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl bzip2 busybox-static \
+        libcjson1 libjsoncpp25 \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- python 3.12 + our S600 stack from the conda channel --------------------
+# bllm-s600 pulls libbllm-s600 + hobot-dnn-s600 (HBRT 4.10.1) + tokenizers-cpp.
+ARG MAMBA_VERSION=1.5.8
+ARG BLLM_CHANNEL=https://mirrors.ruis.ai/conda
+ENV MAMBA_ROOT_PREFIX=/opt/conda
+ENV PATH=/opt/conda/bin:$PATH
+RUN curl -Ls "https://micro.mamba.pm/api/micromamba/linux-aarch64/${MAMBA_VERSION}" \
+        | tar -xj -C /tmp bin/micromamba \
+    && /tmp/bin/micromamba create -y -p /opt/conda \
+        -c "${BLLM_CHANNEL}" -c conda-forge \
+        python=3.12 bllm-s600 \
+    && /tmp/bin/micromamba clean -a -y \
+    && rm -rf /opt/conda/pkgs /tmp/bin \
+    && find /opt/conda -type f -name '*.pyc' -delete \
+    && find /opt/conda -type d -name '__pycache__' -exec rm -rf {} +
+
+# --- pure-python HTTP layer -------------------------------------------------
+COPY requirements.txt /tmp/req.txt
+RUN /opt/conda/bin/pip install --no-cache-dir -r /tmp/req.txt
+
+# --- S600 board HAL (device-facing libs only; DNN runtime comes from conda) --
+# conda FIRST in LD_LIBRARY_PATH so the 4.10.1 libhbrt4/libhbtl/libdnn from
+# hobot-dnn-s600 win; /usr/hobot/lib holds only the HAL the .so's dlopen.
+COPY _stage_s600/hobot/lib/ /usr/hobot/lib/
+ENV LD_LIBRARY_PATH=/opt/conda/lib:/usr/hobot/lib
+
+# --- server -----------------------------------------------------------------
+COPY server.py /app/server.py
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+WORKDIR /app
+EXPOSE 8866
+ENTRYPOINT ["/entrypoint.sh"]
