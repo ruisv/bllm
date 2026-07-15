@@ -4,6 +4,7 @@
 README.md
 compose.yaml
 stage-libs.sh
+stage-libs-s600.sh
 .dockerignore
 **/__pycache__/
 **/*.pyc
