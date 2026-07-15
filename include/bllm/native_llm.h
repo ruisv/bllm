@@ -39,6 +39,14 @@ class NativeLlm {
       hybrid_ = std::make_unique<NativeHybridEngine>(cfg_.hbm, cfg_.embed, cfg_.graph, cfg_.rope_theta);
     else
       dense_ = std::make_unique<NativeEngine>(cfg_.hbm);
+    // A multi-core .hbm (nash-p / S600) MUST be submitted to specific BPU cores — the
+    // runtime rejects HB_UCP_CORE_ANY for multi-core tasks. Bind cores 0..(bpu_cores-1)
+    // = mask (1<<N)-1 (HB_UCP_BPU_CORE_k == 1<<k). Single-core keeps the CORE_ANY default.
+    if (cfg_.bpu_cores > 1) {
+      native_detail::BpuSched s;
+      s.core_mask = (static_cast<uint64_t>(1) << cfg_.bpu_cores) - 1;
+      if (hybrid_) hybrid_->set_sched(s); else dense_->set_sched(s);
+    }
   }
 
   const ModelConfig& config() const { return cfg_; }
@@ -75,7 +83,8 @@ class NativeLlm {
   // pipeline jump the queue. Note: it orders the queue, it does not preempt a graph
   // that is already running — see native_detail::BpuSched.
   void set_bpu_priority(int priority) {
-    native_detail::BpuSched s;
+    // Preserve core_mask (set at load for multi-core .hbm) — only change priority.
+    native_detail::BpuSched s = hybrid_ ? hybrid_->sched() : dense_->sched();
     s.priority = priority;
     if (hybrid_) hybrid_->set_sched(s); else dense_->set_sched(s);
   }

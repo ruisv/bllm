@@ -36,6 +36,8 @@ struct ModelConfig {
   std::vector<int> eos;                          // stop-token ids
   std::vector<int> mrope_section;                // omni: rope dim split across (t,h,w)
   int cache_len = 0;                             // informational
+  int bpu_cores = 1;                             // BPU cores the .hbm was compiled for (nash-p multi-core);
+                                                 // >1 requires binding to specific cores at submit time
   double rope_theta = 1e7;                       // rope base
   ChatConfig chat;
 

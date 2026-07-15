@@ -34,6 +34,7 @@ ModelConfig loadModelConfig(const std::string& dir) {
   c.arch = j.value("arch", "dense");
   c.graph = j.value("graph", c.is_hybrid() ? "qwen35" : (c.is_embed() ? "prefill" : "decode"));
   c.cache_len = j.value("cache_len", 0);
+  c.bpu_cores = j.value("bpu_cores", 1);
   c.rope_theta = j.value("rope_theta", 1e7);
   c.hbm = resolve(dir, j.value("hbm", ""));
   c.tokenizer = resolve(dir, j.value("tokenizer", "tokenizer.json"));
