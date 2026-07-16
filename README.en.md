@@ -6,7 +6,7 @@
 [![C++](https://img.shields.io/badge/C%2B%2B-17-00599C.svg)](CMakeLists.txt)
 [![Python](https://img.shields.io/badge/python-3.9%E2%80%933.14-3776AB.svg)](python/CMakeLists.txt)
 [![Platform](https://img.shields.io/badge/platform-RDK%20S100%20%2F%20S100P%20%2F%20S600%20(aarch64)-0A7BBB.svg)](#install)
-[![Version](https://img.shields.io/badge/version-0.1.2-informational.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.1.4-informational.svg)](CHANGELOG.md)
 
 [简体中文](README.md) | **English**
 
@@ -27,8 +27,8 @@ computer-vision runtime).
 
 ## Contents
 
-- [Features](#features) · [Install](#install) · [Quick start](#quick-start) · [Serving](#serving-openai-compatible-api)
-- [Multimodal](#multimodal-qwen25-omni) · [Sharing the BPU](#sharing-the-bpu-with-a-vision-pipeline)
+- [Features](#features) · [Install](#install) · [Quick start](#quick-start) · [Making a model directory](#making-a-model-directory)
+- [Serving](#serving-openai-compatible-api) · [Multimodal](#multimodal-qwen25-omni) · [Sharing the BPU](#sharing-the-bpu-with-a-vision-pipeline)
 - [Supported models](#supported-models) · [Build from source](#build-from-source)
 - [Community](#community) · [Contributing](#contributing) · [Acknowledgements](#acknowledgements) · [License](#license)
 
@@ -59,6 +59,16 @@ conda install -c https://mirrors.ruis.ai/conda -c conda-forge bllm
 
 This pulls `bllm` (Python bindings), `libbllm` (C++ lib + headers + cmake config) and their
 runtime deps (`hobot-dnn`, `tokenizers-cpp`). RDK platform libraries come with the board OS.
+
+You also need a **one-time** ION carveout enlargement plus a reboot — model weights live in ION
+rather than process RSS, and the runtime **segfaults** on alloc if the carveout is too small:
+
+```bash
+sudo /usr/hobot/bin/hb_switch_ion.sh balanced && sudo reboot   # <=3B; bpu_first for 7B
+```
+
+Performance mode does not survive a reboot; set it once per boot (see
+[`docs/MODELS.en.md`](docs/MODELS.en.md)).
 
 ## Quick start
 
@@ -91,6 +101,31 @@ std::string reply = llm.chat("Hello", 400, [](const std::string& s){ std::cout <
 ```
 
 REPL: `bllm_chat_native --model <dir>` (see [`examples/chat_native.cc`](examples/chat_native.cc)).
+
+## Making a model directory
+
+An official release scatters the `.hbm` across `model/` and the tokenizer across `config/`;
+`bllm-make-model-dir` assembles them into the directory above. It ships with the `bllm`
+package — no need to clone this repo (equivalently `python -m bllm.make_model_dir`, or
+`scripts/make_model_dir.py` in a source tree):
+
+```bash
+R=<sdk>/oellm_runtime
+bllm-make-model-dir dense ~/models/qwen2.5-1.5b \
+    --hbm       $R/model/Qwen2.5_1.5B_Instruct_1024.hbm \
+    --tokenizer $R/config/Qwen2.5_1.5B_Instruct_config/tokenizer.json \
+    --cache-len 1024
+```
+
+**Never hand-write `model.json`.** The tool resolves stop tokens from the most authoritative
+source available (`generation_config.json` first, then the tokenizer's declared specials) and
+prints which one it used. A guessed eos yields a model that never stops: Qwen2.5's vocabulary
+holds a literal `</s>` at id 128247 that is not a stop token.
+
+Three `arch` values: `dense` (above), `hybrid` (Qwen3.5 SSM, also needs `--embed`), and
+`omni` ([multimodal](#multimodal-qwen25-omni), also needs its towers + embed table). Full
+deployment steps — official package layout, ION sizing — are in
+[`docs/MODELS.en.md`](docs/MODELS.en.md).
 
 ## Serving (OpenAI-compatible API)
 
@@ -128,7 +163,28 @@ curl localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
 
 ## Multimodal (Qwen2.5-Omni)
 
-Text + image + audio + video; media as file paths **or** raw arrays (`HxWx3` uint8 frames,
+The official Omni release is **three towers plus a host embedding table**. Assemble them into
+a model directory first (`bllm-make-model-dir` ships with the conda package):
+
+```bash
+R=<sdk>/oellm_runtime
+bllm-make-model-dir omni ~/models/qwen2.5-omni-3b \
+    --hbm         $R/model/Qwen2.5_Omni_3B_Text.hbm \
+    --visual      $R/model/Qwen2.5_Omni_3B_Visual.hbm \
+    --audio       $R/model/Qwen2.5_Omni_3B_Audio.hbm \
+    --embed       $R/model/embed_tokens.bin \
+    --mel-filters $R/config/Qwen2.5_Omni_3B_config/mel_filters_t.txt \
+    --tokenizer   $R/config/Qwen2.5_Omni_3B_config/tokenizer.json \
+    --cache-len 2048
+```
+
+> ⚠️ **`embed_tokens.bin` is required by Omni and easy to miss.** It is a separate 1.2 GB
+> `wget` line in the official download list, it sits in `model/`, and **its name does not
+> mention Omni** — so grabbing the three `*_Omni_3B_*.hbm` files looks like a complete set
+> and is not. Omni keeps its embedding table on the host (the BPU graph consumes embeddings,
+> not token ids), so the model cannot run without it.
+
+Then text + image + audio + video; media as file paths **or** raw arrays (`HxWx3` uint8 frames,
 16 kHz mono float PCM), so a camera/mic pipeline needs no file round-trip:
 
 ```python
@@ -152,9 +208,16 @@ print(vlm.stream_ask("What just happened?"))
 ```
 
 The KV window **is** the context and the binding constraint (`vlm.context_left` tracks the
-remaining budget; overflowing raises rather than silently evicting). A vision tower's compiled
-resolution sets the video-context budget; a model directory just points `visual` at the tower
-you want. See the [API docs](docs/API.en.md) for more.
+remaining budget; overflowing raises rather than silently evicting). **The official
+`Visual.hbm` is frozen at 448px = 256 tokens per frame-pair, so Omni's 2048-slot window holds
+about 8 seconds of video at 2 fps** — before the prompt, and before audio (~25 tokens/s more).
+Still images are unaffected: one image is a single 256-token charge. A lower-resolution tower
+buys proportionally more video (`(size/14/2)²` tokens per frame-pair: 336→144, 224→64), but the
+resolution is baked in at export time, so changing it means re-exporting the tower offline on
+an x86 host with `leap_llm` — outside this repo, and the official release ships no alternative.
+
+Full deployment steps are in [`docs/MODELS.en.md`](docs/MODELS.en.md); see the
+[API docs](docs/API.en.md) for more.
 
 ## Sharing the BPU with a vision pipeline
 
@@ -233,20 +296,6 @@ target_link_libraries(app PRIVATE bllm::native)
 
 In Python, `import bllm` works whether or not the extension is built;
 `bllm.available_backends()` returns `("native",)` or `()`.
-
-### Making a model directory
-
-A native model is a directory with a `model.json` manifest. Generate it with
-`scripts/make_model_dir.py` (don't hand-write it — it resolves stop tokens from the
-tokenizer's `generation_config.json` instead of guessing):
-
-```bash
-scripts/make_model_dir.py dense ~/models/qwen2.5-1.5b \
-    --hbm Qwen2.5_1.5B_Instruct_1024.hbm \
-    --tokenizer Qwen2.5_1.5B_Instruct_config/tokenizer.json --cache-len 1024
-```
-
-`hybrid` (Qwen3.5 SSM) and `omni` (multimodal) pass their extra towers/embed tables as flags.
 
 ## Community
 

@@ -6,7 +6,7 @@
 [![C++](https://img.shields.io/badge/C%2B%2B-17-00599C.svg)](CMakeLists.txt)
 [![Python](https://img.shields.io/badge/python-3.9%E2%80%933.14-3776AB.svg)](python/CMakeLists.txt)
 [![Platform](https://img.shields.io/badge/platform-RDK%20S100%20%2F%20S100P%20%2F%20S600%20(aarch64)-0A7BBB.svg)](#安装)
-[![Version](https://img.shields.io/badge/version-0.1.2-informational.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.1.4-informational.svg)](CHANGELOG.md)
 
 **简体中文** | [English](README.en.md)
 
@@ -26,8 +26,8 @@
 
 ## 目录
 
-- [特性](#特性) · [安装](#安装) · [快速上手](#快速上手) · [服务化部署](#服务化部署openai-兼容-http)
-- [多模态](#多模态qwen25-omni) · [与视觉流水线共享 BPU](#与视觉流水线共享-bpu)
+- [特性](#特性) · [安装](#安装) · [快速上手](#快速上手) · [制作模型目录](#制作模型目录)
+- [服务化部署](#服务化部署openai-兼容-http) · [多模态](#多模态qwen25-omni) · [与视觉流水线共享 BPU](#与视觉流水线共享-bpu)
 - [支持的模型](#支持的模型) · [从源码构建](#从源码构建)
 - [社区交流](#社区交流) · [参与贡献](#参与贡献) · [致谢](#致谢) · [许可证](#许可证)
 
@@ -52,6 +52,15 @@ conda install -c https://mirrors.ruis.ai/conda -c conda-forge bllm
 
 装上 `bllm`（Python 绑定）、`libbllm`（C++ 库 + 头文件 + cmake 配置）及其运行时依赖
 （`hobot-dnn`、`tokenizers-cpp`）。RDK 平台运行库随板系统提供。
+
+还需要**一次性**把 ION carveout 调大，然后重启 —— 模型权重活在 ION 里而不是进程 RSS，
+carveout 不够时运行时会在 alloc 处直接**段错误**：
+
+```bash
+sudo /usr/hobot/bin/hb_switch_ion.sh balanced && sudo reboot   # ≤3B；7B 用 bpu_first
+```
+
+性能模式不跨重启保持，每次开机设一遍（见 [`docs/MODELS.zh.md`](docs/MODELS.zh.md)）。
 
 ## 快速上手
 
@@ -83,6 +92,28 @@ std::string reply = llm.chat("你好", 400, [](const std::string& s){ std::cout 
 ```
 
 REPL：`bllm_chat_native --model <dir>`（见 [`examples/chat_native.cc`](examples/chat_native.cc)）。
+
+## 制作模型目录
+
+下载的官方模型（`.hbm` 散在 `model/`、tokenizer 散在 `config/`）用 `bllm-make-model-dir`
+拼成上面那个目录 —— 它随 `bllm` 包一起装好，不必 clone 本仓
+（等价形式：`python -m bllm.make_model_dir`；源码树里是 `scripts/make_model_dir.py`）：
+
+```bash
+R=<sdk>/oellm_runtime
+bllm-make-model-dir dense ~/models/qwen2.5-1.5b \
+    --hbm       $R/model/Qwen2.5_1.5B_Instruct_1024.hbm \
+    --tokenizer $R/config/Qwen2.5_1.5B_Instruct_config/tokenizer.json \
+    --cache-len 1024
+```
+
+**别手写 `model.json`** —— 该工具会按权威性依次从 `generation_config.json`、
+tokenizer 声明的 special token 解析停止符并打印用了哪个来源。猜错 eos 的下场是模型永不停：
+Qwen2.5 的词表里就有一个 id 128247 的字面量 `</s>`，它并不是停止符。
+
+三种 `arch`：`dense`（上面）、`hybrid`（Qwen3.5 SSM，另需 `--embed`）、
+`omni`（[多模态](#多模态qwen25-omni)，另需塔与嵌入表）。官方包结构、ION 设置等完整部署步骤见
+[`docs/MODELS.zh.md`](docs/MODELS.zh.md)。
 
 ## 服务化部署（OpenAI 兼容 HTTP）
 
@@ -117,7 +148,27 @@ curl localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
 
 ## 多模态（Qwen2.5-Omni）
 
-文本 + 图像 + 音频 + 视频，媒体可传文件路径**或**原始数组（`HxWx3` uint8 帧、16 kHz 单声道 float PCM），
+官方发布的 Omni 是**三个塔 + 一张宿主嵌入表**，先拼成一个模型目录
+（`bllm-make-model-dir` 随 conda 包一起装好，不必 clone 本仓）：
+
+```bash
+R=<sdk>/oellm_runtime
+bllm-make-model-dir omni ~/models/qwen2.5-omni-3b \
+    --hbm         $R/model/Qwen2.5_Omni_3B_Text.hbm \
+    --visual      $R/model/Qwen2.5_Omni_3B_Visual.hbm \
+    --audio       $R/model/Qwen2.5_Omni_3B_Audio.hbm \
+    --embed       $R/model/embed_tokens.bin \
+    --mel-filters $R/config/Qwen2.5_Omni_3B_config/mel_filters_t.txt \
+    --tokenizer   $R/config/Qwen2.5_Omni_3B_config/tokenizer.json \
+    --cache-len 2048
+```
+
+> ⚠️ **`embed_tokens.bin` 是 Omni 必需的，且极易漏下**：它在官方下载清单里是单独一行
+> 1.2 GB 的 `wget`，躺在 `model/` 下，而且**文件名不带 Omni 字样** —— 只下三个
+> `*_Omni_3B_*.hbm` 看着像下全了，其实缺它根本跑不起来（Omni 的嵌入表放在宿主侧，
+> BPU 图吃的是 embedding 而非 token id）。
+
+然后文本 + 图像 + 音频 + 视频，媒体可传文件路径**或**原始数组（`HxWx3` uint8 帧、16 kHz 单声道 float PCM），
 相机/麦克风流水线无需落盘：
 
 ```python
@@ -140,8 +191,13 @@ print(vlm.stream_ask("刚才发生了什么？"))
 ```
 
 KV 窗口**就是**上下文，也是硬约束（`vlm.context_left` 跟踪剩余额度，越界会报错而非静默丢弃）。
-视觉塔的分辨率在离线导出时定死，决定视频上下文预算；模型目录只需把 `visual` 指向想用的塔。
-更多用法见 [API 文档](docs/API.zh.md)。
+**官方 `Visual.hbm` 固定 448px = 256 token/frame-pair，配 2048 的 KV 窗口 ⇒ 视频只有约 8 秒 @2fps**，
+且这还没扣 prompt 和音频（音频另收 ~25 token/s）；单张图片不受影响，一张图就是一次 256 token。
+更低分辨率的塔能换来成比例的时长（`(size/14/2)²`：336→144、224→64 token），但分辨率在离线导出时
+就已定死，换塔要在 x86 上用 `leap_llm` 重新导出，不在本仓范围，官方也未发布别的塔。
+
+完整部署步骤（dense 模型、ION 设置、官方包结构）见
+[`docs/MODELS.zh.md`](docs/MODELS.zh.md)，更多用法见 [API 文档](docs/API.zh.md)。
 
 ## 与视觉流水线共享 BPU
 
@@ -158,16 +214,22 @@ llm.set_bpu_priority(0)      # 最低,让视觉抢占 BPU 队列
 
 ## 支持的模型
 
-官方预编译 **文本** LLM 走同一条免配置路径（自动识别类型、发现对话模板、处理各家差异如 int8 KV）：
+下列模型走同一条免配置路径（自动识别类型、发现对话模板、处理各家差异如 int8 KV），
+在 q8/q4 × 上下文 1024/4096 等变体上验证。
+
+**D-Robotics 官方发布的 `.hbm`**：
 
 - **Qwen2.5** 1.5B / 7B（Base + Instruct）
 - **DeepSeek-R1-Distill-Qwen** 1.5B / 7B
-- **InternLM2-1.8B** · **GLM-Edge** · **Phi-4-mini**
-- **Qwen3.5-0.8B / 2B / 4B**（混合 SSM，原生独有；100% 落 BPU int8）
+- **InternLM2-1.8B**
 - **Qwen2.5-Omni-3B**（多模态）
 
-在 q8/q4 × 上下文 1024/4096 等变体上验证。模型转换（`.hbm` 如何产出）是离线流程，不在本仓范围；
-本仓消费成品 `.hbm` + tokenizer 配置。
+**本仓自行转换的 `.hbm`**（官方工具链未覆盖的架构，由我们离线转换后在板上验证）：
+
+- **Qwen3.5-0.8B / 2B / 4B**（混合 SSM，**BLLM 原生独有**；100% 落 BPU int8）
+- **GLM-Edge** · **Phi-4-mini**
+
+模型转换（`.hbm` 如何产出）是离线流程，不在本仓范围；本仓消费成品 `.hbm` + tokenizer 配置。
 
 > **S600 多核**：大模型可绑定多个 BPU 核并行 decode——Qwen3.5-4B 用满 4 核 **27 tok/s**、
 > 0.8B 单核 **42.7 tok/s**。板端实测见 [`docs/S600_RESULTS.md`](docs/S600_RESULTS.md)。
@@ -213,19 +275,6 @@ target_link_libraries(app PRIVATE bllm::native)
 ```
 
 Python 里 `import bllm` 在有无扩展时都能导入；`bllm.available_backends()` 返回 `("native",)` 或 `()`。
-
-### 制作模型目录
-
-原生模型是带 `model.json` 清单的目录。用 `scripts/make_model_dir.py` 生成（别手写——它会从
-tokenizer 的 `generation_config.json` 解析停止符，避免猜错）：
-
-```bash
-scripts/make_model_dir.py dense ~/models/qwen2.5-1.5b \
-    --hbm Qwen2.5_1.5B_Instruct_1024.hbm \
-    --tokenizer Qwen2.5_1.5B_Instruct_config/tokenizer.json --cache-len 1024
-```
-
-`hybrid`（Qwen3.5 SSM）与 `omni`（多模态）通过额外参数传入各自的塔/嵌入表。
 
 ## 社区交流
 
