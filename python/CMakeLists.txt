@@ -48,5 +48,8 @@ if(BLLM_HAVE_NATIVE)
     install(DIRECTORY bllm/ DESTINATION "${_bllm_sp}/bllm"
             FILES_MATCHING PATTERN "*.py" PATTERN "*.pyi"
             PATTERN "__pycache__" EXCLUDE)
+    # The model-dir tool on PATH: `bllm.make_model_dir` ships inside the package above,
+    # so an installed-from-conda user can assemble a model.json without cloning the repo.
+    install(PROGRAMS bllm-make-model-dir DESTINATION bin)
   endif()
 endif()

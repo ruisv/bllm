@@ -1,8 +1,12 @@
-"""Tests for scripts/make_model_dir.py — the only writer of `model.json`.
+"""Tests for `bllm.make_model_dir` — the only writer of `model.json`.
 
 Pure Python: no board, no BPU. What is worth pinning down is the eos resolution,
 because getting it wrong produces a model that never stops, and the failure looks
 like a runtime bug rather than a manifest bug.
+
+The module is loaded by path rather than imported as `bllm.make_model_dir`, so these
+tests stay independent of the package's extension module (absent on a dev host).
+`scripts/make_model_dir.py` is a thin wrapper around this same module.
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "make_model_dir.py"
+_SCRIPT = Path(__file__).resolve().parents[1] / "python" / "bllm" / "make_model_dir.py"
 _spec = importlib.util.spec_from_file_location("make_model_dir", _SCRIPT)
 mmd = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mmd)

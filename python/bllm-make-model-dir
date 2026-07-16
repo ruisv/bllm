@@ -1,0 +1,13 @@
+#!/usr/bin/env python
+"""Console entry point for `bllm.make_model_dir`.
+
+Installed to $PREFIX/bin so `conda install bllm` puts the model-dir tool on PATH —
+assembling a model directory must not require cloning the source tree.
+"""
+
+import sys
+
+from bllm.make_model_dir import main
+
+if __name__ == "__main__":
+    sys.exit(main())
