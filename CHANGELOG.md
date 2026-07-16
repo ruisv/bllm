@@ -4,7 +4,58 @@ All notable changes to BLLM are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.1.4]
+
+### Added
+
+- **`bllm-make-model-dir` ships with the package** — the model-dir tool moved into
+  `bllm.make_model_dir` and installs to `$PREFIX/bin`, so `conda install bllm` is enough to
+  assemble a model directory. It was previously only `scripts/make_model_dir.py` in a source
+  tree, which left an installed-from-conda user with no way to turn an official release into
+  something `bllm.load()` accepts. `scripts/make_model_dir.py` still works (thin wrapper), and
+  `python -m bllm.make_model_dir` is equivalent.
+- **[`docs/MODELS.zh.md`](docs/MODELS.zh.md) / [`docs/MODELS.en.md`](docs/MODELS.en.md)** —
+  deploying an official release end-to-end: ION sizing, what the package actually contains,
+  assembling dense and Omni model directories, the Omni video budget, and the failure modes
+  worth knowing. Verified command-by-command on an S100P.
+
+### Fixed
+
+- **The ION carveout prerequisite was missing from the public docs entirely.** On-board LLMs
+  need an enlarged carveout (`hb_switch_ion.sh balanced` + reboot) or the runtime segfaults on
+  alloc — a first-run failure with no hint that it is a setup step, not a bug. Now in the
+  README's install section, where it is a prerequisite rather than a footnote.
+- **Documented the official Omni path end-to-end.** Getting from a downloaded Qwen2.5-Omni
+  release to a loadable model directory was undocumented: the README's multimodal section began
+  at an already-assembled directory, and the only `omni` example lived in a script docstring.
+  The README (zh/en) and the new deployment docs now carry the verified command, and "making a
+  model directory" is a top-level section rather than a subsection of "build from source" — a
+  conda user never reached it, and it is not a build-from-source concern.
+- **`embed_tokens.bin` is called out as required for Omni.** It is a separate 1.2 GB download
+  in the official list, sits in `model/`, and its name does not mention Omni — so the three
+  `*_Omni_3B_*.hbm` files look like a complete set. Missing it now produces an error that says
+  where the file comes from, rather than just naming the flag.
+- **The Omni video budget is stated instead of implied.** The README said a model directory
+  "just points `visual` at the tower you want", but the official release ships only the 448px
+  tower: 256 tokens per frame-pair against a 2048-slot window is ~8 s of video at 2 fps. Other
+  resolutions require an offline re-export, which is outside this repo.
+- **Dropped the obsolete "downgrade `tokenizer.json` to 0.19.1" advice** — that was a libxlm
+  limitation. The native runtime reads `tokenizers` 0.20+ pair-format merges (with
+  `ignore_merges`) as-is; verified on-board.
+- **`__version__` was stuck at 0.1.2** — so the published 0.1.3 package reported the wrong
+  version from `bllm.__version__`. It now tracks `CMakeLists.txt`.
+
+## [0.1.3]
+
+### Fixed
+
+- **Multi-core `.hbm` binding (nash-p / S600).** An `.hbm` compiled with `core_num > 1` was
+  rejected by the runtime when submitted with `HB_UCP_CORE_ANY` (*"When infer multi-core model
+  task, the backend must be specified to specific cores"*). `model.json` already carried
+  `bpu_cores`, but `ModelConfig` never parsed it, so the engine always submitted `CORE_ANY`.
+  It is now parsed, and at load the sched core mask is bound to cores `0..(N-1)`;
+  `set_bpu_priority` preserves the mask. Validated on S600: Qwen3.5-4B nash-p 4-core,
+  22.6 tok/s.
 
 ## [0.1.2] — 2026-07-14
 
