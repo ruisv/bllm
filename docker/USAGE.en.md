@@ -171,7 +171,7 @@ existing client at `http://<board-ip>:8866/v1`:
 | `BLLM_MODEL` | preset in delivery images | model dir (with `model.json`) or a bare `.hbm`, path inside the container |
 | `BLLM_TOKENIZER_DIR` | — | only when `BLLM_MODEL` is a bare `.hbm` |
 | `BLLM_MAX_QUEUE` | `8` | queued requests before the server returns 429 (one BPU graph = one generation at a time) |
-| `BLLM_CACHE_MAX_MB` | `512` | prefix-cache budget in MB; `0` disables the cache |
+| `BLLM_CACHE_MAX_MB` | `auto` | prefix-cache budget in MB, or `auto` (40% of `MemAvailable`, 256 MB–4 GB); `0` disables |
 | `BLLM_CACHE_TTL_S` | `1800` | drop a cached prefix unused for this long |
 | `BLLM_CACHE_MAX_ENTRIES` | `64` | entry cap alongside the byte budget |
 | `BLLM_MAX_NEW` | `1024` | default generation cap when a request omits `max_tokens` |
@@ -223,36 +223,30 @@ optimization but the difference between usable and not; do not disable it.**
 > startup): no prefix cache, but the concurrency fix, admission control, real token
 > usage and `/metrics` all still apply. Check `supports_prefix_cache` on `GET /metrics`.
 
-**Memory** is budgeted in bytes, not entries: a dense snapshot is ~22 KB/token and
-grows with the context, while a hybrid one is a flat **~72 MB** regardless of length.
-So 512 MB holds dozens of dense entries but only 7 hybrid ones. Lower
-`BLLM_CACHE_MAX_MB` if memory is tight, or set it to `0` to disable.
+**Cache budget:** measured in bytes, not entries — a snapshot's size differs by an order
+of magnitude between the two engines and grows with the conversation. Dense is ~22 KB/token;
+hybrid carries a ~22 MB floor of GDN recurrent state plus ~24.6 KB/token on top (measured on
+Qwen3.5-2B ctx4k: ~25 MB for a 136-token conversation, ~30 MB for a typical two-turn one).
 
-**`auto` is the default:** with `BLLM_CACHE_MAX_MB` unset the server sizes the budget from
-`MemAvailable` at startup (a 40% share, floored at 256 MB, capped at 4 GB) and logs what it
-chose. This matters most when several servers or containers share a board — each picking a
-plausible-looking fixed number is how you exceed total RAM.
+**`auto` is the default and usually needs no tuning:** with `BLLM_CACHE_MAX_MB` unset the
+server takes a 40% share of `MemAvailable` at startup (floored at 256 MB, capped at 4 GB) and
+logs what it chose. On an 8 GB board that came out around 2.5 GB, holding **80+**
+conversations.
 
-**Sizing it:** the budget is in bytes, not entries. A hybrid snapshot is a *constant*
-(measured 122 MB for Qwen3.5-2B ctx4k), so the 512 MB default holds only **4 conversations**
-— past that they evict each other. Raising `BLLM_CACHE_MAX_MB` to 2048 held **16** in
-testing, using 1957 MB and still leaving 4.4 GB free on an 8 GB board:
+This matters most when several servers or containers share a board — each picking a
+plausible-looking fixed number is how you exceed total RAM (two processes set to 2 GB and
+3 GB drove `MemAvailable` down to 2.4 GB in testing). Override with an explicit MB value, or
+`0` to disable the cache:
 
 ```bash
 docker run -d --name bllm-serve --network host --restart unless-stopped \
-  -e BLLM_CACHE_MAX_MB=2048 \
+  -e BLLM_CACHE_MAX_MB=1024 \
   --device /dev/bpu --device /dev/bpu_core0 --device /dev/ion \
   --device /dev/ipcdrv --device /dev/dcore0_rpmsg_bpu <image>
 ```
 
-Dense models need far less: their snapshots are ~22 KB/token and grow with the context, so
-the same budget holds an order of magnitude more. A steadily rising `evictions` on
-`GET /metrics` is the signal that the budget is too small.
-
-> **Hybrid snapshot size:** since 0.1.6 a snapshot saves only the occupied attention K/V,
-> so it grows with the conversation (~22 MB plus ~24.6 KB/token) instead of being fixed by
-> the context window. Qwen3.5-2B ctx4k was a flat 122 MB per entry; a 136-token
-> conversation is now 25 MB — **the same 2 GB budget holds ~66 instead of 16**.
+A steadily rising `evictions` on `GET /metrics` means the budget is short; `max_bytes` shows
+what is actually in effect.
 
 ## 7. Operations
 

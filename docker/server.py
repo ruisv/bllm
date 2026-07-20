@@ -20,7 +20,8 @@ Config via env:
     BLLM_API_KEY        if set, require "Authorization: Bearer <key>"
     BLLM_BPU_PRIORITY   optional int, set_bpu_priority() at startup
     BLLM_MAX_QUEUE      queued requests before returning 429 (8)
-    BLLM_CACHE_MAX_MB   prefix-cache budget in MB, 0 disables (512)
+    BLLM_CACHE_MAX_MB   prefix-cache budget in MB, or "auto" (default) to size it from
+                        MemAvailable at startup; 0 disables the cache
     BLLM_CACHE_TTL_S    drop a cached prefix unused for this long (1800)
     BLLM_CACHE_MAX_ENTRIES  hard entry cap alongside the byte budget (64)
     BLLM_CORS_ORIGINS   comma-separated allowed origins (default "*")

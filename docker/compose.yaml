@@ -36,7 +36,8 @@ services:
       BLLM_API_KEY: ${BLLM_API_KEY:-}
       BLLM_BPU_PRIORITY: ${BLLM_BPU_PRIORITY:-}
       BLLM_MAX_QUEUE: ${BLLM_MAX_QUEUE:-8}            # queued requests before 429
-      BLLM_CACHE_MAX_MB: ${BLLM_CACHE_MAX_MB:-512}    # prefix cache budget; 0 disables
+      # 'auto' sizes from MemAvailable at startup; an explicit MB value overrides, 0 disables
+      BLLM_CACHE_MAX_MB: ${BLLM_CACHE_MAX_MB:-auto}
       BLLM_CACHE_TTL_S: ${BLLM_CACHE_TTL_S:-1800}
       BLLM_PERF_MODE: ${BLLM_PERF_MODE:-0}   # =1 needs `privileged: true` below
     # Uncomment for BLLM_PERF_MODE=1 (writes physical perf registers via /dev/mem):

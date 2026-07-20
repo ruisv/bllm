@@ -162,7 +162,7 @@ print(r.choices[0].message.content)
 | `BLLM_CORS_ORIGINS` | `*` | 允许的 CORS 源(逗号分隔),默认全开给浏览器客户端 |
 | `BLLM_BPU_PRIORITY` | — | 启动时设 BPU 优先级 |
 | `BLLM_MAX_QUEUE` | `8` | 排队请求数上限,超了返回 429(单 BPU 图一次只跑一个生成) |
-| `BLLM_CACHE_MAX_MB` | `512` | 前缀缓存预算(MB),`0` 关闭缓存 |
+| `BLLM_CACHE_MAX_MB` | `auto` | 前缀缓存预算(MB),或 `auto`(取 `MemAvailable` 的 40%,256 MB–4 GB);`0` 关闭 |
 | `BLLM_CACHE_TTL_S` | `1800` | 缓存前缀多久没用就丢弃(秒) |
 | `BLLM_CACHE_MAX_ENTRIES` | `64` | 与字节预算并行的条数上限 |
 | `BLLM_PERF_MODE` | `0` | `1` = 容器内戳 BPU 性能寄存器(需 `--privileged`;更推荐在主机做) |
@@ -202,32 +202,27 @@ hybrid(Qwen3.5)没有批量 prefill 图,逐 token 喂 ~68ms/token,512 token 的 
 > 限流、真 token 计数、`/metrics` 仍然可用。`GET /metrics` 的 `supports_prefix_cache`
 > 字段可直接确认当前状态。
 
-**内存**:按字节计费,不按条数 —— dense 快照约 22 KB/token 且随上下文增长,
-hybrid 则是**恒定约 72 MB/条**(整套 cache 全量 dump)。所以 512 MB 预算在 dense 上
-能存几十条,在 hybrid 上只有 7 条。内存紧张就调小 `BLLM_CACHE_MAX_MB`,或设 `0` 关掉。
+**缓存预算**:按字节计费,不按条数 —— 单条快照的大小在两种引擎之间差一个数量级,
+且随对话增长。dense 约 22 KB/token;hybrid 带一个约 22 MB 的 GDN 递归态底座,
+之上再按 24.6 KB/token 增长(Qwen3.5-2B ctx4k 实测:136 token 的会话约 25 MB,
+典型两轮对话约 30 MB)。
 
-**默认已是 `auto`**:不设 `BLLM_CACHE_MAX_MB` 时,服务按启动时 `MemAvailable` 的 40%
-自动取值(下限 256 MB、上限 4 GB)并打印到日志。多个服务/容器共存时尤其重要 ——
-各自填一个"看起来合理"的固定值,加起来就会超过整机内存。
+**默认是 `auto`,通常不需要动**:不设 `BLLM_CACHE_MAX_MB` 时,服务按启动时
+`MemAvailable` 的 40% 自动取值(下限 256 MB、上限 4 GB),并把选定值打进启动日志。
+8 GB 板子上实测自选约 2.5 GB,可容纳 **80 条以上**会话。
 
-**预算怎么设**:按字节计费,不按条数。hybrid 单条快照是**恒定**的(Qwen3.5-2B ctx4k 实测
-122 MB),所以默认 512 MB 只装得下 **4 条会话** —— 并发超过 4 个就开始互相淘汰。
-实测把 `BLLM_CACHE_MAX_MB` 调到 2048 后可稳定容纳 **16 条**,占用 1957 MB,
-8 GB 板子上装满后仍余 4.4 GB:
+多个服务/容器共存时这一点尤其重要 —— 各自填一个"看起来合理"的固定值,加起来就会
+超过整机内存(实测两个进程分别设 2 GB 和 3 GB 时,`MemAvailable` 掉到 2.4 GB)。
+要覆盖就显式给个 MB 数,`0` 关闭缓存:
 
 ```bash
 docker run -d --name bllm-serve --network host --restart unless-stopped \
-  -e BLLM_CACHE_MAX_MB=2048 \
+  -e BLLM_CACHE_MAX_MB=1024 \
   --device /dev/bpu --device /dev/bpu_core0 --device /dev/ion \
   --device /dev/ipcdrv --device /dev/dcore0_rpmsg_bpu <image>
 ```
 
-dense 模型不需要这么大:快照约 22 KB/token 且随上下文增长,同样预算能装的条数多一个数量级。
-`GET /metrics` 的 `evictions` 持续增长就是预算偏小的信号。
-
-> **hybrid 快照大小**:自 0.1.6 起,快照只保存已占用的注意力 K/V,大小随对话增长
-> (约 22 MB 起 + 24.6 KB/token),不再是与上下文窗口绑定的固定值。此前 Qwen3.5-2B ctx4k
-> 每条恒为 122 MB,现在 136 token 的会话仅 25 MB —— **同样 2 GB 预算从 16 条变约 66 条**。
+`GET /metrics` 的 `evictions` 持续增长就是预算偏小的信号;`max_bytes` 是当前实际生效值。
 
 **锁定部署**:设 `BLLM_API_KEY` 并把 `BLLM_CORS_ORIGINS` 收窄到你的前端域名。
 
