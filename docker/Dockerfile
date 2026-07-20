@@ -27,7 +27,7 @@ ARG BLLM_CHANNEL=https://mirrors.ruis.ai/conda
 # Pinned so this layer is not silently reused with a stale runtime: the
 # install line is otherwise identical across releases, so Docker would cache
 # it and the image would keep shipping whatever bllm it first resolved.
-ARG BLLM_VERSION=0.1.5
+ARG BLLM_VERSION=0.1.6
 ENV MAMBA_ROOT_PREFIX=/opt/conda
 ENV PATH=/opt/conda/bin:$PATH
 # Everything in one layer: extract micromamba to /tmp (thrown away here, not
