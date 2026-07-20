@@ -28,7 +28,8 @@ from typing import Any, Iterator, Optional
 
 import bllm
 
-from .cache import PrefixCache, snapshot_point
+from .cache import (PrefixCache, auto_budget_bytes, read_mem_available_mb,
+                    snapshot_point)
 
 
 class QueueFull(Exception):
@@ -100,17 +101,28 @@ class Engine:
         # prefix is safe.
         self.prefill_chunk = int(getattr(self.sess, "prefill_chunk", 0) or 0)
 
-        cache_mb = int(os.environ.get("BLLM_CACHE_MAX_MB", "512"))
+        # "auto" (the default) sizes the budget from the memory this board actually has
+        # left after loading the model — a fixed number cannot suit both engines, and
+        # over-committing here does not raise, it takes the board down.
+        raw = os.environ.get("BLLM_CACHE_MAX_MB", "auto").strip().lower()
+        if raw in ("auto", ""):
+            avail = read_mem_available_mb()
+            cache_bytes = auto_budget_bytes(avail)
+            print(f"[bllm-serve] prefix cache budget {cache_bytes >> 20} MB "
+                  f"(auto, from {avail} MB available; set BLLM_CACHE_MAX_MB to override, "
+                  f"0 to disable)", flush=True)
+        else:
+            cache_bytes = int(raw) << 20
         self.cache = (
             PrefixCache(
-                max_bytes=cache_mb << 20,
+                max_bytes=cache_bytes,
                 ttl_s=float(os.environ.get("BLLM_CACHE_TTL_S", "1800")),
                 max_entries=int(os.environ.get("BLLM_CACHE_MAX_ENTRIES", "64")),
             )
-            if cache_mb > 0 and self.supports_prefix_cache
+            if cache_bytes > 0 and self.supports_prefix_cache
             else None
         )
-        if cache_mb > 0 and not self.supports_prefix_cache:
+        if cache_bytes > 0 and not self.supports_prefix_cache:
             missing = [a for a in self._prefix_ops if not hasattr(self.sess, a)]
             print(f"[bllm-serve] prefix cache disabled: this bllm build lacks "
                   f"{', '.join(missing)} — every turn re-prefills its history. "

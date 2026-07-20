@@ -4,7 +4,18 @@ All notable changes to BLLM are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.1.6]
+
+### Added
+
+- **`BLLM_CACHE_MAX_MB` defaults to `auto`.** A fixed default cannot suit both engines —
+  snapshot size varies by an order of magnitude between them and with context length — and
+  the right value also depends on how much RAM the board has left after loading the model,
+  which only the running process can see. The server now sizes the budget from
+  `MemAvailable` (a 40% share, floored at 256 MB and capped at 4 GB) and logs the number it
+  picked. An explicit value still wins; `0` still disables the cache. Over-committing here
+  does not raise an exception on an 8 GB board — it takes the board down — hence the
+  deliberately conservative share.
 
 ### Changed
 
