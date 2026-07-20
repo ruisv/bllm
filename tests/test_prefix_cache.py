@@ -9,7 +9,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "docker"))
 
-from serving.cache import PrefixCache, snapshot_point  # noqa: E402
+from serving.cache import (  # noqa: E402
+    PrefixCache, auto_budget_bytes, read_mem_available_mb, snapshot_point,
+)
 
 
 class Clock:
@@ -187,3 +189,34 @@ def test_no_snapshot_when_nothing_new_is_covered():
 
 def test_exact_multiple_of_chunk_still_snapshots():
     assert snapshot_point(n_total=512, covered=0, align=512) == 512
+
+
+# --- automatic budget --------------------------------------------------------
+
+def test_auto_budget_takes_a_minority_share():
+    """Over-committing on an 8 GB board does not raise — it takes the board down."""
+    assert auto_budget_bytes(6000) == (2400 << 20)
+
+
+def test_auto_budget_has_a_floor():
+    assert auto_budget_bytes(100) == (256 << 20)
+    assert auto_budget_bytes(0) == (256 << 20)
+
+
+def test_auto_budget_has_a_cap():
+    assert auto_budget_bytes(64000) == (4096 << 20)
+
+
+def test_auto_budget_is_monotonic():
+    vals = [auto_budget_bytes(mb) for mb in (500, 2000, 6000, 20000, 64000)]
+    assert vals == sorted(vals)
+
+
+def test_read_mem_available_handles_a_missing_file(tmp_path):
+    assert read_mem_available_mb(str(tmp_path / "nope")) == 0
+
+
+def test_read_mem_available_parses_meminfo(tmp_path):
+    f = tmp_path / "meminfo"
+    f.write_text("MemTotal:       8674816 kB\nMemAvailable:    6359040 kB\n")
+    assert read_mem_available_mb(str(f)) == 6210

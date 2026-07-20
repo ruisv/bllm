@@ -228,6 +228,11 @@ grows with the context, while a hybrid one is a flat **~72 MB** regardless of le
 So 512 MB holds dozens of dense entries but only 7 hybrid ones. Lower
 `BLLM_CACHE_MAX_MB` if memory is tight, or set it to `0` to disable.
 
+**`auto` is the default:** with `BLLM_CACHE_MAX_MB` unset the server sizes the budget from
+`MemAvailable` at startup (a 40% share, floored at 256 MB, capped at 4 GB) and logs what it
+chose. This matters most when several servers or containers share a board — each picking a
+plausible-looking fixed number is how you exceed total RAM.
+
 **Sizing it:** the budget is in bytes, not entries. A hybrid snapshot is a *constant*
 (measured 122 MB for Qwen3.5-2B ctx4k), so the 512 MB default holds only **4 conversations**
 — past that they evict each other. Raising `BLLM_CACHE_MAX_MB` to 2048 held **16** in

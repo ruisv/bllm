@@ -206,6 +206,10 @@ hybrid(Qwen3.5)没有批量 prefill 图,逐 token 喂 ~68ms/token,512 token 的 
 hybrid 则是**恒定约 72 MB/条**(整套 cache 全量 dump)。所以 512 MB 预算在 dense 上
 能存几十条,在 hybrid 上只有 7 条。内存紧张就调小 `BLLM_CACHE_MAX_MB`,或设 `0` 关掉。
 
+**默认已是 `auto`**:不设 `BLLM_CACHE_MAX_MB` 时,服务按启动时 `MemAvailable` 的 40%
+自动取值(下限 256 MB、上限 4 GB)并打印到日志。多个服务/容器共存时尤其重要 ——
+各自填一个"看起来合理"的固定值,加起来就会超过整机内存。
+
 **预算怎么设**:按字节计费,不按条数。hybrid 单条快照是**恒定**的(Qwen3.5-2B ctx4k 实测
 122 MB),所以默认 512 MB 只装得下 **4 条会话** —— 并发超过 4 个就开始互相淘汰。
 实测把 `BLLM_CACHE_MAX_MB` 调到 2048 后可稳定容纳 **16 条**,占用 1957 MB,

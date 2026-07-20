@@ -27,6 +27,41 @@ import threading
 from dataclasses import dataclass, field
 
 
+def auto_budget_bytes(avail_mb: int, floor_mb: int = 256, cap_mb: int = 4096,
+                      share: float = 0.4) -> int:
+    """Pick a prefix-cache budget from the host memory actually available.
+
+    A fixed default cannot be right for both engines: a dense snapshot is ~22 KB/token
+    and grows with the context, while a hybrid one carries a fixed ~22 MB of recurrent
+    state on top of that. The same 512 MB is generous for one and holds four
+    conversations of the other — and the right answer also depends on how much RAM the
+    board has left after the model, which only the running process can see.
+
+    Deliberately conservative: model weights live in ION, outside this number, but page
+    cache and the server itself are not free, and over-committing on an 8 GB board does
+    not raise an exception — it takes the board down. Hence a minority share, a floor so
+    the cache is never uselessly small, and a cap so a large host does not reserve
+    absurd amounts for a workload that may never use it.
+    """
+    if avail_mb <= 0:
+        return floor_mb << 20
+    mb = int(avail_mb * share)
+    mb = max(floor_mb, min(cap_mb, mb))
+    return mb << 20
+
+
+def read_mem_available_mb(path: str = "/proc/meminfo") -> int:
+    """MemAvailable in MB, or 0 when it cannot be read (non-Linux, restricted /proc)."""
+    try:
+        with open(path) as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except OSError:
+        pass
+    return 0
+
+
 def snapshot_point(n_total: int, covered: int, align: int) -> int | None:
     """Where to snapshot this prompt, or None to cache nothing.
 
@@ -95,9 +130,10 @@ class Stats:
 class PrefixCache:
     """Snapshots keyed by the token ids they cover, bounded by bytes and by age.
 
-    Sized in BYTES, not entries: a dense snapshot is ~22 KB/token and grows with the
-    context, while a hybrid one is a flat ~72 MB regardless of length (it dumps the
-    whole cache set). An entry count would mean wildly different memory per model.
+    Sized in BYTES, not entries: snapshot size varies by an order of magnitude between
+    engines and with context length — a dense one is ~22 KB/token, a hybrid one carries
+    a fixed ~22 MB of GDN recurrent state plus ~24.6 KB/token of attention K/V. An entry
+    count would mean wildly different memory per model.
     """
 
     def __init__(self, max_bytes: int = 512 << 20, ttl_s: float = 1800.0,
