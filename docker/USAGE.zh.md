@@ -206,6 +206,21 @@ hybrid(Qwen3.5)没有批量 prefill 图,逐 token 喂 ~68ms/token,512 token 的 
 hybrid 则是**恒定约 72 MB/条**(整套 cache 全量 dump)。所以 512 MB 预算在 dense 上
 能存几十条,在 hybrid 上只有 7 条。内存紧张就调小 `BLLM_CACHE_MAX_MB`,或设 `0` 关掉。
 
+**预算怎么设**:按字节计费,不按条数。hybrid 单条快照是**恒定**的(Qwen3.5-2B ctx4k 实测
+122 MB),所以默认 512 MB 只装得下 **4 条会话** —— 并发超过 4 个就开始互相淘汰。
+实测把 `BLLM_CACHE_MAX_MB` 调到 2048 后可稳定容纳 **16 条**,占用 1957 MB,
+8 GB 板子上装满后仍余 4.4 GB:
+
+```bash
+docker run -d --name bllm-serve --network host --restart unless-stopped \
+  -e BLLM_CACHE_MAX_MB=2048 \
+  --device /dev/bpu --device /dev/bpu_core0 --device /dev/ion \
+  --device /dev/ipcdrv --device /dev/dcore0_rpmsg_bpu <image>
+```
+
+dense 模型不需要这么大:快照约 22 KB/token 且随上下文增长,同样预算能装的条数多一个数量级。
+`GET /metrics` 的 `evictions` 持续增长就是预算偏小的信号。
+
 **锁定部署**:设 `BLLM_API_KEY` 并把 `BLLM_CORS_ORIGINS` 收窄到你的前端域名。
 
 ---

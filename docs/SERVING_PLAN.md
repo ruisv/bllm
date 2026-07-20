@@ -1,6 +1,7 @@
 # 服务层：会话池 + 前缀缓存
 
-> 状态文档 —— 随进展更新。创建于 2026-07-19，基线版本 0.1.4。
+> 状态文档 —— 随进展更新。创建于 2026-07-19，基线 0.1.4；**已随 0.1.5 交付并部署**
+> （最后更新 2026-07-20）。
 >
 > 目标：把 `docker/server.py`（275 行 demo 级实现）改造成能承载多轮对话的服务层，
 > 消除每轮全量 re-prefill，并修掉一个已存在的并发正确性 bug。
@@ -26,8 +27,14 @@ Omni / VLM 走 embed 模式，`save_state is only for the token path`
 | **P2** | `PrefixCache` + 流水线接入 + 真 usage | ☑ 完成 |
 | **P3** | LRU/TTL/内存上限 + `/metrics` + 文档 | ☑ 完成 |
 
-全部阶段已实现并在 S100P 上验证。测试：`tests/test_prefix_cache.py`(15，任意主机)、
+| **发版** | conda 0.1.5（24 包，含 S600 变体）+ `kPrefillMinTokens` 调优 + 文档 | ☑ 完成 |
+| **上线** | 容器重建、缓存预算 2 GB、板上运行验证 | ☑ 完成 |
+
+全部阶段已实现、发版并部署。测试：`tests/test_prefix_cache.py`(21，任意主机)、
 `tests/test_prefix_reuse.py`(8，板上)、`tests/test_serve_e2e.py`(7，需起服务)。
+
+**注意本文档记录了两次"完成"** —— 第一次宣布完成后又在 hybrid 上抓到两个 bug
+（见《上线后抓到的两个 bug》）。根因是端到端验证只覆盖了 dense 一条路径。
 
 ## 板上实测结论（2026-07-19，S100P）
 
@@ -432,6 +439,28 @@ Qwen3.5-2B ctx4k，容器内，同一段 6 轮对话：
 两个 bug 都是"只在一类引擎上发作"，而我只在另一类上做了端到端验证。
 `prefill_chunk == 0` 与 `!= 0` 是两条**语义不同的路径**，不是同一条路径的参数差异。
 
+## 部署状态（2026-07-20）
+
+板上 `bllm-serve` 容器，Qwen3.5-2B ctx4k（hybrid），`--restart unless-stopped`：
+
+| 项 | 值 |
+|---|---|
+| 镜像 | `bllm-serve:qwen3.5-2b-ctx4k-int8-s100p`（内含 conda bllm 0.1.5） |
+| 缓存预算 | **2 GB**（`-e BLLM_CACHE_MAX_MB=2048`） |
+| 实测容量 | **16 条**独立会话（每条 122 MB），装满占 1957 / 2147 MB |
+| 内存余量 | 装满后 `MemAvailable` 仍有 **4.4 GB**（起始 6.3 GB，线性可预测） |
+| 能力 | `supports_prefix_cache: true`、`supports_cancel: true` |
+
+调到 2 GB 的原因：默认 512 MB 只装得下 4 条，6 小时 22 个请求就淘汰了 10 次 ——
+**并发会话超过 4 个就开始互相踢**。2 GB 下 8 段独立对话全程 0 次淘汰、每段第二轮全部命中。
+
+容量按字节计费而非条数，所以**换 dense 模型不需要重调**：dense 快照约 22 KB/token
+（随上下文增长），同样 2 GB 能装的条数要多一个数量级。`BLLM_CACHE_MAX_ENTRIES`
+默认 64 在 hybrid 上永远够不着，字节预算先到顶。
+
+再往上加预算是可行的（按当前线性曲线 4 GB 约 32 条、仍余 ~2.4 GB），但**没有实测过**
+那个点上 ION 与页缓存的争用，要用先测。
+
 ## 风险 —— 结算
 
 | 原列风险 | 结果 |
@@ -441,19 +470,31 @@ Qwen3.5-2B ctx4k，容器内，同一段 6 轮对话：
 | 收益依赖客户端行为 | ✅ 成立，已写进三份用户文档 |
 | （未预见）**分段敏感性** | ⚠️ 最重要的一条：不对齐的缓存点会改变回答。已由 `cache_align()` 挡住 |
 
-## 未完成事项
+## 已收尾的原未完成事项
 
-- [ ] **hybrid 的 HTTP 层 A/B 未跑。** 引擎级已实测 24.95×，但没在真实服务上端到端复现。
-      hybrid 一条快照 72 MB、prefill 35 s/512token，起服务测一轮代价较高。
-- [ ] **`kPrefillMinTokens = 16` 调优**（见上文）。收益明确（3~15 token 的轮次省最多
-      540 ms TTFT），但会改变输出，需要独立决策与回归验证。
+- [x] **hybrid 的 HTTP 层 A/B** —— 修复后在容器上实测，TTFT 从随历史线性增长
+      （6.3 s → 31.0 s）变为恒定 ~5.9 s。
+- [x] **`kPrefillMinTokens` 调优** —— 16 → 4。盈亏点在三个模型上实测
+      2.93 / 3.31 / 2.92，稳定（两者都是一次 BPU 图调用）。15 token 的轮次
+      676 ms → 135 ms。会改变 4~15 token 轮次的输出，已额外验证两个模型的多轮连贯性。
+- [x] **服务层拆分** —— `docker/serving/`（`cache.py` + `engine.py`），两个 Dockerfile
+      的 `COPY` 已同步。
+- [x] **发版** —— conda 0.1.5 已发布，容器已用它重建。
+
+## 仍未做
+
 - [ ] **VLM / Omni 不支持**。embed 模式不能快照（`native_engine.h:365`），
-      多模态服务仍是每轮全量重算。
-- [ ] **真并发仍然没有**。单 BPU 图一次一个生成；本方案只解决重复计算，
-      不解决吞吐。要吞吐得做 continuous batching。
+      多模态服务仍是每轮全量重算。这是本方案边界内的已知空白。
+- [ ] **真并发仍然没有**。单 BPU 图一次一个生成；本方案只解决重复计算，不解决吞吐。
+      要吞吐得做 continuous batching。
+- [ ] **dense 收益封顶 ~2×**，低于原定的 70% 目标。结构上限（chunk 粒度），
+      不是实现问题；hybrid 的 TTFT 恒定化才是本方案的主要价值。
+- [ ] **>2 GB 缓存预算未实测**（ION 与页缓存的争用）。
 
-## 待决
+## 后续可做（未排期）
 
-- [ ] 本文档与本轮改动是否提交？（当前全部 untracked / 未 commit）
-- [x] 服务层已从 `docker/server.py` 拆出 `docker/serving/`（`cache.py` + `engine.py`），
-      两个 Dockerfile 的 `COPY` 已同步。
+- **缓存预算自适应**：按 `MemAvailable` 和单条快照实测大小推荐一个上限，
+  而不是让用户凭感觉填 MB 数 —— 现在 hybrid 与 dense 差 5 倍以上，默认值必然对一边不合适。
+- **hybrid 快照瘦身**：72~122 MB 是整套 cache 全量 dump，与已用长度无关。
+  若能只 dump 有效部分，缓存容量会成倍上升。需要看 `native_hybrid_engine.h` 的
+  `writeState` 能否按 `P_` 裁剪。

@@ -228,6 +228,22 @@ grows with the context, while a hybrid one is a flat **~72 MB** regardless of le
 So 512 MB holds dozens of dense entries but only 7 hybrid ones. Lower
 `BLLM_CACHE_MAX_MB` if memory is tight, or set it to `0` to disable.
 
+**Sizing it:** the budget is in bytes, not entries. A hybrid snapshot is a *constant*
+(measured 122 MB for Qwen3.5-2B ctx4k), so the 512 MB default holds only **4 conversations**
+— past that they evict each other. Raising `BLLM_CACHE_MAX_MB` to 2048 held **16** in
+testing, using 1957 MB and still leaving 4.4 GB free on an 8 GB board:
+
+```bash
+docker run -d --name bllm-serve --network host --restart unless-stopped \
+  -e BLLM_CACHE_MAX_MB=2048 \
+  --device /dev/bpu --device /dev/bpu_core0 --device /dev/ion \
+  --device /dev/ipcdrv --device /dev/dcore0_rpmsg_bpu <image>
+```
+
+Dense models need far less: their snapshots are ~22 KB/token and grow with the context, so
+the same budget holds an order of magnitude more. A steadily rising `evictions` on
+`GET /metrics` is the signal that the budget is too small.
+
 ## 7. Operations
 
 ```bash
