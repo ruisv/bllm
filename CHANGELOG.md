@@ -4,6 +4,26 @@ All notable changes to BLLM are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **Hybrid snapshots are ~5x smaller.** The hybrid cache set is a mix: the GDN layers hold a
+  fixed-size recurrent state that summarises all history, while the attention layers hold a
+  K/V window whose leading dimension *is* the window. Saving the whole window made every
+  snapshot a flat size regardless of how short the conversation was — 72 MB for
+  Qwen3.5-0.8B (ctx2048), 122 MB for Qwen3.5-2B (ctx4096) — which bounded a serving prefix
+  cache by the context window rather than by the conversation. Only the occupied K/V is
+  saved now (it is right-aligned in the window, as the attention mask shows), so a blob
+  grows with the conversation: **22 MB at 17 tokens, +24.6 KB/token**. A 136-token snapshot
+  drops from 122 MB to 25 MB — 80% smaller — so a 2 GB prefix cache holds ~66 conversations
+  instead of 16. The GDN state is fixed-size by nature and is still saved whole; dense
+  models are unaffected.
+
+  The state format changed, so the magic is bumped `BLKH` → `BLKI` and older hybrid
+  `save_state()` files are rejected with a clear error rather than misread. In-memory
+  snapshots do not cross versions, so a running server is unaffected.
+
 ## [0.1.5]
 
 ### Added
