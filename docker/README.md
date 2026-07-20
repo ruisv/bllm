@@ -100,9 +100,56 @@ flight at a time (BPU = single prefill/decode graph); requests serialize. Run a
 | `BLLM_MAX_NEW` | `1024` | default `max_tokens` when a request omits it |
 | `BLLM_API_KEY` | — | if set, require `Authorization: Bearer <key>` |
 | `BLLM_BPU_PRIORITY` | — | `set_bpu_priority()` at startup |
+| `BLLM_MAX_QUEUE` | `8` | queued requests before the server returns 429 (one BPU graph = one generation at a time) |
+| `BLLM_CACHE_MAX_MB` | `512` | prefix-cache budget in MB; `0` disables the cache |
+| `BLLM_CACHE_TTL_S` | `1800` | drop a cached prefix unused for this long |
+| `BLLM_CACHE_MAX_ENTRIES` | `64` | entry cap alongside the byte budget |
 | `BLLM_PERF_MODE` | `0` | `1` = poke BPU perf registers (needs `--privileged`; prefer doing it on the host) |
 | `BLLM_CORS_ORIGINS` | `*` | allowed CORS origins (comma-separated); default open for browser clients |
 | `BLLM_PORT` / `BLLM_HOST` | `8866` / `0.0.0.0` | bind |
+
+
+### Prefix cache (multi-turn without re-prefilling)
+
+The OpenAI protocol is stateless — the client re-sends the whole `messages[]` every
+turn — so a naive server re-prefills the entire history each time. This one caches
+engine snapshots keyed by **the token sequence they cover** and prefills only what is
+new. Per-request hits show up in `usage.prompt_tokens_details.cached_tokens`;
+aggregates are on `GET /metrics`.
+
+Matching is exact token-prefix comparison, so a **wrong reuse is not possible**: an
+edited history, a changed system prompt or different tokenization simply matches a
+shorter entry or misses entirely and falls back to a full prefill.
+
+**The win depends on the engine** (measured on an S100P, client re-sending history):
+
+| Engine | Model | miss → hit | Speedup |
+|---|---|---|---|
+| dense | Qwen2.5-1.5B | 271ms → 138ms | ~2x |
+| hybrid | Qwen3.5-0.8B | 31.6s → 1.3s | ~25x |
+
+The hybrid engine has no batch prefill graph — it ingests ~68ms/token, so a
+512-token prompt costs 35 s. **For hybrid (Qwen3.5) models this is not an
+optimization but the difference between usable and not; do not disable it.**
+
+**When it does not help** (normal degradation, not a fault):
+
+- one-shot questions on a fresh topic each time — there is no prefix to reuse
+- clients that trim or summarize history (some web UIs do) — the prefix changes and
+  every entry misses
+- prompts shorter than one prefill chunk (typically 256 tokens on dense) — there is
+  no safe snapshot point, though re-prefilling such a prompt is cheap anyway
+
+
+> **Note:** the image installs `bllm` from the conda channel. If that build predates
+> the snapshot primitives the server **degrades to full re-prefill** (it says so at
+> startup): no prefix cache, but the concurrency fix, admission control, real token
+> usage and `/metrics` all still apply. Check `supports_prefix_cache` on `GET /metrics`.
+
+**Memory** is budgeted in bytes, not entries: a dense snapshot is ~22 KB/token and
+grows with the context, while a hybrid one is a flat **~72 MB** regardless of length.
+So 512 MB holds dozens of dense entries but only 7 hybrid ones. Lower
+`BLLM_CACHE_MAX_MB` if memory is tight, or set it to `0` to disable.
 
 ### Chat from a browser / existing client
 

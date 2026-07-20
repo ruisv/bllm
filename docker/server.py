@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """OpenAI-compatible HTTP server for the BLLM native runtime.
 
-A thin FastAPI facade over ``bllm.NativeSession`` that speaks the OpenAI
-``/v1/chat/completions`` protocol (streaming + non-streaming). One board holds a
-single BPU prefill/decode graph + KV-cache, so the engine is a **singleton** and
-requests are **serialized** (one generation in flight at a time) behind a lock.
+A FastAPI facade over ``serving.Engine``, which owns the model on a single worker
+thread (one BPU graph serves one generation at a time) and keeps a prefix cache of
+engine snapshots so a multi-turn conversation does not re-prefill its history.
 
 State model: the OpenAI protocol is stateless — the client re-sends the full
-``messages[]`` every call — so each request ``reset()``s the engine and replays
-the whole conversation as one ChatML prompt (no server-side session memory).
+``messages[]`` every call — so there is no server-side session id. Instead the whole
+rendered prompt is tokenized and matched against cached snapshots by exact token
+prefix; a hit restores that state and prefills only the new tail. Matching cannot be
+wrong (see ``serving/cache.py``): a mismatch just means a shorter match or a full
+prefill.
 
 Config via env:
     BLLM_MODEL          model directory (with model.json) OR a bare .hbm     [required]
@@ -17,22 +19,27 @@ Config via env:
     BLLM_MAX_NEW        default max_new tokens when a request omits it (1024)
     BLLM_API_KEY        if set, require "Authorization: Bearer <key>"
     BLLM_BPU_PRIORITY   optional int, set_bpu_priority() at startup
+    BLLM_MAX_QUEUE      queued requests before returning 429 (8)
+    BLLM_CACHE_MAX_MB   prefix-cache budget in MB, 0 disables (512)
+    BLLM_CACHE_TTL_S    drop a cached prefix unused for this long (1800)
+    BLLM_CACHE_MAX_ENTRIES  hard entry cap alongside the byte budget (64)
+    BLLM_CORS_ORIGINS   comma-separated allowed origins (default "*")
 
 Run:  uvicorn server:app --host 0.0.0.0 --port 8866   (single worker only)
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import os
-import queue
-import threading
 import time
 from typing import Any, Iterator, Optional
 
-import bllm
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+
+from serving.engine import Cancelled, Engine, QueueFull
 
 # --- ChatML rendering -------------------------------------------------------
 IM_END = "<|im_end|>"
@@ -56,41 +63,11 @@ def render_chatml(messages: list[dict], enable_thinking: bool) -> str:
     return "".join(parts)
 
 
-# --- engine singleton -------------------------------------------------------
-class Engine:
-    """Serialized wrapper around a single NativeSession."""
-
-    def __init__(self) -> None:
-        model = os.environ.get("BLLM_MODEL")
-        if not model:
-            raise RuntimeError("BLLM_MODEL is not set (model dir with model.json, or a .hbm)")
-        kwargs: dict[str, Any] = {"backend": os.environ.get("BLLM_BACKEND", "auto")}
-        tok = os.environ.get("BLLM_TOKENIZER_DIR")
-        if tok:
-            kwargs["tokenizer_dir"] = tok
-        self.sess = bllm.load(model, **kwargs)
-        prio = os.environ.get("BLLM_BPU_PRIORITY")
-        if prio:  # empty string (unset env in compose) counts as no priority
-            self.sess.set_bpu_priority(int(prio))
-        self.name = getattr(self.sess, "name", None) or os.path.basename(model.rstrip("/"))
-        self.default_max_new = int(os.environ.get("BLLM_MAX_NEW", "1024"))
-        self.lock = asyncio.Lock()  # one generation in flight at a time
-
-    def _stream_sync(self, prompt: str, max_new: int, stop: list[str],
-                     temperature: float, top_p: float, top_k: int,
-                     rep_pen: float, seed: int) -> Iterator[str]:
-        """Blocking generator — must run in a worker thread."""
-        self.sess.reset()
-        self.sess.set_sampling(temp=temperature, top_p=top_p, top_k=top_k,
-                               rep_pen=rep_pen, seed=seed)
-        yield from self.sess.stream(prompt, max_new=max_new, stop=stop)
-
-
 engine: Engine  # set on startup
 
 
 # --- FastAPI app ------------------------------------------------------------
-app = FastAPI(title="bllm-serve", version="1")
+app = FastAPI(title="bllm-serve", version="2")
 
 # CORS so browser-based OpenAI-compatible clients (chatbox-lite, Open WebUI, …)
 # can hit the API cross-origin. Default open (it's a test/edge service); narrow
@@ -109,6 +86,11 @@ def _startup() -> None:
     engine = Engine()
 
 
+@app.on_event("shutdown")
+def _shutdown() -> None:
+    engine.shutdown()
+
+
 def _check_auth(authorization: Optional[str]) -> None:
     key = os.environ.get("BLLM_API_KEY")
     if not key:
@@ -119,7 +101,15 @@ def _check_auth(authorization: Optional[str]) -> None:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "model": engine.name}
+    return {"status": "ok", "model": engine.name, "queue_depth": engine.queue_depth}
+
+
+@app.get("/metrics")
+def metrics(authorization: Optional[str] = Header(None)) -> dict:
+    """Cache hit rate, token reuse, queue depth — the numbers that say whether the
+    prefix cache is actually earning its memory on this workload."""
+    _check_auth(authorization)
+    return engine.metrics()
 
 
 @app.get("/v1/models")
@@ -134,7 +124,7 @@ def models(authorization: Optional[str] = Header(None)) -> dict:
 
 def _sampling_from(body: dict) -> dict:
     return {
-        "temperature": float(body.get("temperature", 0.0) or 0.0),
+        "temp": float(body.get("temperature", 0.0) or 0.0),
         "top_p": float(body.get("top_p", 1.0) or 1.0),
         "top_k": int(body.get("top_k", 0) or 0),
         "rep_pen": float(body.get("repetition_penalty", 1.0) or 1.0),
@@ -156,120 +146,118 @@ async def chat_completions(request: Request,
     stop = body.get("stop") or []
     if isinstance(stop, str):
         stop = [stop]
-    stop = list(dict.fromkeys([IM_END, *stop]))  # always stop on <|im_end|>
+    stop = [s for s in dict.fromkeys(stop) if s != IM_END]
     enable_thinking = bool(body.get("enable_thinking", False))
     prompt = render_chatml(messages, enable_thinking)
-    samp = _sampling_from(body)
     created = int(time.time())
     cid = f"chatcmpl-{created}"
-    stream = bool(body.get("stream", False))
 
-    def gen() -> Iterator[str]:
-        return engine._stream_sync(prompt, max_new, [s for s in stop if s != IM_END] or [],
-                                   **samp)
+    ids = engine.encode(prompt)
+    try:
+        job = engine.submit(prompt, ids, max_new, stop, _sampling_from(body))
+    except QueueFull as exc:
+        return JSONResponse(status_code=429, content=_error_body(exc, "rate_limit_exceeded"))
 
-    if stream:
-        return StreamingResponse(_sse(cid, created, gen, max_new),
+    if bool(body.get("stream", False)):
+        return StreamingResponse(_sse(request, cid, created, job),
                                  media_type="text/event-stream")
 
-    # non-streaming: accumulate under the lock
-    async with engine.lock:
-        try:
-            text, ntok = await _collect(gen)
-        except Exception as exc:  # return a proper OpenAI error, not a bare 500
-            status, body = _error_payload(exc)
-            return JSONResponse(status_code=status, content=body)
-    completion = {
+    loop = asyncio.get_running_loop()
+    try:
+        # Drain to completion on a thread; the worker owns the engine either way.
+        await loop.run_in_executor(None, lambda: [None for _ in engine.stream(job)])
+        res = await loop.run_in_executor(None, lambda: engine.wait(job))
+    except Exception as exc:  # return a proper OpenAI error, not a bare 500
+        status, payload = _error_payload(exc)
+        return JSONResponse(status_code=status, content=payload)
+
+    return JSONResponse({
         "id": cid, "object": "chat.completion", "created": created, "model": engine.name,
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
-                     "finish_reason": "length" if ntok >= max_new else "stop"}],
-        "usage": {"prompt_tokens": _approx_tok(prompt), "completion_tokens": ntok,
-                  "total_tokens": _approx_tok(prompt) + ntok},
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": res.text},
+                     "finish_reason": res.finish_reason}],
+        "usage": _usage(res),
+    })
+
+
+def _usage(res) -> dict:
+    return {
+        "prompt_tokens": res.n_prompt,
+        "completion_tokens": res.n_completion,
+        "total_tokens": res.n_prompt + res.n_completion,
+        # OpenAI's standard field — clients surface it directly, so the cache's effect
+        # is visible without reading /metrics.
+        "prompt_tokens_details": {"cached_tokens": res.n_cached},
     }
-    return JSONResponse(completion)
 
 
-# --- streaming/thread bridge ------------------------------------------------
-class _StreamError:
-    """Carries an exception from the pump thread to the SSE consumer, so a
-    mid-stream failure (e.g. context overflow) surfaces as an error event
-    instead of a silent, empty ``finish_reason: stop``."""
-
-    __slots__ = ("exc",)
-
-    def __init__(self, exc: BaseException) -> None:
-        self.exc = exc
-
-
+# --- streaming --------------------------------------------------------------
 def _error_payload(exc: BaseException) -> tuple[int, dict]:
     """(http_status, OpenAI-style error body) for an exception."""
     msg = str(exc)
+    if isinstance(exc, QueueFull):
+        return 429, _error_body(exc, "rate_limit_exceeded")
+    if isinstance(exc, Cancelled):
+        return 499, _error_body(exc, "request_cancelled")
     code = "context_length_exceeded" if "context overflow" in msg else None
-    status = 400 if code else 500
-    return status, {"error": {"message": msg, "type": exc.__class__.__name__, "code": code}}
+    return (400 if code else 500), _error_body(exc, code)
+
+
+def _error_body(exc: BaseException, code: Optional[str]) -> dict:
+    return {"error": {"message": str(exc), "type": exc.__class__.__name__, "code": code}}
+
+
+async def _sse(request: Request, cid: str, created: int, job):
+    """Bridge the worker's deltas to OpenAI SSE chunks.
+
+    On disconnect this cancels the job and keeps draining until the worker says it is
+    done. Returning early would hand the engine back while a generation is still
+    running against it — the bug this rewrite exists to kill.
+    """
+    loop = asyncio.get_running_loop()
+    gen = engine.stream(job)
+    yield _chunk(cid, created, {"role": "assistant"})
+    try:
+        while True:
+            try:
+                piece = await loop.run_in_executor(None, lambda: next(gen, _DONE))
+            except Exception as exc:
+                yield _error_event(exc)
+                yield "data: [DONE]\n\n"
+                return
+            if piece is _DONE:
+                break
+            if await request.is_disconnected():
+                engine.cancel(job)
+                # keep draining: the worker must finish before the next job starts
+                continue
+            yield _chunk(cid, created, {"content": piece})
+    finally:
+        if not job.done.is_set():
+            engine.cancel(job)
+        await loop.run_in_executor(None, lambda: job.done.wait(30))
+
+    res = job.result
+    if job.error is not None:
+        yield _error_event(job.error)
+    else:
+        yield _chunk(cid, created, {}, finish_reason=res.finish_reason, usage=_usage(res))
+    yield "data: [DONE]\n\n"
+
+
+_DONE = object()
 
 
 def _error_event(exc: BaseException) -> str:
-    import json
     _, body = _error_payload(exc)
     return f"data: {json.dumps(body, ensure_ascii=False)}\n\n"
 
 
-async def _collect(gen_factory) -> tuple[str, int]:
-    loop = asyncio.get_running_loop()
-
-    def run() -> tuple[str, int]:
-        pieces = list(gen_factory())
-        return "".join(pieces), len(pieces)
-
-    return await loop.run_in_executor(None, run)
-
-
-async def _sse(cid: str, created: int, gen_factory, max_new: int):
-    """Drive the blocking generator in a thread; emit OpenAI SSE chunks."""
-    async with engine.lock:
-        loop = asyncio.get_running_loop()
-        q: "queue.Queue[Optional[str]]" = queue.Queue()
-
-        def pump() -> None:
-            try:
-                for piece in gen_factory():
-                    q.put(piece)
-            except Exception as exc:  # surface generation errors (e.g. context overflow) to the client
-                q.put(_StreamError(exc))
-            finally:
-                q.put(None)  # sentinel
-
-        threading.Thread(target=pump, daemon=True).start()
-
-        # role delta first (OpenAI convention)
-        yield _chunk(cid, created, {"role": "assistant"})
-        ntok = 0
-        while True:
-            piece = await loop.run_in_executor(None, q.get)
-            if piece is None:
-                break
-            if isinstance(piece, _StreamError):
-                # emit an OpenAI-style error event instead of a silent clean stop
-                yield _error_event(piece.exc)
-                yield "data: [DONE]\n\n"
-                return
-            ntok += 1
-            yield _chunk(cid, created, {"content": piece})
-        # "length" when the generation was cut at the max_new cap, else natural "stop"
-        yield _chunk(cid, created, {}, finish_reason="length" if ntok >= max_new else "stop")
-        yield "data: [DONE]\n\n"
-
-
-def _chunk(cid: str, created: int, delta: dict, finish_reason: Optional[str] = None) -> str:
-    import json
-    obj = {
+def _chunk(cid: str, created: int, delta: dict, finish_reason: Optional[str] = None,
+           usage: Optional[dict] = None) -> str:
+    obj: dict[str, Any] = {
         "id": cid, "object": "chat.completion.chunk", "created": created, "model": engine.name,
         "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
     }
+    if usage is not None:
+        obj["usage"] = usage
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
-
-
-def _approx_tok(text: str) -> int:
-    # best-effort: no python tokenizer at this layer; ~4 chars/token
-    return max(1, len(text) // 4)

@@ -161,8 +161,50 @@ print(r.choices[0].message.content)
 | `BLLM_API_KEY` | — | 设了就强制 `Authorization: Bearer <key>` |
 | `BLLM_CORS_ORIGINS` | `*` | 允许的 CORS 源(逗号分隔),默认全开给浏览器客户端 |
 | `BLLM_BPU_PRIORITY` | — | 启动时设 BPU 优先级 |
+| `BLLM_MAX_QUEUE` | `8` | 排队请求数上限,超了返回 429(单 BPU 图一次只跑一个生成) |
+| `BLLM_CACHE_MAX_MB` | `512` | 前缀缓存预算(MB),`0` 关闭缓存 |
+| `BLLM_CACHE_TTL_S` | `1800` | 缓存前缀多久没用就丢弃(秒) |
+| `BLLM_CACHE_MAX_ENTRIES` | `64` | 与字节预算并行的条数上限 |
 | `BLLM_PERF_MODE` | `0` | `1` = 容器内戳 BPU 性能寄存器(需 `--privileged`;更推荐在主机做) |
 | `BLLM_PORT` / `BLLM_HOST` | `8866` / `0.0.0.0` | 监听地址 |
+
+
+### 前缀缓存(多轮对话免重算)
+
+OpenAI 协议是无状态的:客户端每轮都重发完整 `messages[]`,服务端默认会把整段历史
+重新 prefill 一遍。本服务把引擎状态按**它覆盖的 token 序列**做快照缓存,下一轮只
+prefill 新增部分。命中情况在返回的 `usage.prompt_tokens_details.cached_tokens` 里,
+整体统计看 `GET /metrics`。
+
+匹配是逐 token 精确前缀比对,**猜错不可能**:客户端改了历史、换了 system prompt、
+分词有出入,都只会命中更短的条目或彻底不命中,退化成全量 prefill,不会给出错误答案。
+
+**收益因引擎而异**(S100P 实测,客户端每轮重发全历史):
+
+| 引擎 | 模型 | 未命中 → 命中 | 倍数 |
+|---|---|---|---|
+| dense | Qwen2.5-1.5B | 271ms → 138ms | ~2× |
+| hybrid | Qwen3.5-0.8B | 31.6s → 1.3s | ~25× |
+
+hybrid(Qwen3.5)没有批量 prefill 图,逐 token 喂 ~68ms/token,512 token 的 prompt
+要 35 秒 —— **对 hybrid 模型这不是优化,是能不能用的问题,别关**。
+
+**什么时候没有收益**(属正常退化,不是故障):
+
+- 单轮问答,每次换新话题 —— 没有可复用的前缀
+- 客户端会裁剪/摘要历史(部分 Web UI 会) —— 前缀一变全部落空
+- prompt 短于一个 prefill chunk(dense 上通常 256 token) —— 没有安全的快照点,
+  但这种 prompt 重算本来就便宜
+
+
+> **注意**:镜像里的 `bllm` 来自 conda 源。若该版本尚不含快照原语,服务会自动
+> **降级为每轮全量重算**(启动日志会说明),此时前缀缓存不生效,但并发修复、队列
+> 限流、真 token 计数、`/metrics` 仍然可用。`GET /metrics` 的 `supports_prefix_cache`
+> 字段可直接确认当前状态。
+
+**内存**:按字节计费,不按条数 —— dense 快照约 22 KB/token 且随上下文增长,
+hybrid 则是**恒定约 72 MB/条**(整套 cache 全量 dump)。所以 512 MB 预算在 dense 上
+能存几十条,在 hybrid 上只有 7 条。内存紧张就调小 `BLLM_CACHE_MAX_MB`,或设 `0` 关掉。
 
 **锁定部署**:设 `BLLM_API_KEY` 并把 `BLLM_CORS_ORIGINS` 收窄到你的前端域名。
 

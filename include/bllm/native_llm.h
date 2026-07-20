@@ -14,6 +14,7 @@
 #include "bllm/stop_match.h"
 #include "bllm/tokenizer.h"
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -206,6 +207,54 @@ class NativeLlm {
   bool has_prefix() const { return prefixSet_; }
   void clear_prefix() { prefix_.clear(); prefixSet_ = false; }
 
+  // ---- Serving primitives (session pool × prefix cache) --------------------------------
+  // set_prefix()/ask() serve ONE fixed prefix. A server juggling many conversations needs
+  // to hold MANY states and pick one per request, so it drives the snapshot itself:
+  //
+  //   ids = encode(prompt); if (cached prefix of ids) restore(blob); else reset();
+  //   feed_ids(delta); blob = snapshot();        // state == the whole prompt, cache it
+  //   decode_stream(...);
+  //
+  // The blob is the same payload as save_state(), in memory. Cheap relative to a prefill,
+  // but NOT free — restore() clears the whole cache window before copying rows back.
+  std::string snapshot() const { return engineSnapshot(); }
+  void restore(const std::string& blob) {
+    engineRestore(blob);
+    first_turn_ = false;               // a restored context is mid-conversation
+  }
+
+  // Prefill chunk width, or 0 when this engine has no chunked prefill (the hybrid engine
+  // ingests token by token). THIS MATTERS FOR CACHING: the dense engine ingests a run of
+  // tokens as batch-prefill chunks of this width and decode-steps the remainder, and the
+  // two graphs are not numerically identical under int8. Splitting a prompt at an
+  // arbitrary point therefore changes which tokens went through which graph — and so can
+  // change the reply. Snapshot only at multiples of this width and the segmentation is the
+  // same as a straight-through prefill, making reuse exact. 0 means any split is exact.
+  int prefill_chunk() const { return hybrid_ ? 0 : dense_->chunk(); }
+
+  // generate() split in two, so a caller can snapshot exactly at the prefill/decode
+  // boundary. feed_ids() takes ids rather than text: the server has already tokenized
+  // (it matches its cache on token ids), and re-encoding a text delta could tokenize
+  // differently at the seam than the ids the cache was keyed on.
+  void feed_ids(const std::vector<int>& ids) {
+    feedIds(ids);
+    first_turn_ = false;
+  }
+  std::string decode_stream(int max_new = 256, const OnText& on_text = {},
+                            const std::vector<std::string>& stop = {}) {
+    return streamDecode(max_new, on_text, stop);
+  }
+
+  // Ask the in-flight generation to stop at the next token boundary. Thread-safe — call it
+  // from another thread while chat()/generate()/decode_stream() runs (a server cancelling a
+  // disconnected client). It breaks the decode loop the same way a stop string does, so the
+  // context stays consistent: nothing is generated past the cancel point. The flag is
+  // one-shot and is cleared when the next generation starts, so a cancel that lands between
+  // turns is dropped rather than killing the following turn.
+  void request_cancel() { cancelReq_.store(true, std::memory_order_relaxed); }
+  // Whether the LAST generation ended because of request_cancel() (vs eos/stop/max_new).
+  bool canceled() const { return canceled_; }
+
  private:
   std::string engineSnapshot() const { return hybrid_ ? hybrid_->snapshot() : dense_->snapshot(); }
   void engineRestore(const std::string& blob) {
@@ -263,6 +312,8 @@ class NativeLlm {
     size_t emitted = 0;      // bytes already streamed to on_text
     size_t cut = std::string::npos;
     std::string full;
+    cancelReq_.store(false, std::memory_order_relaxed);   // drop a cancel that landed between turns
+    canceled_ = false;
     auto on_token = [&](int id) -> bool {
       gen.push_back(id);
       full = tk_.decode(gen);
@@ -271,7 +322,10 @@ class NativeLlm {
       if (on_text && show > emitted) on_text(full.substr(emitted, show - emitted));
       emitted = std::max(emitted, show);
       cut = sc.cut;
-      return cut != std::string::npos;           // stop string hit → break the loop
+      if (cut != std::string::npos) return true;          // stop string hit → break the loop
+      // Checked after streaming this token, so the client keeps whatever already reached it.
+      canceled_ = cancelReq_.exchange(false, std::memory_order_relaxed);
+      return canceled_;
     };
     NativeSamplingParams sp = sampling_;
     sp.max_new = max_new;
@@ -295,6 +349,8 @@ class NativeLlm {
   bool thinking_ = true;                          // Qwen3.5 reasoning: prefill empty <think> when false
   std::string prefix_;                            // in-memory snapshot of the reusable prefix
   bool prefixSet_ = false;
+  std::atomic<bool> cancelReq_{false};            // set from another thread by request_cancel()
+  bool canceled_ = false;                         // did the last generation end on a cancel
 };
 
 }  // namespace bllm
