@@ -33,13 +33,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # bllm-s600 pulls libbllm-s600 + hobot-dnn-s600 (HBRT 4.10.1) + tokenizers-cpp.
 ARG MAMBA_VERSION=1.5.8
 ARG BLLM_CHANNEL=https://mirrors.ruis.ai/conda
+# Pinned so this layer is not silently reused with a stale runtime: the
+# install line is otherwise identical across releases, so Docker would cache
+# it and the image would keep shipping whatever bllm it first resolved.
+ARG BLLM_VERSION=0.1.5
 ENV MAMBA_ROOT_PREFIX=/opt/conda
 ENV PATH=/opt/conda/bin:$PATH
 RUN curl -Ls "https://micro.mamba.pm/api/micromamba/linux-aarch64/${MAMBA_VERSION}" \
         | tar -xj -C /tmp bin/micromamba \
     && /tmp/bin/micromamba create -y -p /opt/conda \
         -c "${BLLM_CHANNEL}" -c conda-forge \
-        python=3.12 bllm-s600 \
+        python=3.12 bllm-s600=${BLLM_VERSION} \
     && /tmp/bin/micromamba clean -a -y \
     && rm -rf /opt/conda/pkgs /tmp/bin \
     && find /opt/conda -type f -name '*.pyc' -delete \

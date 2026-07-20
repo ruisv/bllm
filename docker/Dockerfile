@@ -24,6 +24,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # --- python 3.12 + our stack from the conda channel -------------------------
 ARG MAMBA_VERSION=1.5.8
 ARG BLLM_CHANNEL=https://mirrors.ruis.ai/conda
+# Pinned so this layer is not silently reused with a stale runtime: the
+# install line is otherwise identical across releases, so Docker would cache
+# it and the image would keep shipping whatever bllm it first resolved.
+ARG BLLM_VERSION=0.1.5
 ENV MAMBA_ROOT_PREFIX=/opt/conda
 ENV PATH=/opt/conda/bin:$PATH
 # Everything in one layer: extract micromamba to /tmp (thrown away here, not
@@ -33,7 +37,7 @@ RUN curl -Ls "https://micro.mamba.pm/api/micromamba/linux-aarch64/${MAMBA_VERSIO
         | tar -xj -C /tmp bin/micromamba \
     && /tmp/bin/micromamba create -y -p /opt/conda \
         -c "${BLLM_CHANNEL}" -c conda-forge \
-        python=3.12 bllm libbllm tokenizers-cpp \
+        python=3.12 bllm=${BLLM_VERSION} libbllm=${BLLM_VERSION} tokenizers-cpp \
     && /tmp/bin/micromamba clean -a -y \
     && rm -rf /opt/conda/pkgs /tmp/bin \
     && find /opt/conda -type f -name '*.pyc' -delete \

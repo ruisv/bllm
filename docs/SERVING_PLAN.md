@@ -393,6 +393,45 @@ blob ≈ D × n_layers × (rowK + rowV)  +  vocab × 2
 后自动启用。板上实测降级模式：断连回归测试**通过** —— 即使没有 runtime cancel，
 worker 线程的串行化本身就足以阻止并发访问。
 
+## 上线后抓到的两个 bug（都只在 hybrid 上发作）
+
+第一轮"全部完成"的验证是**不充分的**：e2e 只跑了 dense 模型，而这两个 bug 恰好只影响
+hybrid —— 也就是收益 25× 的那一类。
+
+**1. hybrid 从不缓存。** `_feed_and_cache` 的守卫写成
+`if align <= covered or align >= len(ids): return`。hybrid 不分块 ⇒
+`cache_align(n) == n` ⇒ `align >= len(ids)` 恒真 ⇒ **一条都不存**。
+修复：抽出纯函数 `snapshot_point()`，`align == n_total` 是 hybrid 的正常情况而非"无事可做"，
+并补了 6 个单测钉死（`tests/test_prefix_cache.py`）。
+
+**2. 缓存的位置本身就错了 —— 对所有引擎都错，只是 dense 侥幸躲过。**
+`render_chatml` 生成的 prompt 结尾是 `<|im_start|>assistant\n<think>\n\n</think>\n\n`，
+而下一轮同样位置渲染成 `<|im_start|>assistant\n{上轮回复}<|im_end|>\n` ——
+**第 N 轮的完整 prompt 永远不是第 N+1 轮的前缀**，存了也永不命中。
+dense 只是因为 `align` 被截断到 256 的倍数、恰好落在历史内才碰巧能用。
+
+修复：`render_chatml` 改为返回 `(history, opener)`，只有 `history` 可缓存；
+服务层把 `cacheable` 上界传给引擎。分开编码两段可能在接缝处分词不同，
+所以**验证**它确实是前缀（是特殊 token 边界，但错了会污染缓存，检查很便宜）。
+
+### 修复后的 hybrid HTTP 层 A/B（补上了原先未做的一项）
+
+Qwen3.5-2B ctx4k，容器内，同一段 6 轮对话：
+
+| 轮次 | 关缓存 | 开缓存 |
+|---|---|---|
+| 1 | 6269 ms | 6280 ms |
+| 2 | 11126 ms | 5821 ms |
+| 3 | 15991 ms | 5822 ms |
+| 6 | **30978 ms** | **5938 ms** |
+
+重点不是第 6 轮的 5.2×，而是 **TTFT 从随历史线性增长变成恒定**。
+
+### 教训
+
+两个 bug 都是"只在一类引擎上发作"，而我只在另一类上做了端到端验证。
+`prefill_chunk == 0` 与 `!= 0` 是两条**语义不同的路径**，不是同一条路径的参数差异。
+
 ## 风险 —— 结算
 
 | 原列风险 | 结果 |

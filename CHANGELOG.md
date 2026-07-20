@@ -53,6 +53,14 @@ All notable changes to BLLM are documented here. The format follows
 
 ### Note
 
+Two serving-layer bugs were found after the 0.1.5 tag and fixed on `main` (they affect the
+container image only — the conda packages do not carry the serving layer, so 0.1.5 as
+published is unaffected): the hybrid engine never cached at all (it does not chunk, so
+`cache_align(n) == n`, which an over-eager guard read as "nothing to do"), and the snapshot
+was taken past the per-request assistant opener, which can never be a prefix of the next
+turn's prompt. Only the conversation history is cacheable now. Fixed hybrid A/B on an S100P
+(Qwen3.5-2B, 6 turns): TTFT goes from growing 6.3 s → 31.0 s to flat at ~5.9 s.
+
 The Docker image installs `bllm` from the conda channel, so the server can be newer than the
 runtime beneath it. When the installed build predates the snapshot primitives the server
 degrades to full re-prefill and says so at startup, rather than failing — the concurrency fix

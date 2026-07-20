@@ -28,7 +28,7 @@ from typing import Any, Iterator, Optional
 
 import bllm
 
-from .cache import PrefixCache
+from .cache import PrefixCache, snapshot_point
 
 
 class QueueFull(Exception):
@@ -57,6 +57,7 @@ class _Job:
     max_new: int
     stop: list[str]
     sampling: dict
+    cacheable: int = -1  # tokens of `ids` that are stable history; -1 = all of them
     out: "queue.Queue[object]" = field(default_factory=queue.Queue)
     cancel: threading.Event = field(default_factory=threading.Event)
     done: threading.Event = field(default_factory=threading.Event)
@@ -136,7 +137,11 @@ class Engine:
         return self.sess.encode(text)
 
     def submit(self, prompt: str, ids: list[int], max_new: int, stop: list[str],
-               sampling: dict) -> _Job:
+               sampling: dict, cacheable: int = -1) -> _Job:
+        """`cacheable` bounds how much of `ids` may be snapshotted: the caller knows
+        which tail is specific to this request (a chat opener) and therefore will not
+        appear in the next turn's prompt. Snapshotting past it wastes the entry —
+        it can never match again."""
         with self._depth_lock:
             if self._depth >= self.max_queue:
                 raise QueueFull(
@@ -144,7 +149,8 @@ class Engine:
                     "one BPU graph serves one generation at a time"
                 )
             self._depth += 1
-        job = _Job(prompt=prompt, ids=ids, max_new=max_new, stop=stop, sampling=sampling)
+        job = _Job(prompt=prompt, ids=ids, max_new=max_new, stop=stop,
+                   sampling=sampling, cacheable=cacheable)
         self._jobs.put(job)
         self.n_requests += 1
         return job
@@ -246,7 +252,7 @@ class Engine:
         # 2. prefill only what is new, snapshotting at the aligned boundary so the
         #    cached state is one the un-cached path would also have produced
         try:
-            self._feed_and_cache(ids, delta, covered)
+            self._feed_and_cache(ids, delta, covered, job.cacheable)
         except Exception:
             if blob_in is not None:
                 self.cache.drop(blob_in)  # never reuse a state we may have half-fed
@@ -302,7 +308,8 @@ class Engine:
             res.finish_reason = "length"
         return res
 
-    def _feed_and_cache(self, ids: list[int], delta: list[int], covered: int) -> None:
+    def _feed_and_cache(self, ids: list[int], delta: list[int], covered: int,
+                        cacheable: int = -1) -> None:
         """Prefill `delta`, and cache the state at the largest safe prefix of `ids`.
 
         The snapshot point must be chunk-aligned, so the prompt is fed in two pieces
@@ -316,16 +323,17 @@ class Engine:
                 self.sess.feed_ids(delta)
             return
 
-        align = self.sess.cache_align(len(ids))
-        if align <= covered or align >= len(ids):
-            # Nothing new worth caching (or the whole prompt is one partial chunk):
-            # feed it all, cache nothing. A prompt shorter than one chunk has no safe
-            # snapshot point at all, and re-prefilling it is cheap anyway.
+        limit = len(ids) if cacheable < 0 else min(cacheable, len(ids))
+        at = snapshot_point(len(ids), covered, self.sess.cache_align(limit))
+        if at is None:
+            # No safe snapshot point past what we already have — feed it all and cache
+            # nothing. A dense prompt shorter than one chunk lands here, and
+            # re-prefilling such a prompt is cheap anyway.
             if delta:
                 self.sess.feed_ids(delta)
             return
 
-        self.sess.feed_ids(ids[covered:align])
-        self.cache.put(ids[:align], self.sess.snapshot())
-        if align < len(ids):
-            self.sess.feed_ids(ids[align:])
+        self.sess.feed_ids(ids[covered:at])
+        self.cache.put(ids[:at], self.sess.snapshot())
+        if at < len(ids):
+            self.sess.feed_ids(ids[at:])
