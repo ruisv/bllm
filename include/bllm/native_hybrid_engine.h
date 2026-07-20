@@ -75,6 +75,25 @@ class NativeHybridEngine {
       std::memset(bufB_[c].p(), 0, b); bufB_[c].clean();
     }
 
+    // Classify each cache for snapshotting. This model is a MIX: the GDN layers hold a
+    // fixed-size recurrent state (state + conv) that summarises all history and cannot
+    // be trimmed, while the attention layers hold a K/V window whose leading dimension
+    // IS the cache window — so only the occupied slots are worth saving. Measured on
+    // Qwen3.5: attention is 70% of the cache set at ctx2048 and 83% at ctx4096, so
+    // trimming it takes a short conversation's snapshot from ~122 MB to ~27 MB.
+    //
+    // tensorBytes() is stride[0] * dim[0], so stride[0] is exactly the bytes per
+    // position — no padding to reason about. Anything whose leading dimension is not
+    // the window is dumped whole.
+    kvRow_.assign(nCache_, 0);
+    for (int c = 0; c < nCache_; ++c) {
+      const auto& p = in_[kFixedIn + c].properties;
+      const auto& vs = p.validShape;
+      if (vs.numDimensions >= 2 && vs.dimensionSize[0] == CL_ &&
+          (uint64_t)p.stride[0] * CL_ == inBytes_[kFixedIn + c])
+        kvRow_[c] = (uint64_t)p.stride[0];
+    }
+
     // --- outputs ---
     for (int i = 0; i < oc; ++i) {
       BLLM_NATIVE_CK(hbDNNGetOutputTensorProperties(&out_[i].properties, h_, i));
@@ -129,9 +148,14 @@ class NativeHybridEngine {
 
   // Save/restore the mixed SSM+KV state — libxlm's path_prompt_cache for the hybrid engine.
   // The current cache set (GDN state+conv and attention KV, all layers) plus the last logits
-  // are dumped wholesale, so generate() resumes bit-identically. Bound to this model's cache
-  // layout (rejected on load if it differs). File variants wrap the stream/in-memory core;
-  // the in-memory snapshot()/restore() back the cheap prefix-reuse path (no temp file).
+  // are saved, so generate() resumes bit-identically. Bound to this model's cache layout
+  // (rejected on load if it differs). File variants wrap the stream/in-memory core; the
+  // in-memory snapshot()/restore() back the cheap prefix-reuse path (no temp file).
+  //
+  // The attention K/V is saved only for the OCCUPIED part of the window, which is most of
+  // the payload — a serving prefix cache holds many of these, and a blob that ignored how
+  // little context is actually used would bound the cache by the window rather than by the
+  // conversation. The GDN state is fixed-size by nature and always saved whole.
   void save_state(const std::string& path) {
     std::ofstream f(path, std::ios::binary);
     if (!f) throw std::runtime_error("[hybrid] cannot write state: " + path);
@@ -160,25 +184,34 @@ class NativeHybridEngine {
   void writeState(std::ostream& f) const {
     if (!curLogits_valid_) throw std::runtime_error("[hybrid] no state to save — feed a prompt first");
     const int32_t logitBytes = (int32_t)out_[0].properties.alignedByteSize;
-    const int32_t hdr[] = {kStateMagic, nCache_, vocab_, P_, logitBytes};
+    // CL_ goes in the header so a blob carries the window it was trimmed against.
+    const int32_t hdr[] = {kStateMagic, nCache_, vocab_, P_, logitBytes, CL_};
     f.write((const char*)hdr, sizeof(hdr));
     for (int c = 0; c < nCache_; ++c) {
       const int32_t b = (int32_t)inBytes_[kFixedIn + c];
       f.write((const char*)&b, sizeof(b));
     }
+    // Attention K/V is right-aligned in the window — step() masks slots [CL_-valid, CL_)
+    // — so the occupied part is the LAST D positions. GDN state is written whole.
+    const int D = P_ < CL_ ? P_ : CL_;
     const std::vector<Mem>& cur = phase_ ? bufB_ : bufA_;   // holds the latest post-step state
     for (int c = 0; c < nCache_; ++c) {
       const_cast<Mem&>(cur[c]).inval();                     // BPU-written; make the CPU read current
-      f.write((const char*)cur[c].p(), (size_t)inBytes_[kFixedIn + c]);
+      if (kvRow_[c] && D < CL_)
+        f.write((const char*)cur[c].p() + (size_t)(CL_ - D) * kvRow_[c],
+                (size_t)D * kvRow_[c]);
+      else
+        f.write((const char*)cur[c].p(), (size_t)inBytes_[kFixedIn + c]);
     }
     const_cast<Mem&>(logitMem_).inval();
     f.write((const char*)logitMem_.p(), (size_t)logitBytes);
   }
   void readState(std::istream& f) {
-    int32_t hdr[5];
+    int32_t hdr[6];
     f.read((char*)hdr, sizeof(hdr));
     const int32_t logitBytes = (int32_t)out_[0].properties.alignedByteSize;
-    if (!f || hdr[0] != kStateMagic || hdr[1] != nCache_ || hdr[2] != vocab_ || hdr[4] != logitBytes)
+    if (!f || hdr[0] != kStateMagic || hdr[1] != nCache_ || hdr[2] != vocab_ ||
+        hdr[4] != logitBytes || hdr[5] != CL_)
       throw std::runtime_error("[hybrid] state does not match this model");
     for (int c = 0; c < nCache_; ++c) {
       int32_t b; f.read((char*)&b, sizeof(b));
@@ -186,8 +219,15 @@ class NativeHybridEngine {
         throw std::runtime_error("[hybrid] state cache layout mismatch");
     }
     reset();                                            // phase_=false → current set is bufA_
+    // reset() zeroed everything, so a trimmed K/V only needs its occupied tail written
+    // back at the same right-aligned offset it was taken from.
+    const int savedP = hdr[3];
+    const int D = savedP < CL_ ? savedP : CL_;
     for (int c = 0; c < nCache_; ++c) {
-      f.read((char*)bufA_[c].p(), (size_t)inBytes_[kFixedIn + c]);
+      if (kvRow_[c] && D < CL_)
+        f.read((char*)bufA_[c].p() + (size_t)(CL_ - D) * kvRow_[c], (size_t)D * kvRow_[c]);
+      else
+        f.read((char*)bufA_[c].p(), (size_t)inBytes_[kFixedIn + c]);
       bufA_[c].clean();                                 // CPU-written; make the BPU read it
     }
     f.read((char*)logitMem_.p(), (size_t)logitBytes);
@@ -360,6 +400,7 @@ class NativeHybridEngine {
   hbDNNHandle_t h_ = nullptr;
   std::vector<hbDNNTensor> in_, out_;
   std::vector<uint64_t> inBytes_;
+  std::vector<uint64_t> kvRow_;   // per cache: bytes/position if window-indexed, else 0
   std::vector<Mem> fixedMem_, bufA_, bufB_;
   Mem logitMem_;
   std::vector<__fp16> emb_;
@@ -371,7 +412,9 @@ class NativeHybridEngine {
   int P_ = 0;
   bool phase_ = false, curLogits_valid_ = false;
   void* curLogits_ = nullptr;
-  static constexpr int32_t kStateMagic = 0x424C4B48;   // "BLKH" — hybrid prompt-cache tag
+  static constexpr int32_t kStateMagic = 0x424C4B49;   // "BLKI" — hybrid prompt-cache tag
+  // Bumped from "BLKH" when K/V trimming changed the payload: an old blob has a
+  // 5-word header and full-window K/V, so it must be rejected rather than misread.
   HybridStats stats_;
 };
 

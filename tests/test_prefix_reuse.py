@@ -233,3 +233,33 @@ def test_cancel_between_turns_is_dropped(dense):
     out = _baseline(sess, ids)
     assert not sess.canceled
     assert out.strip()
+
+
+def test_hybrid_snapshot_grows_with_context_not_with_the_window(hybrid):
+    """The hybrid cache set is a MIX: fixed-size GDN recurrent state plus an attention
+    K/V window. Dumping the whole window made every snapshot a flat ~72-122 MB no
+    matter how short the conversation, which bounded a serving prefix cache by the
+    window rather than by the conversation. Only the occupied K/V is saved now, so the
+    blob must GROW with context — a constant size means the trimming regressed.
+    """
+    sess = hybrid
+    unit = sess.encode("Mercury is the closest planet to the Sun and Venus is the hottest. ")
+
+    sizes = []
+    for mult in (1, 4, 16):
+        ids = (unit * mult)[: sess.context_left - 64]
+        sess.reset()
+        sess.feed_ids(ids)
+        sizes.append((len(ids), len(sess.snapshot())))
+
+    (n0, b0), (n1, b1), (n2, b2) = sizes
+    assert b0 < b1 < b2, f"snapshot size did not grow with context: {sizes}"
+
+    # It must also be well under a full-window dump. The fixed GDN part dominates at
+    # short contexts, so assert against the per-token slope rather than a magic number:
+    # extrapolating to the full window must be much larger than what we just saw.
+    per_tok = (b2 - b0) / (n2 - n0)
+    full_window = b0 + per_tok * sess.context_left
+    assert b2 < full_window / 2, (
+        f"a {n2}-token snapshot ({b2/1e6:.1f} MB) is not meaningfully smaller than a "
+        f"full-window dump (~{full_window/1e6:.1f} MB)")

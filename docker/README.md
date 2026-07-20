@@ -167,6 +167,11 @@ Dense models need far less: their snapshots are ~22 KB/token and grow with the c
 the same budget holds an order of magnitude more. A steadily rising `evictions` on
 `GET /metrics` is the signal that the budget is too small.
 
+> **Hybrid snapshot size:** since 0.1.6 a snapshot saves only the occupied attention K/V,
+> so it grows with the conversation (~22 MB plus ~24.6 KB/token) instead of being fixed by
+> the context window. Qwen3.5-2B ctx4k was a flat 122 MB per entry; a 136-token
+> conversation is now 25 MB — **the same 2 GB budget holds ~66 instead of 16**.
+
 ### Chat from a browser / existing client
 
 No UI is bundled — the API is OpenAI-compatible and CORS is enabled, so point

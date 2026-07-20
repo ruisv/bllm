@@ -221,6 +221,10 @@ docker run -d --name bllm-serve --network host --restart unless-stopped \
 dense 模型不需要这么大:快照约 22 KB/token 且随上下文增长,同样预算能装的条数多一个数量级。
 `GET /metrics` 的 `evictions` 持续增长就是预算偏小的信号。
 
+> **hybrid 快照大小**:自 0.1.6 起,快照只保存已占用的注意力 K/V,大小随对话增长
+> (约 22 MB 起 + 24.6 KB/token),不再是与上下文窗口绑定的固定值。此前 Qwen3.5-2B ctx4k
+> 每条恒为 122 MB,现在 136 token 的会话仅 25 MB —— **同样 2 GB 预算从 16 条变约 66 条**。
+
 **锁定部署**:设 `BLLM_API_KEY` 并把 `BLLM_CORS_ORIGINS` 收窄到你的前端域名。
 
 ---
