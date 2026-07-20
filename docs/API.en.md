@@ -79,6 +79,49 @@ print(llm.ask("Which risks are mentioned?"))  # reuses the prefix, no re-prefill
 C++: `bllm::NativeLlm` (`bllm/native_llm.h`); `set_prefix`/`ask` are backed by the engine
 in-memory `snapshot()`/`restore()` (`bllm::NativeHybridEngine` and `bllm::NativeEngine`).
 
+
+### Serving primitives (rolling your own session pool / prefix cache)
+
+`set_prefix()`/`ask()` serve ONE fixed prefix. To hold many conversation states and pick
+one per request — an OpenAI-compatible server, say — drive the snapshot yourself:
+
+| Method | Meaning |
+|---|---|
+| `snapshot() -> bytes` | Snapshot the current context (same payload as `save_state`, no file). |
+| `restore(blob)` | Restore it; generation resumes bit-identically. Raises on a shape mismatch. |
+| `feed_ids(ids)` | Ingest tokens without decoding (the prefill half of `generate()`). |
+| `decode_stream(max_new=256, on_text=None, stop=None) -> str` | Decode from the current context (the generation half). |
+| `stream_decode(max_new=256, stop=None) -> Iterator[str]` | The same, as a lazy generator. |
+| `cache_align(n) -> int` | **Largest prefix length that is safe to snapshot** — see the warning. |
+| `prefill_chunk -> int` | Prefill chunk width; `0` when the engine does not chunk (hybrid). |
+| `context_left -> int` | Tokens free in the KV/SSM window. The window IS the context — overflow raises rather than silently dropping turns. |
+| `request_cancel()` / `canceled -> bool` | Stop an in-flight generation at a token boundary. **Thread-safe** — call it from another thread (a server dropping a disconnected client). The context stays consistent, so the session is immediately reusable. |
+
+> ⚠️ **Snapshots must be chunk-aligned.** The dense engine batch-prefills long enough runs
+> and decode-steps the remainder, and those two graphs are **not numerically identical**
+> under int8. Segmentation depends only on how many tokens remain, so the un-cached path's
+> chunk boundaries sit at multiples of `prefill_chunk`; snapshot at one of those and the
+> tail is segmented exactly as it would have been. Measured on-board (Qwen2.5-1.5B, greedy):
+> aligned splits reproduced the original answer **5/5**, unaligned **1/18** — one turning
+> "Venus is the hottest" into "Earth is the hottest". Use `cache_align()`; do not compute it
+> yourself. The hybrid engine does not chunk (`prefill_chunk == 0`), so any point is safe.
+
+```python
+ids  = sess.encode(prompt)
+blob, n = cache.match(ids)             # your cache: longest ALIGNED prefix hit
+sess.restore(blob) if blob else sess.reset()
+
+at = sess.cache_align(len(ids))        # a safe snapshot point
+sess.feed_ids(ids[n:at])               # feed up to the boundary
+cache.put(ids[:at], sess.snapshot())   # state here == ids[:at]
+sess.feed_ids(ids[at:])                # then the rest
+for piece in sess.stream_decode(256):
+    print(piece, end="", flush=True)
+```
+
+A working implementation lives in `docker/serving/` (`cache.py` for the cache,
+`engine.py` for the single-worker engine).
+
 ## `bllm.NativeVlmSession` — multimodal (Qwen2.5-Omni)
 
 ```python

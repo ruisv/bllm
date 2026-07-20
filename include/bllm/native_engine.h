@@ -541,8 +541,22 @@ class NativeEngine {
   }
 
   // A prefill pass costs a whole static chunk of compute, so it only beats
-  // decode-stepping once enough tokens are left to amortize it.
-  static constexpr int kPrefillMinTokens = 16;
+  // decode-stepping once enough tokens are left to amortize it. The crossover is
+  // (prefill pass) / (decode step), which is stable across models because both are a
+  // single BPU graph invocation — measured on an S100P:
+  //
+  //   qwen2.5-1.5b   prefill 135.2 ms   decode 46.1 ms   -> 2.93 tokens
+  //   phi-4-mini     prefill 351.6 ms   decode 106.2 ms  -> 3.31 tokens
+  //
+  // 4 rather than 3, so the widest measured crossover (3.31) still comes out ahead.
+  // This was 16, which made a 15-token turn cost 676 ms instead of 134 ms — short
+  // follow-ups ("go on", "why?") are exactly the common case it punished.
+  //
+  // NOTE: changing this changes SEGMENTATION, and prefill and decode are not
+  // numerically identical under int8, so it changes replies for runs of 4..15 tokens.
+  // It does NOT affect the prefix cache's alignment rule: feed()'s chunk boundaries
+  // depend only on how many tokens remain, so they stay at multiples of chunk_.
+  static constexpr int kPrefillMinTokens = 4;
   bool prefillWorthwhile(int left) const {
     return left >= kPrefillMinTokens && P_ + chunk_ <= cacheLen_;
   }
