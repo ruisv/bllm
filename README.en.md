@@ -6,7 +6,7 @@
 [![C++](https://img.shields.io/badge/C%2B%2B-17-00599C.svg)](CMakeLists.txt)
 [![Python](https://img.shields.io/badge/python-3.9%E2%80%933.14-3776AB.svg)](python/CMakeLists.txt)
 [![Platform](https://img.shields.io/badge/platform-RDK%20S100%20%2F%20S100P%20%2F%20S600%20(aarch64)-0A7BBB.svg)](#install)
-[![Version](https://img.shields.io/badge/version-0.1.4-informational.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.1.5-informational.svg)](CHANGELOG.md)
 
 [简体中文](README.md) | **English**
 
@@ -160,6 +160,15 @@ Open WebUI, the OpenAI SDK, …):
 curl localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"hello"}]}'
 ```
+
+
+The server **caches conversation prefixes**: the OpenAI protocol is stateless, so a client
+re-sends its whole history each turn and the server prefills only what is new. Hits appear in
+`usage.prompt_tokens_details.cached_tokens`, aggregates on `GET /metrics`. Matching is exact
+token-prefix comparison, so an edited history simply misses and falls back to a full prefill
+— it cannot return a wrong answer. Measured on-board: hybrid (Qwen3.5) 31.6 s → 1.3 s (~25x),
+dense TTFT 274 → 141 ms. One generation runs at a time (single BPU graph); requests beyond
+`BLLM_MAX_QUEUE` get a 429. See [`docker/README.md`](docker/README.md).
 
 ## Multimodal (Qwen2.5-Omni)
 

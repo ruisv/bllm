@@ -4,6 +4,61 @@ All notable changes to BLLM are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.5]
+
+### Added
+
+- **Session-aware serving layer.** `docker/server.py` is now a thin OpenAI-protocol facade
+  over `docker/serving/`: an engine that owns the model on one worker thread, and a prefix
+  cache of engine snapshots keyed by the token ids they cover. The OpenAI protocol is
+  stateless — a client re-sends the whole history every turn — so the server used to
+  re-prefill all of it; now a turn prefills only what is new. Matching is exact token-prefix
+  comparison, so a wrong reuse is not possible: an edited history or different tokenization
+  simply matches a shorter entry or misses and falls back to a full prefill.
+  Measured on an S100P — hybrid (Qwen3.5-0.8B) 31.6 s → 1.3 s (~25x), dense
+  (Qwen2.5-1.5B) TTFT 274 → 141 ms on turn 10. New knobs: `BLLM_CACHE_MAX_MB`,
+  `BLLM_CACHE_TTL_S`, `BLLM_CACHE_MAX_ENTRIES`, `BLLM_MAX_QUEUE`; new `GET /metrics`.
+- **Serving primitives on the session** — `snapshot()` / `restore()` (in-memory, no temp
+  file), `feed_ids()` / `decode_stream()` (generate() split so a caller can snapshot exactly
+  at the prefill/decode boundary), `request_cancel()` / `canceled`, plus `context_left`,
+  `prefill_chunk` and `cache_align()`. `set_prefix()`/`ask()` serve ONE fixed prefix; these
+  let a server hold many states and pick one per request.
+- **`cache_align()` — snapshots must be chunk-aligned.** The dense engine batch-prefills runs
+  of `prefill_chunk` tokens and decode-steps the remainder, and the two graphs are not
+  numerically identical under int8, so a snapshot taken off a chunk boundary changes the
+  reply. Measured: aligned splits reproduced the un-cached answer 5/5, unaligned 1/18 — one
+  turning *"Venus is the hottest"* into *"Earth is the hottest"*. The rule lives in the
+  library so callers cannot get it wrong.
+- **Real token accounting.** `usage` now comes from the model's tokenizer instead of a
+  4-characters-per-token estimate, and reports OpenAI's `prompt_tokens_details.cached_tokens`.
+
+### Fixed
+
+- **A mid-stream disconnect could corrupt the next request's answer.** The server held an
+  `asyncio.Lock` around the SSE response while generation ran on a per-request thread; a
+  client vanishing mid-stream closed the async generator and released the lock, leaving the
+  generation thread still driving the engine, so the next request ran concurrently against
+  it. Demonstrated against the old server: after a disconnect, *"reply with exactly the word:
+  pineapple"* returned `"pineapple1. pineapple1.1. pineapple1. ..."`. The session is now
+  owned by a single worker thread and reached only through a queue, so no HTTP-side event
+  can release it early.
+- **Requests queued silently and without bound** — clients just saw a timeout. Admission
+  control now returns 429 past `BLLM_MAX_QUEUE` (default 8).
+- **`kPrefillMinTokens` was 16, roughly 5x too high.** A prefill pass costs a padded chunk
+  regardless of how few tokens it carries, so the crossover is (prefill pass)/(decode step)
+  — measured 2.93 on Qwen2.5-1.5B and 3.31 on Phi-4-mini, stable because both are a single
+  BPU graph invocation. It is now 4. A 15-token turn (a short follow-up like *"go on"* —
+  exactly the common case the old value punished) drops from **676 ms to 135 ms**. Note this
+  changes segmentation, and therefore replies, for runs of 4..15 tokens.
+
+### Note
+
+The Docker image installs `bllm` from the conda channel, so the server can be newer than the
+runtime beneath it. When the installed build predates the snapshot primitives the server
+degrades to full re-prefill and says so at startup, rather than failing — the concurrency fix
+applies either way, and the cache switches itself on under a new enough runtime.
+`GET /metrics` reports `supports_prefix_cache`.
+
 ## [0.1.4]
 
 ### Added

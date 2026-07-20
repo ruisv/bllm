@@ -6,7 +6,7 @@
 [![C++](https://img.shields.io/badge/C%2B%2B-17-00599C.svg)](CMakeLists.txt)
 [![Python](https://img.shields.io/badge/python-3.9%E2%80%933.14-3776AB.svg)](python/CMakeLists.txt)
 [![Platform](https://img.shields.io/badge/platform-RDK%20S100%20%2F%20S100P%20%2F%20S600%20(aarch64)-0A7BBB.svg)](#安装)
-[![Version](https://img.shields.io/badge/version-0.1.4-informational.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.1.5-informational.svg)](CHANGELOG.md)
 
 **简体中文** | [English](README.en.md)
 
@@ -145,6 +145,14 @@ MODEL_DIR=~/models/qwen3.5-2b docker compose up -d --build
 curl localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"你好"}]}'
 ```
+
+
+服务端会**缓存对话前缀**：OpenAI 协议无状态、客户端每轮重发全部历史，服务端只 prefill
+新增部分。命中量在 `usage.prompt_tokens_details.cached_tokens`，整体统计看 `GET /metrics`。
+匹配是逐 token 精确前缀比对，改了历史只会不命中并退化为全量 prefill，不会给出错答案。
+板上实测：hybrid（Qwen3.5）31.6s → 1.3s（~25×），dense TTFT 274 → 141 ms。
+一次只跑一个生成（单 BPU 图），排队超过 `BLLM_MAX_QUEUE` 返回 429。
+详见 [`docker/README.md`](docker/README.md)。
 
 ## 多模态（Qwen2.5-Omni）
 

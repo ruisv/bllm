@@ -73,6 +73,46 @@ print(llm.ask("它提到了哪些风险？"))            # 复用前缀，不再
 C++：`bllm::NativeLlm`（`bllm/native_llm.h`）。`set_prefix`/`ask` 由引擎内存快照
 `snapshot()`/`restore()`（`bllm::NativeHybridEngine` 与 `bllm::NativeEngine`）支撑。
 
+
+### 服务化原语（自建会话池 / 前缀缓存）
+
+`set_prefix()`/`ask()` 服务的是**一个固定前缀**。要同时持有多个会话状态、每个请求挑一个
+（比如一个 OpenAI 兼容服务），就自己驱动快照：
+
+| 方法 | 说明 |
+|---|---|
+| `snapshot() -> bytes` | 把当前上下文快照成字节串（同 `save_state` 的载荷，但不落盘）。 |
+| `restore(blob)` | 恢复快照，之后的生成逐位一致。形状不匹配会报错。 |
+| `feed_ids(ids)` | 只喂入 token 不解码（`generate()` 的 prefill 那一半）。 |
+| `decode_stream(max_new=256, on_text=None, stop=None) -> str` | 从当前上下文解码（`generate()` 的生成那一半）。 |
+| `stream_decode(max_new=256, stop=None) -> Iterator[str]` | 同上的惰性生成器版本。 |
+| `cache_align(n) -> int` | **可安全快照的最大前缀长度**，见下方警告。 |
+| `prefill_chunk -> int` | prefill 分块宽度；`0` 表示该引擎不分块（hybrid）。 |
+| `context_left -> int` | KV/SSM 窗口剩余 token。窗口**就是**上下文，越界报错而非静默丢弃。 |
+| `request_cancel()` / `canceled -> bool` | 在 token 边界干净地中断进行中的生成。**线程安全**，可从别的线程调用（比如服务端发现客户端断连）。上下文保持一致，取消后会话可立即复用。 |
+
+> ⚠️ **快照必须打在 `prefill_chunk` 的整数倍上。** dense 引擎把足够长的 token 走批量
+> prefill 图、剩余的走单 token decode 图，两者在 int8 下**数值不同**。分段只取决于剩余
+> token 数，所以未缓存路径的分块边界必落在 `prefill_chunk` 的倍数上；只在这些点快照，
+> 尾部分段才与未缓存时一致。板上实测（Qwen2.5-1.5B，greedy）：对齐切分 **5/5** 复现原答案，
+> 不对齐 **1/18**，其中一次把 "Venus is the hottest" 变成 "Earth is the hottest"。
+> 用 `cache_align()` 即可，别自己算。hybrid 无分块（`prefill_chunk == 0`），任意点都安全。
+
+```python
+ids  = sess.encode(prompt)
+blob, n = cache.match(ids)             # 你自己的缓存：最长的【已对齐】前缀命中
+sess.restore(blob) if blob else sess.reset()
+
+at = sess.cache_align(len(ids))        # 可安全快照的位置
+sess.feed_ids(ids[n:at])               # 先喂到边界
+cache.put(ids[:at], sess.snapshot())   # 此刻状态 == ids[:at]
+sess.feed_ids(ids[at:])                # 再喂剩下的
+for piece in sess.stream_decode(256):
+    print(piece, end="", flush=True)
+```
+
+现成实现见 `docker/serving/`（`cache.py` 的前缀缓存 + `engine.py` 的单 worker 线程）。
+
 ## `bllm.NativeVlmSession` — 多模态（Qwen2.5-Omni）
 
 ```python
