@@ -27,6 +27,24 @@ import threading
 from dataclasses import dataclass, field
 
 
+def snapshot_point(n_total: int, covered: int, align: int) -> int | None:
+    """Where to snapshot this prompt, or None to cache nothing.
+
+    `align` is ``session.cache_align(n_total)`` — the largest prefix that is safe to
+    snapshot. Snapshot there whenever it is past what the cache already covers.
+
+    The subtle case is ``align == n_total``, which is the NORMAL case for the hybrid
+    engine (it does not chunk, so every point is safe). Treating that as "nothing to
+    do" silently disables the cache for exactly the models it helps most — hybrid
+    prefill is ~68 ms/token, so this is the 25x case. Caching the whole prompt is both
+    safe and useful: it is a strict prefix of the next turn's prompt, which is what
+    match() will be asked for.
+    """
+    if align <= covered:
+        return None
+    return align
+
+
 @dataclass
 class Entry:
     ids: tuple[int, ...]

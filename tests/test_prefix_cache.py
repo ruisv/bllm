@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "docker"))
 
-from serving.cache import PrefixCache  # noqa: E402
+from serving.cache import PrefixCache, snapshot_point  # noqa: E402
 
 
 class Clock:
@@ -156,3 +156,34 @@ def test_empty_inputs_are_ignored():
     assert c.put([], blob(10)) is False
     assert c.put([1], b"") is False
     assert c.match([]) is None
+
+
+# --- where to snapshot -------------------------------------------------------
+# Regression: the hybrid engine does not chunk, so cache_align(n) == n. An earlier
+# guard treated "align == n_total" as nothing-to-do, which silently disabled the
+# cache for hybrid models — the ~25x case, and the one that matters most.
+
+def test_hybrid_caches_the_whole_prompt():
+    """prefill_chunk == 0 -> cache_align(n) == n -> still snapshot, at n."""
+    assert snapshot_point(n_total=500, covered=0, align=500) == 500
+
+
+def test_hybrid_second_turn_snapshots_past_what_is_covered():
+    assert snapshot_point(n_total=800, covered=500, align=800) == 800
+
+
+def test_dense_snapshots_at_the_chunk_boundary():
+    assert snapshot_point(n_total=504, covered=0, align=256) == 256
+
+
+def test_dense_prompt_shorter_than_a_chunk_caches_nothing():
+    assert snapshot_point(n_total=200, covered=0, align=0) is None
+
+
+def test_no_snapshot_when_nothing_new_is_covered():
+    assert snapshot_point(n_total=600, covered=512, align=512) is None
+    assert snapshot_point(n_total=600, covered=512, align=256) is None
+
+
+def test_exact_multiple_of_chunk_still_snapshots():
+    assert snapshot_point(n_total=512, covered=0, align=512) == 512

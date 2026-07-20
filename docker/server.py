@@ -45,9 +45,18 @@ from serving.engine import Cancelled, Engine, QueueFull
 IM_END = "<|im_end|>"
 
 
-def render_chatml(messages: list[dict], enable_thinking: bool) -> str:
-    """Render an OpenAI ``messages[]`` array into a ChatML prompt ending with an
-    open assistant turn. Model-agnostic across the Qwen/DeepSeek ChatML family."""
+def render_chatml(messages: list[dict], enable_thinking: bool) -> tuple[str, str]:
+    """Render an OpenAI ``messages[]`` array into a ChatML prompt, split into
+    ``(history, opener)``. Model-agnostic across the Qwen/DeepSeek ChatML family.
+
+    The split is what makes the prefix cache work for chat. The opener —
+    ``<|im_start|>assistant\n`` plus, when thinking is off, an empty ``<think>``
+    block — is specific to THIS request: next turn the client sends the assistant's
+    reply back as content, so that same position renders as
+    ``<|im_start|>assistant\n{reply}<|im_end|>\n``. A snapshot taken past the split
+    is therefore never a prefix of the next turn's prompt and can never be reused.
+    Only `history` is stable across turns, so only `history` is cacheable.
+    """
     parts: list[str] = []
     for m in messages:
         role = m.get("role", "user")
@@ -57,10 +66,10 @@ def render_chatml(messages: list[dict], enable_thinking: bool) -> str:
                 p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
             )
         parts.append(f"<|im_start|>{role}\n{content}{IM_END}\n")
-    parts.append("<|im_start|>assistant\n")
+    opener = "<|im_start|>assistant\n"
     if not enable_thinking:  # Qwen3.5: suppress the thinking block
-        parts.append("<think>\n\n</think>\n\n")
-    return "".join(parts)
+        opener += "<think>\n\n</think>\n\n"
+    return "".join(parts), opener
 
 
 engine: Engine  # set on startup
@@ -148,13 +157,21 @@ async def chat_completions(request: Request,
         stop = [stop]
     stop = [s for s in dict.fromkeys(stop) if s != IM_END]
     enable_thinking = bool(body.get("enable_thinking", False))
-    prompt = render_chatml(messages, enable_thinking)
+    history, opener = render_chatml(messages, enable_thinking)
+    prompt = history + opener
     created = int(time.time())
     cid = f"chatcmpl-{created}"
 
     ids = engine.encode(prompt)
+    # How much of `ids` is stable history, and so eligible for caching. Encoding the
+    # two parts separately could in principle tokenize differently at the seam, so
+    # verify it really is a prefix rather than assuming — the seam is a special-token
+    # boundary, but a wrong split would poison the cache, and checking is cheap.
+    hist_ids = engine.encode(history) if history else []
+    cacheable = len(hist_ids) if ids[:len(hist_ids)] == hist_ids else 0
     try:
-        job = engine.submit(prompt, ids, max_new, stop, _sampling_from(body))
+        job = engine.submit(prompt, ids, max_new, stop, _sampling_from(body),
+                            cacheable=cacheable)
     except QueueFull as exc:
         return JSONResponse(status_code=429, content=_error_body(exc, "rate_limit_exceeded"))
 

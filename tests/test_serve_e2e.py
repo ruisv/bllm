@@ -49,6 +49,10 @@ def get(path):
 FACTS = "Please remember these facts. " + "The solar system has eight planets. " * 60
 QUESTION = [{"role": "user", "content": "Reply with exactly the word: pineapple"}]
 
+# The server keeps its cache across tests, so a prompt sent by an earlier test would
+# legitimately hit its own entry. Anything asserting on a MISS must be unique per run.
+NONCE = os.urandom(6).hex()
+
 # The image installs bllm from the conda channel, so the server can be newer than the
 # runtime beneath it. Without the snapshot primitives it degrades to full re-prefill —
 # a supported mode, not a failure, so the cache tests skip rather than fail.
@@ -86,10 +90,16 @@ def test_second_turn_reuses_the_prefix():
 
 @needs_cache
 def test_divergent_history_does_not_reuse_the_wrong_state():
-    """Edit the opening turn and the cached prefix must no longer apply."""
-    chat([{"role": "user", "content": FACTS + " Version A."}])
-    b = chat([{"role": "user", "content": "Totally different opening. " + FACTS}])
-    assert b["usage"]["prompt_tokens_details"]["cached_tokens"] < len(FACTS) // 8
+    """A prompt that diverges at the very start must not claim another one's prefix.
+
+    Both prompts carry a per-run nonce so neither can match an entry left by an
+    earlier test — otherwise a legitimate self-hit looks like a cross-conversation
+    leak. The threshold is in TOKENS: only the few tokens of ChatML preamble the two
+    genuinely share may be reused.
+    """
+    chat([{"role": "user", "content": f"[{NONCE}-a] " + FACTS}])
+    b = chat([{"role": "user", "content": f"[{NONCE}-b] different opening. " + FACTS}])
+    assert b["usage"]["prompt_tokens_details"]["cached_tokens"] < 16
 
 
 def test_repeated_disconnects_do_not_corrupt_later_answers():
