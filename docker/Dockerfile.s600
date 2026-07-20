@@ -57,6 +57,7 @@ ENV LD_LIBRARY_PATH=/opt/conda/lib:/usr/hobot/lib
 
 # --- server -----------------------------------------------------------------
 COPY server.py /app/server.py
+COPY serving/ /app/serving/
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 WORKDIR /app

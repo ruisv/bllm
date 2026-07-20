@@ -178,7 +178,66 @@ NB_MODULE(_bllm_native, m) {
       .def_prop_ro("arch", [](bllm::NativeLlm& l) { return l.config().arch; })
       .def_prop_ro("vocab_size", [](bllm::NativeLlm& l) { return l.tokenizer().vocab_size(); })
       .def("encode", [](bllm::NativeLlm& l, const std::string& s) { return l.tokenizer().encode(s); }, "text"_a)
-      .def("decode", [](bllm::NativeLlm& l, const std::vector<int>& ids) { return l.tokenizer().decode(ids); }, "ids"_a);
+      .def("decode", [](bllm::NativeLlm& l, const std::vector<int>& ids) { return l.tokenizer().decode(ids); }, "ids"_a)
+      // ---- serving primitives: many states, one engine (session pool × prefix cache) ----
+      // The payload is binary (KV/SSM rows + raw logits), so it crosses as bytes — a str
+      // would send it through a UTF-8 decode it cannot survive.
+      .def(
+          "snapshot",
+          [](bllm::NativeLlm& l) {
+            std::string b;
+            { nb::gil_scoped_release r; b = l.snapshot(); }
+            return nb::bytes(b.data(), b.size());
+          },
+          "In-memory snapshot of the current context (same payload as save_state, no file). "
+          "Cache it and restore() later to skip re-prefilling that prefix.")
+      .def(
+          "restore",
+          [](bllm::NativeLlm& l, nb::bytes blob) {
+            std::string s(blob.c_str(), blob.size());
+            nb::gil_scoped_release r;
+            l.restore(s);
+          },
+          "blob"_a,
+          "Restore a snapshot(); generation resumes from it bit-identically. Rejected if the "
+          "blob does not match this model's shape.")
+      .def(
+          "feed_ids",
+          [](bllm::NativeLlm& l, const std::vector<int>& ids) {
+            nb::gil_scoped_release r;
+            l.feed_ids(ids);
+          },
+          "ids"_a,
+          "Ingest token ids into the context WITHOUT decoding (the prefill half of "
+          "generate()). Pair with decode_stream(); snapshot() in between to cache the prompt.")
+      .def(
+          "decode_stream",
+          [](bllm::NativeLlm& llm, int max_new, nb::object on_text,
+             const std::vector<std::string>& stop) {
+            std::function<void(const std::string&)> cb;
+            if (!on_text.is_none())
+              cb = [&on_text](const std::string& s) { nb::gil_scoped_acquire g; on_text(s); };
+            std::string out;
+            { nb::gil_scoped_release r; out = llm.decode_stream(max_new, cb, stop); }
+            return out;
+          },
+          "max_new"_a = 256, "on_text"_a = nb::none(), "stop"_a = std::vector<std::string>(),
+          "Decode from the current context (the generation half of generate()). Feed the "
+          "prompt with feed_ids() first.")
+      .def_prop_ro("context_left", &bllm::NativeLlm::context_left,
+                   "Tokens still free in the KV/SSM window. The window IS the context: "
+                   "overflow raises rather than silently evicting.")
+      .def_prop_ro("prefill_chunk", &bllm::NativeLlm::prefill_chunk,
+                   "Prefill chunk width, 0 if this engine has no chunked prefill. Cache "
+                   "snapshots at multiples of it: the dense engine batch-prefills runs of "
+                   "this width and decode-steps the rest, and the two graphs differ "
+                   "numerically under int8, so an unaligned split can change the reply.")
+      .def("request_cancel", &bllm::NativeLlm::request_cancel,
+           "Stop the in-flight generation at the next token boundary. Thread-safe — call it "
+           "from another thread while a generation runs (a server dropping a disconnected "
+           "client). The context stays consistent; nothing is generated past the cancel.")
+      .def_prop_ro("canceled", &bllm::NativeLlm::canceled,
+                   "Whether the last generation ended on request_cancel().");
 
   // The multimodal session. Media arrives either as a path (decoded by stb/dr_wav)
   // or as a raw array — an HxWx3 uint8 frame, or 16 kHz mono float PCM — which is

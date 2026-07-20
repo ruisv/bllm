@@ -264,6 +264,84 @@ if _HAVE_NATIVE:
             """Detokenize `ids` back to text with the model's C++ tokenizer."""
             return self._llm.decode(list(ids))
 
+        # ---- serving primitives ------------------------------------------------------
+        # set_prefix()/ask() serve ONE fixed prefix. A server juggling many conversations
+        # holds many states and picks one per request, so it drives the snapshot itself:
+        #
+        #     ids = sess.encode(prompt)
+        #     blob, n = cache.match(ids)          # longest cached prefix of ids
+        #     sess.restore(blob) if blob else sess.reset()
+        #     sess.feed_ids(ids[n:])              # prefill only what is new
+        #     cache.put(ids, sess.snapshot())     # state == the whole prompt
+        #     for piece in sess.stream_decode(max_new): ...
+
+        def snapshot(self) -> bytes:
+            """Snapshot the current context as a byte blob (no file, unlike save_state)."""
+            return self._llm.snapshot()
+
+        def restore(self, blob: bytes) -> "NativeSession":
+            """Restore a snapshot(); generation resumes from it bit-identically. Raises if
+            the blob does not match this model."""
+            self._llm.restore(blob)
+            return self
+
+        def feed_ids(self, ids: "list[int]") -> "NativeSession":
+            """Ingest token ids without decoding (the prefill half of generate())."""
+            self._llm.feed_ids(list(ids))
+            return self
+
+        @property
+        def context_left(self) -> int:
+            """Tokens still free in the KV/SSM window. The window IS the context — going
+            past it raises rather than silently dropping the oldest turns."""
+            return self._llm.context_left
+
+        def cache_align(self, n: int) -> int:
+            """Largest prefix of `n` tokens that is safe to snapshot, i.e. the largest
+            multiple of prefill_chunk that is <= n (just `n` when the engine does not
+            chunk). Snapshotting anywhere else can change the reply — see prefill_chunk.
+
+            Measured on an S100P (Qwen2.5-1.5B, chunk=256, greedy): aligned splits
+            reproduced the un-cached reply 5/5, unaligned ones 1/18, and one unaligned
+            split turned "Venus is the hottest" into "Earth is the hottest".
+            """
+            c = self.prefill_chunk
+            return n if c <= 0 else (n // c) * c
+
+        @property
+        def prefill_chunk(self) -> int:
+            """Prefill chunk width; 0 when the engine has no chunked prefill.
+
+            Cache snapshots at multiples of this. The dense engine batch-prefills runs of
+            `prefill_chunk` tokens and decode-steps the remainder, and those two graphs are
+            not numerically identical under int8 — so splitting a prompt at an arbitrary
+            point changes which tokens went through which graph, and can change the reply.
+            Aligned splits reproduce a straight-through prefill exactly.
+            """
+            return self._llm.prefill_chunk
+
+        def decode_stream(self, max_new: int = 256,
+                          on_text: "Optional[Callable[[str], None]]" = None,
+                          stop: "Optional[list[str]]" = None) -> str:
+            """Decode from the current context (the generation half of generate())."""
+            return self._llm.decode_stream(max_new, on_text, list(stop) if stop else [])
+
+        def stream_decode(self, max_new: int = 256,
+                          stop: "Optional[list[str]]" = None) -> "Iterator[str]":
+            """decode_stream() as a lazy generator of decoded text chunks."""
+            s = list(stop) if stop else []
+            return _stream(lambda cb: self._llm.decode_stream(max_new, cb, s))
+
+        def request_cancel(self) -> None:
+            """Stop the in-flight generation at the next token boundary. Thread-safe: call
+            it from another thread while a generation runs. The context stays consistent."""
+            self._llm.request_cancel()
+
+        @property
+        def canceled(self) -> bool:
+            """Whether the last generation ended on request_cancel()."""
+            return self._llm.canceled
+
     def load_video(path: str, fps: float = 2.0, size: int = 448, max_frames: int = 10,
                    with_audio: bool = True, ffmpeg: str = "ffmpeg") -> dict:
         """Sample a video file into the ``videos=`` argument of NativeVlmSession.chat.
