@@ -32,7 +32,10 @@ def vlm():
 def test_text_and_image(vlm):
     vlm.reset()
     assert vlm.vision_tokens > 0
-    assert vlm.vision_image_size % 28 == 0          # patch 14 x merge 2
+    # The compiled side must be a whole number of merged patch blocks. Omni is
+    # patch 14 x merge 2 = 28; Qwen3.5 is 16 x 2 = 32. Accept either rather than
+    # hardcoding one family's geometry.
+    assert vlm.vision_image_size % 28 == 0 or vlm.vision_image_size % 32 == 0
     assert "巴黎" in vlm.chat("法国的首都是哪里？只答城市名。", max_new=16)
     if IMAGE:
         vlm.reset()
