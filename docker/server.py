@@ -219,6 +219,48 @@ def _logit_bias_from(body: dict) -> dict:
     return out
 
 
+def _grammar_from(body: dict) -> str:
+    """GBNF for this request, from `response_format` or a raw `grammar`, or "".
+
+    Structured output has two entrances and they must not disagree, so asking for both is
+    an error rather than a precedence rule nobody can remember:
+
+      response_format: {"type": "json_object"}                  any valid JSON
+      response_format: {"type": "json_schema",
+                        "json_schema": {"schema": {...}}}       that shape exactly
+      grammar: "root ::= ..."                                   raw GBNF (llama.cpp's field)
+    """
+    rf = body.get("response_format")
+    raw = body.get("grammar")
+    if rf is not None and raw:
+        raise HTTPException(status_code=400,
+                            detail="use either response_format or grammar, not both")
+    if raw:
+        if not isinstance(raw, str):
+            raise HTTPException(status_code=400, detail="grammar must be a GBNF string")
+        return raw
+    if rf is None:
+        return ""
+    if not isinstance(rf, dict):
+        raise HTTPException(status_code=400, detail="response_format must be an object")
+    kind = rf.get("type", "text")
+    if kind == "text":
+        return ""
+    if kind == "json_object":
+        return bllm.json_grammar()
+    if kind == "json_schema":
+        spec = rf.get("json_schema") or {}
+        schema = spec.get("schema") if isinstance(spec, dict) else None
+        if not isinstance(schema, dict):
+            raise HTTPException(status_code=400,
+                                detail="response_format.json_schema.schema must be an object")
+        try:
+            return bllm.json_grammar(schema)
+        except ValueError as exc:               # an unsupported or malformed schema
+            raise HTTPException(status_code=400, detail=f"json_schema: {exc}")
+    raise HTTPException(status_code=400, detail=f"unsupported response_format type {kind!r}")
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request,
                            authorization: Optional[str] = Header(None)) -> Any:
@@ -247,9 +289,17 @@ async def chat_completions(request: Request,
     # boundary, but a wrong split would poison the cache, and checking is cheap.
     hist_ids = engine.encode(history) if history else []
     cacheable = len(hist_ids) if ids[:len(hist_ids)] == hist_ids else 0
+    grammar = _grammar_from(body)
+    if grammar and not engine.supports_grammar:
+        # Refuse rather than answer unconstrained: the client asked for a guarantee, and
+        # silently downgrading it to "the prompt says please" is the failure mode
+        # structured output exists to remove.
+        raise HTTPException(status_code=400,
+                            detail="this bllm runtime has no grammar support; "
+                                   "install a newer bllm to use response_format/grammar")
     try:
         job = engine.submit(prompt, ids, max_new, stop, _sampling_from(body),
-                            cacheable=cacheable)
+                            cacheable=cacheable, grammar=grammar)
     except QueueFull as exc:
         return JSONResponse(status_code=429, content=_error_body(exc, "rate_limit_exceeded"))
 
@@ -296,8 +346,13 @@ def _error_payload(exc: BaseException) -> tuple[int, dict]:
         return 429, _error_body(exc, "rate_limit_exceeded")
     if isinstance(exc, Cancelled):
         return 499, _error_body(exc, "request_cancelled")
-    code = "context_length_exceeded" if "context overflow" in msg else None
-    return (400 if code else 500), _error_body(exc, code)
+    if "context overflow" in msg:
+        return 400, _error_body(exc, "context_length_exceeded")
+    # A grammar that does not parse is the client's text, not our bug — the engine only
+    # sees it when the job runs, so the 400 has to be recovered here.
+    if "[grammar]" in msg:
+        return 400, _error_body(exc, "invalid_grammar")
+    return 500, _error_body(exc, None)
 
 
 def _error_body(exc: BaseException, code: Optional[str]) -> dict:

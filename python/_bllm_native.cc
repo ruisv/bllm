@@ -191,6 +191,13 @@ NB_MODULE(_bllm_native, m) {
            "These are the RAW model log-probabilities (an exact full-vocab log-softmax), so "
            "temperature/penalties/logit_bias do not move them and the generated token need "
            "not be the top entry.")
+      .def("set_grammar", &bllm::NativeLlm::set_grammar, "gbnf"_a, "root"_a = "root",
+           "Constrain generation to a GBNF grammar (llama.cpp's format): only tokens that "
+           "keep the grammar satisfiable can be sampled, so the reply is structurally "
+           "guaranteed. \"\" clears it. Applies from the next turn; the grammar restarts at "
+           "its root each turn.")
+      .def("clear_grammar", &bllm::NativeLlm::clear_grammar, "Drop the grammar constraint.")
+      .def_prop_ro("has_grammar", &bllm::NativeLlm::has_grammar)
       .def("set_stop", &bllm::NativeLlm::set_stop, "stop"_a,
            "Persistent stop strings for every following turn (a per-call stop=[...] overrides).")
       .def("set_thinking", &bllm::NativeLlm::set_thinking, "enabled"_a,

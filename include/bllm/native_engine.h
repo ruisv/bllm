@@ -475,6 +475,7 @@ class NativeEngine {
     // Stop at the window rather than evict — see context_left().
     for (int step = 0; step < p.max_new && curLogits_ && P_ < cacheLen_; ++step) {
       int tok = s.pick(logit, vocab_);
+      if (tok < 0) break;                 // a constraint (grammar) has nothing left to allow
       if (eos.count(tok)) break;
       if (gen.empty()) { tFirst = clk::now(); stats_.ttft_ms = std::chrono::duration<double>(tFirst - tTurn_).count() * 1000.0; }
       gen.push_back(tok);

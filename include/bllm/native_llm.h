@@ -10,6 +10,7 @@
 
 #include "bllm/model_config.h"
 #include "bllm/native_engine.h"
+#include "bllm/native_grammar.h"       // GBNF constrained decoding (set_grammar)
 #include "bllm/native_hybrid_engine.h"
 #include "bllm/stop_match.h"
 #include "bllm/tokenizer.h"
@@ -78,6 +79,26 @@ class NativeLlm {
   // in the returned text. Empty unless sampling was configured with logprobs >= 0. Valid
   // until the next generate()/chat().
   const std::vector<TokenLogprobs>& last_logprobs() const { return logprobs_; }
+
+  // Constrain generation to a GBNF grammar (llama.cpp's format) — structured output that is
+  // GUARANTEED rather than requested: at every step only the tokens that keep the grammar
+  // satisfiable can be sampled. An empty string clears it. Applies from the next turn on,
+  // and the grammar restarts at its root for each turn.
+  //
+  //   set_grammar("root ::= \"yes\" | \"no\"\n");
+  //
+  // Costs a token->bytes table over the whole vocabulary, built once per session on first
+  // use, plus one grammar test per candidate per step.
+  void set_grammar(const std::string& gbnf, const std::string& root = "root") {
+    if (gbnf.empty()) { clear_grammar(); return; }
+    grammar_ = std::make_unique<GrammarConstraint>(Grammar(gbnf, root), vocabText());
+    sampling_.constraint = grammar_.get();
+  }
+  void clear_grammar() {
+    grammar_.reset();
+    sampling_.constraint = nullptr;
+  }
+  bool has_grammar() const { return grammar_ != nullptr; }
 
   // Stop strings: end a turn as soon as any of them appears in the decoded text, and
   // return the reply WITHOUT the stop string. Complements eos-token stopping (a stop
@@ -340,6 +361,7 @@ class NativeLlm {
       canceled_ = cancelReq_.exchange(false, std::memory_order_relaxed);
       return canceled_;
     };
+    if (grammar_) grammar_->reset();      // each turn starts at the grammar's root
     NativeSamplingParams sp = sampling_;
     sp.max_new = max_new;
     if (!cfg_.eos.empty()) sp.eos = cfg_.eos;
@@ -351,6 +373,31 @@ class NativeLlm {
     // completed) so the stream ends up with the whole reply.
     if (on_text && full.size() > emitted) on_text(full.substr(emitted));
     return full.empty() ? tk_.decode(gen) : full;
+  }
+
+  // token id -> the bytes it contributes, for grammar matching. Built once per session
+  // (~150k tokenizer calls), and empty for every token a grammar must not be able to
+  // produce: the control tokens.
+  //
+  // Byte-level BPE is why this cannot be `decode([id])` — see decodeByteLevelToken(). The
+  // control-token exclusion is belt and braces: the ids the model config names (eos, the
+  // chat markers) plus anything shaped like `<|...|>`.
+  const std::vector<std::string>& vocabText() {
+    if (!vocabText_.empty()) return vocabText_;
+    const int n = tk_.vocab_size();
+    vocabText_.assign(n, std::string());
+    std::string bytes;
+    for (int i = 0; i < n; ++i) {
+      const std::string raw = tk_.id_to_token(i);
+      if (raw.empty() || isControlTokenText(raw)) continue;
+      if (decodeByteLevelToken(raw, &bytes)) vocabText_[i] = bytes;
+    }
+    auto blank = [&](int id) { if (id >= 0 && id < n) vocabText_[id].clear(); };
+    for (int e : cfg_.eos) blank(e);
+    blank(cfg_.chat.im_start); blank(cfg_.chat.im_end); blank(cfg_.chat.bos);
+    blank(cfg_.chat.r_user); blank(cfg_.chat.r_assistant);
+    blank(cfg_.chat.r_system); blank(cfg_.chat.r_end);
+    return vocabText_;
   }
 
   // Take the engine's per-token logprobs for this turn, trimmed to the tokens that survive
@@ -377,6 +424,8 @@ class NativeLlm {
   std::unique_ptr<NativeEngine> dense_;
   NativeSamplingParams sampling_;                 // default: greedy
   std::vector<TokenLogprobs> logprobs_;           // last turn's, trimmed to the reply
+  std::unique_ptr<GrammarConstraint> grammar_;    // structured output, null = unconstrained
+  std::vector<std::string> vocabText_;            // token id -> bytes, built on first grammar
   std::vector<std::string> stop_;                 // persistent stop strings (default: none)
   bool first_turn_ = true;
   bool thinking_ = true;                          // Qwen3.5 reasoning: prefill empty <think> when false

@@ -289,6 +289,7 @@ class NativeHybridEngine {
     auto t0 = clk::now();
     for (int i = 0; i < p.max_new && curLogits_valid_ && P_ < CL_; ++i) {
       int tok = s.pick(logit, vocab_);
+      if (tok < 0) break;                 // a constraint (grammar) has nothing left to allow
       if (eos.count(tok)) break;
       gen.push_back(tok);
       // Report against the logits this token came out of, before step() advances them.

@@ -33,6 +33,20 @@ namespace bllm {
 // other value to get the reproducible behaviour back.
 inline constexpr uint64_t kSeedRandom = 0xFFFFFFFFull;
 
+// A restriction on WHICH tokens may be generated next — grammar-constrained decoding, in
+// practice (bllm::GrammarConstraint in native_grammar.h). Kept as an interface here so the
+// sampler stays free of the grammar machinery and of any tokenizer.
+//
+// It is stateful: accept() commits a token and moves the constraint forward, so the object
+// belongs to the session (which resets it per turn), not to the params struct that is
+// copied per generation.
+struct TokenConstraint {
+  virtual ~TokenConstraint() = default;
+  virtual bool allows(int id) const = 0;   // may this token be generated at this position?
+  virtual void accept(int id) = 0;         // commit a generated token
+  virtual bool can_end() const = 0;        // is the constraint satisfied — may we stop?
+};
+
 // Sampling knobs. Defaults are the "disabled" values, so a zero-initialised params object
 // samples greedily. Field names/semantics mirror libxlm's common_params_sampling_t.
 struct NativeSamplingParams {
@@ -57,6 +71,10 @@ struct NativeSamplingParams {
   // Unlike the penalties this can raise a token, so it is also what forces a biased id
   // into the candidate set — see pick().
   std::unordered_map<int, float> logit_bias;
+
+  // Grammar / structured-output constraint, NOT owned: the session holds it and resets it
+  // per turn. null = unconstrained. See TokenConstraint and pick().
+  TokenConstraint* constraint = nullptr;
 
   // OpenAI's logprobs: report each generated token's log probability plus this many
   // alternatives (its `top_logprobs`; 0 = the chosen token only). <0 = off, the default,
@@ -114,8 +132,10 @@ class Sampler {
  public:
   explicit Sampler(const NativeSamplingParams& p) : p_(p), rng_(seedFor(p.seed)) {}
 
-  // Feed a just-emitted token so the penalty window tracks it.
+  // Feed a just-emitted token: the penalty window tracks it, and any constraint advances
+  // over it. Call this for every token that is really generated.
   void record(int id) {
+    if (p_.constraint) p_.constraint->accept(id);
     if (p_.penalty_last_n == 0 || !has_penalty()) return;
     recent_.push_back(id);
     ++counts_[id];
@@ -133,10 +153,11 @@ class Sampler {
   // raw argmax we can shortcut; with penalties or a bias the argmax is over the adjusted
   // logits, which needs the candidate path.
   bool greedy_raw() const {
-    return p_.temp <= 0.0f && !has_penalty() && p_.logit_bias.empty();
+    return p_.temp <= 0.0f && !has_penalty() && p_.logit_bias.empty() && !p_.constraint;
   }
 
   // logit(i) returns the (dequantized) logit for token i; n = vocab size.
+  // Returns -1 when a constraint allows nothing more — generation must stop there.
   template <class LogitFn>
   int pick(LogitFn logit, int n) {
     if (greedy_raw()) {
@@ -174,6 +195,23 @@ class Sampler {
         c.push_back({adjust(id, logit(id)), 0.0, id});
       }
     }
+    // A constraint (a grammar) restricts WHICH tokens may come next. Filtering after the
+    // cut is exact for what survives: every token outside the cut has a lower logit, so the
+    // allowed tokens inside it are the highest-logit allowed tokens that exist. Only when
+    // the cut holds none of them — the grammar wants "{" and the model wanted prose — does
+    // the whole vocab have to be searched, which is why that path is the exception.
+    if (p_.constraint) {
+      // Once the constraint is satisfied, eos becomes legal again — otherwise a grammar
+      // that CAN end but can also continue (`[0-9]+`) could never stop, because the
+      // constraint itself never allows the eos token as text.
+      const bool may_end = p_.constraint->can_end();
+      c.erase(std::remove_if(c.begin(), c.end(),
+                             [&](const Cand& x) { return !allowedBy(x.id, may_end); }),
+              c.end());
+      if (c.empty()) c = allowedFromWholeVocab(logit, n, may_end);
+      if (c.empty()) return -1;      // nothing is allowed any more: stop generating
+    }
+
     std::sort(c.begin(), c.end(), [](const Cand& a, const Cand& b) { return a.lg > b.lg; });
 
     // temp<=0: deterministic argmax over the penalised logits (llama.cpp's greedy path —
@@ -205,6 +243,32 @@ class Sampler {
 
  private:
   struct Cand { double lg; double p; int id; };
+
+  bool isEos(int id) const {
+    for (int e : p_.eos) if (e == id) return true;
+    return false;
+  }
+
+  bool allowedBy(int id, bool may_end) const {
+    return (may_end && isEos(id)) || p_.constraint->allows(id);
+  }
+
+  // Every token the constraint allows, capped to the same candidate budget. One grammar
+  // test per vocab entry, so this is the slow path — reached only when the top-k cut
+  // contained nothing allowed.
+  template <class LogitFn>
+  std::vector<Cand> allowedFromWholeVocab(LogitFn logit, int n, bool may_end) {
+    std::vector<Cand> c;
+    for (int i = 0; i < n; ++i)
+      if (allowedBy(i, may_end)) c.push_back({adjust(i, logit(i)), 0.0, i});
+    const int cap = std::max({p_.top_k > 0 ? p_.top_k : 0, 512, p_.min_keep});
+    if ((int)c.size() > cap) {
+      std::nth_element(c.begin(), c.begin() + cap, c.end(),
+                       [](const Cand& a, const Cand& b) { return a.lg > b.lg; });
+      c.resize(cap);
+    }
+    return c;
+  }
 
   bool has_penalty() const {
     return p_.rep_pen != 1.0f || p_.penalty_freq != 0.0f || p_.penalty_present != 0.0f;

@@ -100,6 +100,58 @@ def test_bad_logprobs_request_is_a_400():
     assert e.value.code == 400
 
 
+needs_grammar = pytest.mark.skipif(
+    not _CAPS.get("supports_grammar"),
+    reason="this bllm build has no grammar support")
+
+
+@needs_grammar
+def test_response_format_json_object_parses():
+    r = chat([{"role": "user", "content": "Describe Paris briefly."}],
+             response_format={"type": "json_object"}, max_tokens=64)
+    json.loads(r["choices"][0]["message"]["content"])   # the whole guarantee, in one call
+
+
+@needs_grammar
+def test_response_format_json_schema_matches_the_schema():
+    schema = {"type": "object",
+              "properties": {"city": {"type": "string"}, "is_capital": {"type": "boolean"}},
+              "required": ["city", "is_capital"]}
+    r = chat([{"role": "user", "content": "Describe Paris."}], max_tokens=64,
+             response_format={"type": "json_schema",
+                              "json_schema": {"name": "city", "schema": schema}})
+    obj = json.loads(r["choices"][0]["message"]["content"])
+    assert set(obj) == {"city", "is_capital"}
+    assert isinstance(obj["is_capital"], bool)
+
+
+@needs_grammar
+def test_raw_gbnf_grammar_field():
+    r = chat([{"role": "user", "content": "Is the sky blue? Answer in English."}],
+             grammar='root ::= "yes" | "no"\n', max_tokens=16)
+    assert r["choices"][0]["message"]["content"] in ("yes", "no")
+
+
+@needs_grammar
+def test_a_grammar_does_not_leak_into_the_next_request():
+    """The session keeps a grammar until told otherwise, and requests share one session."""
+    chat(QUESTION, grammar='root ::= "yes" | "no"\n', max_tokens=8)
+    assert "pineapple" in chat(QUESTION, max_tokens=16)["choices"][0]["message"]["content"].lower()
+
+
+@needs_grammar
+@pytest.mark.parametrize("body,why", [
+    ({"grammar": "root ::= undefined_thing\n"}, "a grammar that does not parse"),
+    ({"response_format": {"type": "json_schema", "json_schema": {}}}, "no schema"),
+    ({"response_format": {"type": "xml"}}, "an unsupported format"),
+    ({"response_format": {"type": "json_object"}, "grammar": 'root ::= "a"\n'}, "both at once"),
+])
+def test_bad_structured_output_requests_are_400s(body, why):
+    with pytest.raises(urllib.error.HTTPError) as e:
+        chat(QUESTION, **body)
+    assert e.value.code == 400, why
+
+
 def test_logit_bias_is_validated_not_clamped():
     """A value off OpenAI's [-100, 100] means the client is working from a different
     scale; reinterpreting it silently would hide that. (Whether a bias actually moves the

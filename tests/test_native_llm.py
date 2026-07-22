@@ -173,6 +173,59 @@ def test_logprobs_stop_at_the_stop_string(llm):
     llm.set_sampling()
 
 
+def test_grammar_constrains_the_reply(llm):
+    """GBNF-constrained decoding: the reply is structurally guaranteed, not requested.
+
+    The grammar has to win against what the model wants to say — including against the
+    sampler's 512-candidate cut, since the allowed tokens are often nowhere near the top
+    (the unit-level proof of that is in tests/test_native_grammar.cc)."""
+    llm.reset()
+    llm.set_grammar('root ::= "yes" | "no"\n')
+    assert llm.chat("Is the sky blue? Answer in English.", max_new=16) in ("yes", "no")
+    llm.reset()
+    # Same grammar, second turn: it must restart at the root rather than stay finished.
+    assert llm.chat("Is 2 + 2 equal to 5?", max_new=16) in ("yes", "no")
+
+    llm.reset()
+    llm.clear_grammar()
+    free = llm.chat("Say hello in one short sentence.", max_new=24)
+    assert free.strip() and free not in ("yes", "no")
+
+
+def test_grammar_produces_json_that_parses(llm):
+    """The point of the JSON Schema path: json.loads() on the reply cannot fail."""
+    import json
+
+    schema = {"type": "object",
+              "properties": {"name": {"type": "string"},
+                             "is_capital": {"type": "boolean"},
+                             "country": {"type": "string"}},
+              "required": ["name", "is_capital", "country"]}
+    llm.reset()
+    llm.set_grammar(bllm.json_grammar(schema))
+    obj = json.loads(llm.chat("Describe the city Paris as JSON.", max_new=80))
+    assert set(obj) == {"name", "is_capital", "country"}
+    assert isinstance(obj["is_capital"], bool) and isinstance(obj["name"], str)
+
+    llm.reset()
+    llm.set_grammar(bllm.json_grammar({"enum": ["positive", "negative", "neutral"]}))
+    assert json.loads(llm.chat("Sentiment of: I love this!", max_new=16)) in (
+        "positive", "negative", "neutral")
+    llm.reset()
+    llm.clear_grammar()
+
+
+def test_a_broken_grammar_is_rejected_at_set_time(llm):
+    """Not mid-generation, and with the reason in the message."""
+    with pytest.raises(RuntimeError, match=r"\[grammar\]"):
+        llm.set_grammar("root ::= undefined_thing\n")
+    with pytest.raises(RuntimeError, match=r"\[grammar\]"):
+        llm.set_grammar('nope ::= "a"\n')          # no root rule
+    assert not llm.has_grammar
+    llm.reset()
+    assert llm.chat("法国的首都是哪里？只答城市名。", max_new=8)   # still usable
+
+
 def test_prompt_cache_round_trips_bit_identically(llm, tmp_path):
     """save_state/load_state (libxlm's path_prompt_cache): feeding a prefix then saving,
     reloading, and continuing must reproduce the in-one-go greedy continuation exactly."""

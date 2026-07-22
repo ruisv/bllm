@@ -44,7 +44,11 @@ computer-vision runtime).
 - **One-line sessions** — `bllm.load(...)` / `NativeSession`, with a built-in C++ tokenizer,
   ChatML templating, streaming, multi-turn, sampling.
 - **Full sampling** — greedy / temperature / top-k / top-p / min-p / typical-p / repeat,
-  frequency and presence penalties; reproducible.
+  frequency and presence penalties; reproducible. Plus `logit_bias` (force or ban tokens)
+  and `logprobs` (exact full-vocab log probabilities).
+- **Structured output** — GBNF grammar-constrained decoding, and JSON Schema -> grammar.
+  The constraint applies *while decoding*, so `json.loads()` on the reply cannot fail —
+  a guarantee, not a request made in the prompt.
 - **Production features** — perplexity, async submit, prompt cache (KV+SSM state save/restore,
   bit-identical), stop strings (stops early), and BPU priority / time-slice control to share
   the BPU with a vision pipeline.

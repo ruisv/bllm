@@ -8,6 +8,20 @@ All notable changes to BLLM are documented here. The format follows
 
 ### Added
 
+- **GBNF grammar-constrained decoding — structured output that is guaranteed, not
+  requested.** `set_grammar("root ::= ...")` on the Python session, and over HTTP
+  `response_format: {"type": "json_object"}` / `{"type": "json_schema", ...}` or a raw
+  `grammar` field (llama.cpp's). At every step only the tokens that keep the grammar
+  satisfiable can be sampled, so a reply that claims to be JSON parses — `json.loads()`
+  cannot fail. `bllm.json_grammar(schema)` converts a JSON Schema (`type`, `enum`, `const`,
+  `properties`/`required`, `items`, `anyOf`/`oneOf`, `$ref` into `$defs`); optional
+  properties must appear in schema order and `additionalProperties` is treated as false.
+  Cost on S100P / Qwen3.5-0.8B: ~315 ms once per session to build the token→bytes table,
+  then 14.3 → 13.4 tok/s (~6%). A grammar that does not parse is a 400, and an old runtime
+  without grammar support is refused rather than answered unconstrained — silently
+  downgrading a guarantee to "the prompt says please" is the failure mode this feature
+  exists to remove.
+
 - **`logit_bias`** — force or ban specific tokens, on OpenAI's `[-100, 100]` scale.
   `set_sampling(logit_bias={id: bias})` in Python, `logit_bias: {"<id>": bias}` over HTTP
   (out-of-range values are a 400, not a silent clamp). The subtlety is in the sampler: it

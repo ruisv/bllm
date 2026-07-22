@@ -42,6 +42,10 @@ except ImportError:
 # stream every turn. Pass any other value for reproducible sampling.
 SEED_RANDOM = 0xFFFFFFFF
 
+# JSON Schema -> GBNF. Pure text, no runtime behind it, so it imports even on a dev host
+# with no extension built — which is also where its tests run.
+from ._grammar import gbnf_literal, json_grammar  # noqa: E402
+
 # `__all__` is built from what actually imported: on a dev host the extension is absent
 # and `from bllm import *` should still degrade quietly rather than name a missing symbol.
 __all__ = ["__version__"]
@@ -144,6 +148,30 @@ if _HAVE_NATIVE:
                                    min_keep, penalty_last_n, penalty_freq, penalty_present,
                                    dict(logit_bias or {}), int(logprobs))
             return self
+
+        def set_grammar(self, gbnf: str, root: str = "root") -> "NativeSession":
+            """Constrain generation to a GBNF grammar (llama.cpp's format).
+
+            Structured output that is guaranteed rather than requested: at every step only
+            the tokens that keep the grammar satisfiable can be sampled, so a reply that
+            claims to be JSON parses. `""` clears the constraint. The grammar restarts at
+            its root for each turn. Returns self for chaining.
+
+                sess.set_grammar('root ::= "yes" | "no"\\n')
+                sess.set_grammar(bllm.json_grammar())          # any JSON value
+                sess.set_grammar(bllm.json_grammar(schema))    # a specific shape
+            """
+            self._llm.set_grammar(gbnf, root)
+            return self
+
+        def clear_grammar(self) -> "NativeSession":
+            """Drop the grammar constraint."""
+            self._llm.clear_grammar()
+            return self
+
+        @property
+        def has_grammar(self) -> bool:
+            return self._llm.has_grammar
 
         def last_logprobs(self) -> "list[dict]":
             """Per-token logprobs of the last turn: [{id, logprob, top: [(id, logprob), ...]}].
@@ -604,7 +632,7 @@ def load(path: str, *, backend: str = "auto", **kwargs):
 
 
 # ── public surface ───────────────────────────────────────────────────────────
-__all__ += ["load", "available_backends"]
+__all__ += ["load", "available_backends", "json_grammar", "gbnf_literal"]
 if _HAVE_NATIVE:
     __all__ += ["NativeSession", "NativeVlmSession", "load_video"]
 

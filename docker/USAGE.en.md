@@ -146,6 +146,23 @@ non-OpenAI extensions: `top_k`, `min_p`, `repetition_penalty`, and `enable_think
 (the Qwen3.5 reasoning toggle, default `false`). Omitted fields take their default, and
 an explicit `0` is distinct from omitting one (`temperature: 0` means greedy).
 
+**Structured output**: `response_format` or `grammar`, not both (sending both is a 400 —
+better an error than a precedence rule nobody remembers).
+
+```jsonc
+{"response_format": {"type": "json_object"}}                    // any valid JSON
+{"response_format": {"type": "json_schema",
+                     "json_schema": {"name": "city", "schema": {...}}}}  // that exact shape
+{"grammar": "root ::= \"yes\" | \"no\"\n"}                    // raw GBNF (llama.cpp's field)
+```
+
+This is not "asking the model nicely for JSON" — it is a decode-time constraint: at every
+step only tokens that keep the grammar satisfiable can be sampled, so `json.loads()` cannot
+fail. Measured cost is ~6% (14.3 -> 13.4 tok/s) plus ~315 ms to build the table on first
+use. A grammar or schema that does not parse is a 400; it never degrades silently to free
+generation, because the guarantee is the reason the client asked. See `json_grammar` in the
+API docs for the supported schema subset.
+
 `logit_bias` takes `{"token id": bias}` on OpenAI's [-100, 100]; a value outside that
 range is a 400 rather than a silent clamp. `logprobs: true` returns each token's log
 probability, and `top_logprobs: N` (0..20) adds N alternatives. These are the **raw**

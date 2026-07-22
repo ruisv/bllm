@@ -134,6 +134,21 @@ curl -N localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
 以及 `enable_thinking`(Qwen3.5 思考开关,默认 `false`)。没给的字段一律取默认值,
 显式传 `0` 与不传是有区别的(`temperature: 0` = 贪心)。
 
+**结构化输出**:`response_format` 与 `grammar` 二选一(同时给是 400 —— 与其定一条
+没人记得住的优先级,不如直接报错)。
+
+```jsonc
+{"response_format": {"type": "json_object"}}                    // 任意合法 JSON
+{"response_format": {"type": "json_schema",
+                     "json_schema": {"name": "city", "schema": {...}}}}  // 指定结构
+{"grammar": "root ::= \"yes\" | \"no\"\n"}                    // 原始 GBNF(llama.cpp 的字段)
+```
+
+这不是"提示模型请输出 JSON",而是**解码期约束**:每一步只有仍能满足语法的 token 能
+被采样,所以 `json.loads()` 不会失败。代价实测约 6%(14.3 → 13.4 tok/s)加首次约 315 ms
+建表。语法/schema 有问题一律 400,不会静默降级成自由生成——客户端要的是保证。
+schema 支持见 API 文档的 `json_grammar`。
+
 `logit_bias` 用 `{"token id": 偏置}`(OpenAI 的 [-100, 100]),超范围直接 400,
 不会悄悄截断。`logprobs: true` 时每个 token 回一条对数概率,`top_logprobs: N`
 (0..20)再附 N 个备选。给的是**原始**模型分布(全词表精确 log-softmax),不随

@@ -38,7 +38,10 @@
   以及 **Qwen3.5-0.8B 混合 Gated-DeltaNet/SSM**（严格 100% 落 BPU，~21 tok/s）。
 - **多模态**：Qwen2.5-Omni 的 文本 + 图像 + 音频 + 视频，支持文件路径或原始数组（相机/麦克风零拷贝）。
 - **一行式会话**：`bllm.load(...)` / `NativeSession`，内置 C++ tokenizer、ChatML 模板、流式、多轮、采样。
-- **完整采样**：贪心 / 温度 / top-k / top-p / min-p / typical-p / 重复·频率·存在惩罚，可复现。
+- **完整采样**：贪心 / 温度 / top-k / top-p / min-p / typical-p / 重复·频率·存在惩罚，可复现；
+  另有 `logit_bias`（强推/封禁 token）与 `logprobs`（全词表精确对数概率）。
+- **结构化输出**：GBNF 语法约束解码 + JSON Schema → 语法。**解码期**只允许仍能满足语法的
+  token，所以 `json.loads()` 不会失败——是保证，不是提示词里的请求。
 - **生产特性**：困惑度、异步提交、提示缓存（KV+SSM 状态存取，逐位一致）、停止串（命中即停）、
   与视觉流水线共享 BPU 的优先级/时间片控制。
 

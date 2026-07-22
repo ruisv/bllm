@@ -59,6 +59,7 @@ class _Job:
     max_new: int
     stop: list[str]
     sampling: dict
+    grammar: str = ""    # GBNF constraining this reply; "" = unconstrained
     cacheable: int = -1  # tokens of `ids` that are stable history; -1 = all of them
     out: "queue.Queue[object]" = field(default_factory=queue.Queue)
     cancel: threading.Event = field(default_factory=threading.Event)
@@ -100,6 +101,7 @@ class Engine:
         self._prefix_ops = ("snapshot", "restore", "feed_ids", "decode_stream", "cache_align")
         self.supports_prefix_cache = all(hasattr(self.sess, a) for a in self._prefix_ops)
         self.supports_cancel = hasattr(self.sess, "request_cancel")
+        self.supports_grammar = hasattr(self.sess, "set_grammar")
         self._unsupported_sampling: set[str] = set()
 
         # Chunk alignment is a correctness requirement for the cache, not a tuning
@@ -155,7 +157,7 @@ class Engine:
         return self.sess.encode(text)
 
     def submit(self, prompt: str, ids: list[int], max_new: int, stop: list[str],
-               sampling: dict, cacheable: int = -1) -> _Job:
+               sampling: dict, cacheable: int = -1, grammar: str = "") -> _Job:
         """`cacheable` bounds how much of `ids` may be snapshotted: the caller knows
         which tail is specific to this request (a chat opener) and therefore will not
         appear in the next turn's prompt. Snapshotting past it wastes the entry —
@@ -168,7 +170,7 @@ class Engine:
                 )
             self._depth += 1
         job = _Job(prompt=prompt, ids=ids, max_new=max_new, stop=stop,
-                   sampling=sampling, cacheable=cacheable)
+                   sampling=sampling, cacheable=cacheable, grammar=grammar)
         self._jobs.put(job)
         self.n_requests += 1
         return job
@@ -210,6 +212,7 @@ class Engine:
             "prefill_chunk": self.prefill_chunk,
             "supports_prefix_cache": self.supports_prefix_cache,
             "supports_cancel": self.supports_cancel,
+            "supports_grammar": self.supports_grammar,
             "context_window": getattr(self.sess, "context_left", None),
         }
         m["cache"] = (self.cache.stats.as_dict(self.cache) if self.cache is not None
@@ -274,6 +277,7 @@ class Engine:
         delta = ids[covered:]
 
         self._apply_sampling(job.sampling)
+        self._apply_grammar(job.grammar)
 
         # 2. prefill only what is new, snapshotting at the aligned boundary so the
         #    cached state is one the un-cached path would also have produced
@@ -337,6 +341,20 @@ class Engine:
             for e in raw
         ]
 
+    def _apply_grammar(self, gbnf: str) -> None:
+        """Constrain (or unconstrain) this reply. Always called, so a grammar never leaks
+        from one request into the next — the session keeps it until told otherwise.
+
+        Unlike a sampling knob this is NOT degraded away on an old runtime: a grammar is a
+        guarantee the client asked for, and answering unconstrained would look like success.
+        The request path checks `supports_grammar` first, so this only fires on a race."""
+        if not self.supports_grammar:
+            if gbnf:
+                raise RuntimeError("this bllm runtime has no grammar support; "
+                                   "install a newer bllm to use response_format/grammar")
+            return
+        self.sess.set_grammar(gbnf)
+
     def _apply_sampling(self, sampling: dict) -> None:
         """set_sampling(), minus any knob this runtime is too old to know about.
 
@@ -362,6 +380,7 @@ class Engine:
         way the pre-rewrite server did. No cache, but still serialized on the worker."""
         self.sess.reset()
         self._apply_sampling(job.sampling)
+        self._apply_grammar(job.grammar)
         t0 = time.perf_counter()
         first: list[float] = []
 
