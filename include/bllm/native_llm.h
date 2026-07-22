@@ -277,7 +277,9 @@ class NativeLlm {
   // arbitrary point therefore changes which tokens went through which graph — and so can
   // change the reply. Snapshot only at multiples of this width and the segmentation is the
   // same as a straight-through prefill, making reuse exact. 0 means any split is exact.
-  int prefill_chunk() const { return hybrid_ ? 0 : dense_->chunk(); }
+  // 0 means the engine prefills one token at a time. The hybrid engine reports 0
+  // unless its .hbm (or a separate hbm_prefill) carries a seq_len=N graph.
+  int prefill_chunk() const { return hybrid_ ? hybrid_->prefill_chunk() : dense_->chunk(); }
 
   // generate() split in two, so a caller can snapshot exactly at the prefill/decode
   // boundary. feed_ids() takes ids rather than text: the server has already tokenized
