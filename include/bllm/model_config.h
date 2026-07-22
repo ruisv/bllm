@@ -21,6 +21,17 @@ struct ChatConfig {
   std::string system = "You are a helpful assistant.";
 };
 
+// The vision tower's own constants. These are per-checkpoint, not universal, and
+// nothing about the compiled graph reveals them — a patch-14 preprocessor feeding a
+// patch-16 graph produces correctly-SHAPED garbage. So the manifest carries them.
+// Defaults are Qwen2.5-Omni / 2.5-VL (patch 14, CLIP normalization); Qwen3.5 sets
+// patch 16 and mean = std = 0.5.
+struct VisionCfg {
+  int patch = 14, merge = 2, temporal = 2;
+  float mean[3] = {0.48145466f, 0.4578275f, 0.40821073f};
+  float std[3]  = {0.26862954f, 0.26130258f, 0.27577711f};
+};
+
 struct ModelConfig {
   std::string dir;                               // model directory (paths below resolve against it)
   std::string name;
@@ -34,7 +45,12 @@ struct ModelConfig {
   std::string mel_filters;                       // resolved path to mel_filters_t.txt (omni audio)
   std::string graph = "qwen35";                  // graph name inside the .hbm (hybrid)
   std::vector<int> eos;                          // stop-token ids
-  std::vector<int> mrope_section;                // omni: rope dim split across (t,h,w)
+  std::vector<int> mrope_section;                // VLM: rope dim split across (t,h,w)
+  // How that split is laid out across rope frequencies. Contiguous runs (Omni,
+  // {16,24,24}) vs interleaved [THWTHW...] (Qwen3.5, {11,11,10}). Invisible on text
+  // — t==h==w collapses both to plain rope — and wrong only once an image arrives.
+  bool mrope_interleaved = false;
+  VisionCfg vision;
   int cache_len = 0;                             // informational
   int bpu_cores = 1;                             // BPU cores the .hbm was compiled for (nash-p multi-core);
                                                  // >1 requires binding to specific cores at submit time
@@ -44,6 +60,10 @@ struct ModelConfig {
   bool is_hybrid() const { return arch == "hybrid"; }
   bool is_omni() const { return arch == "omni"; }
   bool is_embed() const { return arch == "embed"; }
+  // Multimodality is a property of the PACKAGE, not of the decoder family: "omni"
+  // is a dense text tower with vision+audio, Qwen3.5 is a hybrid one with vision.
+  // Anything carrying a vision tower can answer about images.
+  bool has_vision() const { return !visual.empty(); }
 };
 
 // Which runtime drives a model.json package. There is only one now — the native hbDNN

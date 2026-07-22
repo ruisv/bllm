@@ -23,6 +23,7 @@
 #include "bllm/native_embed.h"
 #include "bllm/native_engine.h"
 #include "bllm/native_vision.h"
+#include "bllm/text_engine.h"
 #include "bllm/stop_match.h"
 #include "bllm/tokenizer.h"
 
@@ -30,6 +31,7 @@
 #include <cmath>
 #include <cstring>
 #include <functional>
+#include <initializer_list>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -62,24 +64,46 @@ class NativeVlm {
   explicit NativeVlm(const std::string& model_dir) : NativeVlm(loadModelConfig(model_dir)) {}
   explicit NativeVlm(ModelConfig cfg)
       : cfg_(std::move(cfg)), tk_(Tokenizer::fromFile(cfg_.tokenizer)) {
-    if (!cfg_.is_omni()) throw std::runtime_error("[bllm] NativeVlm needs arch=\"omni\"");
-    text_ = std::make_unique<NativeEngine>(cfg_.hbm, "text_model_prefill", "text_model_decode");
-    if (!text_->embed_input())
-      throw std::runtime_error("[bllm] the omni text tower must take an embedding input");
-    text_->set_rope(cfg_.rope_theta, cfg_.mrope_section);
-    vision_ = std::make_unique<VisionTower>(cfg_.visual);
-    embed_ = std::make_unique<EmbedTable>(cfg_.embed, text_->vocab(), text_->hidden());
-    text_->set_embedder([this](int id, float* dst) { embed_->lookup(id, dst); });
+    if (!cfg_.has_vision())
+      throw std::runtime_error("[bllm] NativeVlm needs a model.json with a 'visual' tower");
+    // Either decoder family can carry a vision tower: "omni" is a dense KV text
+    // tower, Qwen3.5 is a hybrid GDN+attention one. The multimodal logic below is
+    // identical for both — it only ever feeds rows at positions.
+    if (cfg_.is_hybrid())
+      text_ = std::make_unique<HybridTextEngine>(cfg_.hbm, cfg_.embed, cfg_.graph,
+                                                 cfg_.rope_theta, cfg_.mrope_section,
+                                                 cfg_.mrope_interleaved);
+    else if (cfg_.is_omni())
+      text_ = std::make_unique<DenseTextEngine>(cfg_.hbm, cfg_.embed, cfg_.rope_theta,
+                                                cfg_.mrope_section, cfg_.mrope_interleaved);
+    else
+      throw std::runtime_error("[bllm] NativeVlm needs arch \"omni\" or \"hybrid\", got \"" +
+                               cfg_.arch + "\"");
 
+    VisionSpec vs;
+    vs.patch = cfg_.vision.patch;
+    vs.merge = cfg_.vision.merge;
+    vs.temporal = cfg_.vision.temporal;
+    for (int i = 0; i < 3; ++i) { vs.mean[i] = cfg_.vision.mean[i]; vs.std[i] = cfg_.vision.std[i]; }
+    vision_ = std::make_unique<VisionTower>(cfg_.visual, "visual", vs);
+
+    // Qwen3.5's merger emits exactly the text hidden size (1024), so no adapter is
+    // needed — but check, because a mismatch here is a silent garbage splice.
     if (vision_->hidden() != text_->hidden())
-      throw std::runtime_error("[bllm] vision/text hidden size mismatch");
+      throw std::runtime_error("[bllm] vision/text hidden size mismatch: " +
+                               std::to_string(vision_->hidden()) + " vs " +
+                               std::to_string(text_->hidden()));
 
     im_start_ = tk_.token_to_id("<|im_start|>");
     im_end_ = tk_.token_to_id("<|im_end|>");
-    vision_bos_ = tk_.token_to_id("<|vision_bos|>");
-    vision_eos_ = tk_.token_to_id("<|vision_eos|>");
-    audio_bos_ = tk_.token_to_id("<|audio_bos|>");
-    audio_eos_ = tk_.token_to_id("<|audio_eos|>");
+    // Qwen2.5-Omni spells these <|vision_bos|>/<|vision_eos|>; Qwen3.5 spells the
+    // same roles <|vision_start|>/<|vision_end|>. Accept whichever the tokenizer has.
+    vision_bos_ = firstId({"<|vision_bos|>", "<|vision_start|>"});
+    vision_eos_ = firstId({"<|vision_eos|>", "<|vision_end|>"});
+    audio_bos_ = firstId({"<|audio_bos|>", "<|audio_start|>"});
+    audio_eos_ = firstId({"<|audio_eos|>", "<|audio_end|>"});
+    if (vision_bos_ < 0 || vision_eos_ < 0)
+      throw std::runtime_error("[bllm] tokenizer has no vision start/end token");
     if (cfg_.eos.empty()) cfg_.eos = {im_end_, tk_.token_to_id("<|endoftext|>")};
   }
 
@@ -90,8 +114,8 @@ class NativeVlm {
   // avoid resizing twice.
   int vision_image_size() const { return vision_->image_size(); }
   bool has_audio() const { return !cfg_.audio.empty() && !cfg_.mel_filters.empty(); }
-  double last_decode_tps() const { return text_->last_stats().decode_tps; }
-  double last_ttft_ms() const { return text_->last_stats().ttft_ms; }
+  double last_decode_tps() const { return text_->decode_tps(); }
+  double last_ttft_ms() const { return text_->ttft_ms(); }
 
   void set_sampling(float temp, float top_p, int top_k, float rep_pen, uint64_t seed,
                     float min_p = 0.0f, float typ_p = 1.0f, int min_keep = 1,
@@ -225,6 +249,13 @@ class NativeVlm {
   static constexpr double kAudioTokensPerSecond = 25.0;
 
  private:
+  // First of `names` the tokenizer knows, or -1. Lets one session class serve
+  // checkpoints that spell the same special role differently.
+  int firstId(std::initializer_list<const char*> names) const {
+    for (const char* n : names) { const int id = tk_.token_to_id(n); if (id >= 0) return id; }
+    return -1;
+  }
+
   // The turn being assembled: one hidden row + one mrope position per token.
   struct Stream {
     Stream(int hidden, int next) : H(hidden), nextPos(next) {}
@@ -241,7 +272,7 @@ class NativeVlm {
   void appendText(Stream& s, const std::vector<int>& ids) {
     std::vector<float> row(s.H);
     for (int id : ids) {
-      embed_->lookup(id, row.data());
+      text_->embed(id, row.data());
       s.push(row.data(), Pos3::scalar(s.nextPos++));
     }
   }
@@ -466,10 +497,9 @@ class NativeVlm {
 
   ModelConfig cfg_;
   Tokenizer tk_;
-  std::unique_ptr<NativeEngine> text_;
+  std::unique_ptr<TextEngine> text_;
   std::unique_ptr<VisionTower> vision_;
   std::unique_ptr<AudioTower> audio_;           // lazy: only built when audio is fed
-  std::unique_ptr<EmbedTable> embed_;
   NativeSamplingParams sampling_;
   std::vector<std::string> stop_;
   native_detail::BpuSched sched_;

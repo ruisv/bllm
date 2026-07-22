@@ -21,6 +21,7 @@
 #include "bllm/native_engine.h"   // native_detail::{Mem, check, elemSize, alignUp, kAlign}
 #include "bllm/native_sampler.h"  // bllm::Sampler (temperature/top-k/top-p/rep-pen)
 
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -31,7 +32,7 @@
 
 namespace bllm {
 
-struct HybridStats { double decode_tps = 0, prefill_tps = 0; int ntok = 0; };
+struct HybridStats { double decode_tps = 0, prefill_tps = 0, ttft_ms = 0; int ntok = 0; };
 
 class NativeHybridEngine {
   using Mem = native_detail::Mem;
@@ -127,6 +128,29 @@ class NativeHybridEngine {
   void set_sched(const native_detail::BpuSched& s) { sched_ = s; }
   const native_detail::BpuSched& sched() const { return sched_; }
 
+  // mrope split across (t,h,w). Text-only models leave this empty and get plain
+  // 1-D rope; a VLM build passes the checkpoint's section. Qwen3.5 is INTERLEAVED
+  // ({11,11,10}, [THWTHW...]), which is a different layout from Omni's contiguous
+  // {16,24,24} — see native_detail::mropeAxisMap. Nothing here touches the compiled
+  // graph: cos/sin are host-computed vectors fed in per step.
+  void set_mrope(const std::vector<int>& section, bool interleaved) {
+    sec_ = native_detail::mropeAxisMap(ROT_ / 2, section, interleaved);
+  }
+
+  // Start the clock for time-to-first-token. Call before feeding a turn so TTFT
+  // includes the prefill (and, for a VLM, the vision encode) rather than just the
+  // first decode step.
+  void mark_turn_start() { tTurn_ = std::chrono::steady_clock::now(); turnMarked_ = true; }
+
+  // Look a token id up in the engine's own fp16 embedding table. Exposed so a VLM
+  // session can build text rows from the SAME table the engine decodes against,
+  // instead of mapping a second 500 MB copy.
+  void embed_row(int id, float* dst) const {
+    if (id < 0 || id >= vocab_) throw std::runtime_error("[hybrid] embed id out of range");
+    const __fp16* row = emb_.data() + (size_t)id * H_;
+    for (int i = 0; i < H_; ++i) dst[i] = (float)row[i];
+  }
+
   int hidden() const { return H_; }
   int vocab() const { return vocab_; }
   int n_cache() const { return nCache_; }
@@ -147,7 +171,7 @@ class NativeHybridEngine {
       std::memset(bufA_[c].p(), 0, inBytes_[kFixedIn + c]); bufA_[c].clean();
       std::memset(bufB_[c].p(), 0, inBytes_[kFixedIn + c]); bufB_[c].clean();
     }
-    P_ = 0; phase_ = false; curLogits_ = nullptr;
+    P_ = 0; maxPos_ = -1; phase_ = false; curLogits_ = nullptr;
   }
 
   // Save/restore the mixed SSM+KV state — libxlm's path_prompt_cache for the hybrid engine.
@@ -189,7 +213,7 @@ class NativeHybridEngine {
     if (!curLogits_valid_) throw std::runtime_error("[hybrid] no state to save — feed a prompt first");
     const int32_t logitBytes = (int32_t)out_[0].properties.alignedByteSize;
     // CL_ goes in the header so a blob carries the window it was trimmed against.
-    const int32_t hdr[] = {kStateMagic, nCache_, vocab_, P_, logitBytes, CL_};
+    const int32_t hdr[] = {kStateMagic, nCache_, vocab_, P_, logitBytes, CL_, maxPos_};
     f.write((const char*)hdr, sizeof(hdr));
     for (int c = 0; c < nCache_; ++c) {
       const int32_t b = (int32_t)inBytes_[kFixedIn + c];
@@ -211,7 +235,7 @@ class NativeHybridEngine {
     f.write((const char*)logitMem_.p(), (size_t)logitBytes);
   }
   void readState(std::istream& f) {
-    int32_t hdr[6];
+    int32_t hdr[7];
     f.read((char*)hdr, sizeof(hdr));
     const int32_t logitBytes = (int32_t)out_[0].properties.alignedByteSize;
     if (!f || hdr[0] != kStateMagic || hdr[1] != nCache_ || hdr[2] != vocab_ ||
@@ -236,7 +260,8 @@ class NativeHybridEngine {
     }
     f.read((char*)logitMem_.p(), (size_t)logitBytes);
     if (!f) throw std::runtime_error("[hybrid] truncated / corrupt state");
-    P_ = hdr[3]; phase_ = false; curLogits_ = logitMem_.p(); curLogits_valid_ = true;
+    P_ = hdr[3]; maxPos_ = hdr[6]; phase_ = false;
+    curLogits_ = logitMem_.p(); curLogits_valid_ = true;
   }
 
  public:
@@ -290,6 +315,10 @@ class NativeHybridEngine {
     for (int i = 0; i < p.max_new && curLogits_valid_ && P_ < CL_; ++i) {
       int tok = s.pick(logit, vocab_);
       if (tok < 0) break;                 // a constraint (grammar) has nothing left to allow
+      // TTFT is measured from mark_turn_start(), so it includes the prefill (and a
+      // VLM's vision encode) — not just this decode step.
+      if (i == 0 && turnMarked_)
+        stats_.ttft_ms = std::chrono::duration<double, std::milli>(clk::now() - tTurn_).count();
       if (eos.count(tok)) break;
       gen.push_back(tok);
       // Report against the logits this token came out of, before step() advances them.
@@ -306,17 +335,26 @@ class NativeHybridEngine {
 
   // run one decode step for `token`; leaves logits available for argmax()/generate().
   void step(int token) {
-    // x = embed[token]  (fp16 -> f32)
     float* x = reinterpret_cast<float*>(fixedMem_[0].p());
-    const __fp16* row = emb_.data() + (size_t)token * H_;
+    const __fp16* row = emb_.data() + (size_t)token * H_;   // fp16 table -> f32 input
     for (int i = 0; i < H_; ++i) x[i] = (float)row[i];
+    stepRow(nullptr, Pos3::scalar(maxPos_ + 1));
+  }
+
+  // Feed one already-embedded row at an explicit 3-D mrope position. This is the
+  // whole multimodal seam: the graph's input[0] was always an embedding, so a
+  // vision row goes in exactly like a token row does — only the position differs.
+  // `x == nullptr` means the caller already wrote into the input buffer.
+  void stepRow(const float* x, Pos3 pos) {
+    if (x) std::memcpy(fixedMem_[0].p(), x, (size_t)H_ * sizeof(float));
     fixedMem_[0].clean();
-    // cos/sin for position P_
+    // cos/sin for `pos`, per the mrope axis map (plain rope when t==h==w)
     float* cs = reinterpret_cast<float*>(fixedMem_[1].p());
     float* sn = reinterpret_cast<float*>(fixedMem_[2].p());
     const int half = ROT_ / 2;
+    const int32_t pv[3] = {pos.t, pos.h, pos.w};
     for (int i = 0; i < half; ++i) {
-      double ang = (double)P_ * inv_[i];
+      double ang = (double)pv[sec_.empty() ? 0 : sec_[i]] * inv_[i];
       float c = (float)std::cos(ang), s = (float)std::sin(ang);
       cs[i] = cs[i + half] = c; sn[i] = sn[i + half] = s;
     }
@@ -340,7 +378,29 @@ class NativeHybridEngine {
     curLogits_ = logitMem_.p(); curLogits_valid_ = true;
     phase_ = !phase_;
     ++P_;
+    // P_ counts cache slots consumed; maxPos_ tracks how far rope has advanced.
+    // They differ once an image is in the stream: 196 rows share one t but span a
+    // 14x14 h/w grid, so the next text token continues from the grid's far corner,
+    // not from P_.
+    if (pos.max() > maxPos_) maxPos_ = pos.max();
   }
+
+  // Splice a run of already-embedded rows in at explicit positions — vision rows,
+  // or text rows the caller embedded itself. `pos == nullptr` continues the plain
+  // scalar sequence.
+  void feed_embeds(const float* rows, int n, const Pos3* pos) {
+    if (n > context_left())
+      throw std::runtime_error("[hybrid] context overflow: " + std::to_string(n) +
+                               " rows do not fit in the remaining " +
+                               std::to_string(context_left()) + " of " +
+                               std::to_string(CL_) + " cache slots.");
+    for (int i = 0; i < n; ++i)
+      stepRow(rows + (size_t)i * H_, pos ? pos[i] : Pos3::scalar(maxPos_ + 1));
+  }
+
+  // The next plain-rope position — what a text token following the stream so far
+  // should use. Not the same as position() once an image has been fed.
+  int next_pos() const { return maxPos_ + 1; }
 
   int argmax() const {
     if (!curLogits_valid_) return -1;
@@ -417,12 +477,17 @@ class NativeHybridEngine {
   int H_ = 0, ROT_ = 0, nHead_ = 0, CL_ = 0, nCache_ = 0, vocab_ = 0, logitType_ = 0;
   float logitScale_ = 1.0f;
   double theta_ = 1e7;
-  int P_ = 0;
+  std::vector<uint8_t> sec_;      // per rope frequency: which of (t,h,w) it reads
+  int P_ = 0, maxPos_ = -1;
+  std::chrono::steady_clock::time_point tTurn_{};
+  bool turnMarked_ = false;
   bool phase_ = false, curLogits_valid_ = false;
   void* curLogits_ = nullptr;
-  static constexpr int32_t kStateMagic = 0x424C4B49;   // "BLKI" — hybrid prompt-cache tag
-  // Bumped from "BLKH" when K/V trimming changed the payload: an old blob has a
-  // 5-word header and full-window K/V, so it must be rejected rather than misread.
+  static constexpr int32_t kStateMagic = 0x424C4B4A;   // "BLKJ" — hybrid prompt-cache tag
+  // Bumped from "BLKH" when K/V trimming changed the payload, then to "BLKJ" when
+  // maxPos_ joined the header. A restored VLM context has maxPos_ != P_-1 (an image
+  // occupies 196 slots but advances rope by only 14), so deriving it would silently
+  // mis-position every token after a restore. Old blobs are rejected, not misread.
   HybridStats stats_;
   std::vector<TokenLogprobs> logprobs_;    // last generate()'s, when asked for
 };

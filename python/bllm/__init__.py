@@ -435,7 +435,9 @@ if _HAVE_NATIVE:
     class NativeVlmSession:
         """Unified native multimodal session — image + text, no libxlm.
 
-        Load an ``arch="omni"`` model directory. Media may be file paths or raw
+        Load a model directory carrying a ``visual`` tower — ``arch="omni"``
+        (Qwen2.5-Omni: dense text tower, vision + audio) or ``arch="hybrid"``
+        (Qwen3.5: Gated-DeltaNet text tower, vision). Media may be file paths or raw
         arrays — HxWx3 uint8 frames and 16 kHz mono float32 PCM, what a camera or
         microphone pipeline already has — so no file round-trip is needed.
 
@@ -595,7 +597,7 @@ def load(path: str, *, backend: str = "auto", **kwargs):
 
     Routing:
       * a native package (a directory with model.json) → NativeSession (dense/hybrid) or
-        NativeVlmSession (omni), by its `arch`;
+        NativeVlmSession (anything carrying a `visual` tower), by its `arch`;
       * a bare `.hbm` + tokenizer_dir (an OE-LLM package) → NativeSession, by synthesizing a
         dense model.json from the `.hbm` + tokenizer dir (bllm._modelmeta).
     Extra kwargs go to the chosen session's constructor.
@@ -614,7 +616,10 @@ def load(path: str, *, backend: str = "auto", **kwargs):
     if manifest is not None:
         _reject_libxlm(manifest.get("backend", "auto"))
         arch = manifest.get("arch", "dense")
-        if arch == "omni":
+        # Multimodality is a property of the package, not of the decoder family: an
+        # "omni" package is a dense text tower with vision+audio, a Qwen3.5 VLM
+        # package is a hybrid one with vision. Route on the vision tower's presence.
+        if arch == "omni" or manifest.get("visual"):
             return NativeVlmSession(path, **kwargs)
         if arch == "embed":
             raise ValueError("arch='embed' is an encoder, not a chat session; use the "

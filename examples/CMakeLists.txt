@@ -28,4 +28,10 @@ if(BLLM_HAVE_NATIVE AND BLLM_HAVE_TOKENIZERS)
   target_include_directories(bllm_vlm_native PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_SOURCE_DIR}/vendor/stb" "${CMAKE_SOURCE_DIR}/vendor/dr_libs")
+
+  # Vision tower alone (bllm::VisionTower): scores a freshly compiled tower against
+  # the HF fp32 reference, with the host preprocessing either in or out of the path.
+  add_executable(bllm_vision_probe vision_probe.cc)
+  target_link_libraries(bllm_vision_probe PRIVATE bllm::native)
+  target_include_directories(bllm_vision_probe PRIVATE "${CMAKE_SOURCE_DIR}/vendor/stb")
 endif()

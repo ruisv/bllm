@@ -17,6 +17,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -70,6 +71,12 @@ inline Coeffs makeCoeffs(int inLen, int outLen) {
 // baked into the graph when the vision recipe is exported (the official Omni tower is
 // 448², but a re-export at 224² costs 4x fewer decoder tokens per frame). So derive it
 // from the graph's patch count instead of hardcoding it.
+// Patch geometry and pixel normalization are NOT universal — they are per-tower
+// constants that must come from the checkpoint that built the graph:
+//   Qwen2.5-Omni / 2.5-VL : patch 14, CLIP mean/std   (the defaults below)
+//   Qwen3.5               : patch 16, mean = std = 0.5
+// Getting them wrong produces a graph-shaped tensor full of wrong numbers, which
+// no shape check would catch — so model.json carries them (see ModelConfig::vision).
 struct VisionSpec {
   int image_size = 448;   // square side the graph was compiled for
   int patch = 14;
@@ -152,7 +159,12 @@ inline void patchify(const std::vector<float>* const* frames, const VisionSpec& 
 // n_token()×hidden floats owned by the tower (valid until the next call).
 class VisionTower {
  public:
-  explicit VisionTower(const std::string& hbm, const char* graph = "visual") {
+  // `spec` supplies the tower's own constants (patch size, merge, pixel
+  // normalization); image_size is still DERIVED from the graph, so a re-export at
+  // another resolution needs no manifest edit.
+  explicit VisionTower(const std::string& hbm, const char* graph = "visual",
+                       const VisionSpec& spec = {})
+      : spec_(spec) {
     const char* files[] = {hbm.c_str()};
     BLLM_NATIVE_CK(hbDNNInitializeFromFiles(&packed_, files, 1));
     g_.init(packed_, graph);
@@ -188,6 +200,16 @@ class VisionTower {
 
   // A still image: the same frame fills both temporal slots, as HF does.
   const float* encode(const uint8_t* rgb, int w, int h) { return encode_pair(rgb, rgb, w, h); }
+
+  // An already-patchified tensor ([n_patch, row_len], HF's `pixel_values` layout).
+  // Bypasses our resize/normalize/patchify entirely — the seam that lets a board
+  // test tell a quantization problem apart from a preprocessing one.
+  const float* encode_patches(const float* patches) {
+    std::memcpy(g_.inPtr(0), patches, (size_t)nPatch_ * rowLen_ * sizeof(float));
+    g_.inClean(0);
+    g_.infer();
+    return (const float*)g_.outPtr(0);
+  }
 
   // Two consecutive video frames (same size) -> one temporal grid step of tokens.
   const float* encode_pair(const uint8_t* rgb0, const uint8_t* rgb1, int w, int h) {

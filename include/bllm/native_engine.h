@@ -190,6 +190,34 @@ inline int argmaxS16(const int16_t* row, int n) {
   return best;
 }
 
+// Which of the three mrope axes (0=t, 1=h, 2=w) each rope frequency reads, for
+// `half` = rot/2 frequencies.
+//
+// Two families, and they are NOT interchangeable:
+//   * CONTIGUOUS (Qwen2.5-Omni, section {16,24,24}) — a run of t, then h, then w.
+//   * INTERLEAVED (Qwen3.5, section {11,11,10}) — [THWTHWTHW...TT]. Upstream builds
+//     it by starting from all-t and overwriting strided slices: h takes
+//     range(1, sec[1]*3, 3) and w takes range(2, sec[2]*3, 3), so anything past
+//     those strided runs stays t. Reproduced exactly, not approximated by i%3 —
+//     that shortcut happens to agree for {11,11,10} but not in general.
+// For text tokens t==h==w, so both collapse to plain 1-D rope; the layout only
+// starts to matter once an image supplies differing h/w.
+inline std::vector<uint8_t> mropeAxisMap(int half, const std::vector<int>& section,
+                                         bool interleaved) {
+  std::vector<uint8_t> sec((size_t)half, 0);
+  if (section.empty()) return sec;
+  if (interleaved) {
+    for (int d = 1; d <= 2 && d < (int)section.size(); ++d)
+      for (int i = d; i < section[d] * 3 && i < half; i += 3) sec[i] = (uint8_t)d;
+    return sec;
+  }
+  int d = 0;
+  for (int s = 0; s < (int)section.size() && d < half; ++s)
+    for (int k = 0; k < section[s] && d < half; ++k) sec[d++] = (uint8_t)s;
+  if (d != half) throw std::runtime_error("[native] mrope_section does not cover rot/2");
+  return sec;
+}
+
 }  // namespace native_detail
 
 // NativeSamplingParams now lives in native_sampler.h (shared with bllm::Sampler).
@@ -309,17 +337,12 @@ class NativeEngine {
   void set_embedder(std::function<void(int, float*)> fn) { embedder_ = std::move(fn); }
 
   // Embed-mode only: rope base + mrope section split (sums to rot/2; empty = plain).
-  void set_rope(double theta, std::vector<int> mrope_section) {
+  // `interleaved` picks Qwen3.5's [THWTHW...] layout over Omni's contiguous runs —
+  // see native_detail::mropeAxisMap.
+  void set_rope(double theta, std::vector<int> mrope_section, bool interleaved = false) {
     inv_.resize(rot_ / 2);
     for (int i = 0; i < rot_ / 2; ++i) inv_[i] = std::pow(theta, -(double)(2 * i) / rot_);
-    sec_.assign(rot_ / 2, 0);
-    if (!mrope_section.empty()) {
-      int d = 0;
-      for (int s = 0; s < (int)mrope_section.size() && d < rot_ / 2; ++s)
-        for (int k = 0; k < mrope_section[s] && d < rot_ / 2; ++k) sec_[d++] = s;
-      if (d != rot_ / 2)
-        throw std::runtime_error("[native] mrope_section does not cover rot/2");
-    }
+    sec_ = native_detail::mropeAxisMap(rot_ / 2, mrope_section, interleaved);
   }
 
   void reset() {
@@ -746,7 +769,7 @@ class NativeEngine {
   std::vector<TokenLogprobs> logprobs_;                // last generate()'s, when asked for
   std::function<void(int, float*)> embedder_;
   std::vector<double> inv_;
-  std::vector<int> sec_;
+  std::vector<uint8_t> sec_;
   std::vector<float> rowBuf_;
 };
 

@@ -22,6 +22,15 @@ Ships with the package, so `conda install bllm` puts it on PATH:
         --audio Audio.hbm --mel-filters mel_filters_t.txt \
         --embed embed_tokens.bin --tokenizer tokenizer.json
 
+    # multimodal hybrid (Qwen3.5): the SAME hybrid text .hbm plus a vision tower.
+    # Qwen3.5 ships as image-text-to-text; a text-only package is just a build that
+    # dropped the vision half. Patch geometry, normalization and the interleaved
+    # mrope layout are NOT discoverable from the .hbm, so they are all required.
+    bllm-make-model-dir hybrid out_dir --hbm qwen3.5-0.8b.hbm --embed embed_tokens_fp16.bin \
+        --tokenizer tokenizer.json --visual qwen35_visual_448.hbm \
+        --mrope-section 11 11 10 --mrope-interleaved \
+        --vision-patch 16 --vision-mean 0.5 --vision-std 0.5
+
 For the official D-Robotics Omni release, every input already exists in the SDK —
 note that `embed_tokens.bin` sits in `model/` under a name that does not mention
 Omni, and is a separate download in `resolve_model_nash-m.txt`:
@@ -151,7 +160,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--hbm", required=True, help="text .hbm (prefill+decode)")
     ap.add_argument("--tokenizer", required=True, help="tokenizer.json")
     ap.add_argument("--embed", help="host embedding table (required: hybrid, omni)")
-    ap.add_argument("--visual", help="vision tower .hbm (omni)")
+    ap.add_argument("--visual", help="vision tower .hbm (omni, or a hybrid VLM like Qwen3.5)")
+    ap.add_argument("--vision-patch", type=int, help="vision patch size (14 omni, 16 Qwen3.5)")
+    ap.add_argument("--vision-merge", type=int, help="spatial merge size (default 2)")
+    ap.add_argument("--vision-mean", type=float, nargs="+",
+                    help="pixel mean, 1 or 3 values (CLIP for omni, 0.5 for Qwen3.5)")
+    ap.add_argument("--vision-std", type=float, nargs="+", help="pixel std, 1 or 3 values")
+    ap.add_argument("--mrope-interleaved", action="store_true",
+                    help="rope layout is [THWTHW...] (Qwen3.5) rather than contiguous runs (omni)")
     ap.add_argument("--audio", help="audio tower .hbm (omni)")
     ap.add_argument("--mel-filters", help="mel_filters_t.txt (omni audio)")
     ap.add_argument("--name", help="display name (default: out_dir basename)")
@@ -162,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="BPU core count the .hbm was compiled for (S600/nash-p; a "
                          "core_num=N hbm must be bound to N specific cores at runtime)")
     ap.add_argument("--mrope-section", type=int, nargs=3, metavar=("T", "H", "W"),
-                    help="omni rope dim split (default 16 24 24)")
+                    help="rope dim split (omni default 16 24 24; Qwen3.5 is 11 11 10)")
     ap.add_argument("--eos", type=int, nargs="+", help="override the stop-token ids")
     ap.add_argument("--system", default="You are a helpful assistant.")
     ap.add_argument("--copy", action="store_true", help="copy payload instead of symlinking")
@@ -174,6 +190,20 @@ def main(argv: list[str] | None = None) -> int:
         ap.error(f"{args.arch} needs --embed (the host embedding table).{hint}")
     if args.arch == "omni" and not args.visual:
         ap.error(f"omni needs --visual (the vision tower .hbm) — {OMNI_SOURCES['--visual']}.")
+    if args.visual and args.arch == "hybrid":
+        # Qwen3.5 is natively image-text-to-text; the vision half is only absent from
+        # a build because the compile dropped it. Nothing about the tower .hbm reveals
+        # its patch size or normalization, and mrope layout differs from omni's, so
+        # both have to be stated or the images silently decode as noise.
+        if not args.mrope_section:
+            ap.error("a hybrid VLM needs --mrope-section (Qwen3.5: 11 11 10)")
+        if not args.mrope_interleaved:
+            ap.error("a hybrid VLM needs --mrope-interleaved (Qwen3.5 lays rope out "
+                     "[THWTHW...]; without it every image position is wrong)")
+        if not args.vision_patch:
+            ap.error("a hybrid VLM needs --vision-patch (Qwen3.5: 16)")
+        if not args.vision_mean or not args.vision_std:
+            ap.error("a hybrid VLM needs --vision-mean and --vision-std (Qwen3.5: 0.5 0.5)")
     if bool(args.audio) != bool(args.mel_filters):
         ap.error("--audio and --mel-filters go together: the audio tower needs its mel "
                  f"filter bank ({OMNI_SOURCES['--mel-filters']}). Pass both, or neither "
@@ -224,16 +254,34 @@ def main(argv: list[str] | None = None) -> int:
     if args.arch == "hybrid":
         cfg["graph"] = args.graph or "qwen35"
         cfg["rope_theta"] = args.rope_theta or 1e7
+        if args.visual:
+            cfg["visual"] = "visual.hbm"
+            payload["visual.hbm"] = Path(args.visual)
+            cfg["mrope_section"] = list(args.mrope_section)
+            cfg["mrope_interleaved"] = True
     if args.arch == "omni":
         cfg["visual"] = "visual.hbm"
         payload["visual.hbm"] = Path(args.visual)
         cfg["rope_theta"] = args.rope_theta or 1e6
         cfg["mrope_section"] = list(args.mrope_section or (16, 24, 24))
+        if args.mrope_interleaved:
+            cfg["mrope_interleaved"] = True
         if args.audio:
             cfg["audio"] = "audio.hbm"
             cfg["mel_filters"] = "mel_filters_t.txt"
             payload["audio.hbm"] = Path(args.audio)
             payload["mel_filters_t.txt"] = Path(args.mel_filters)
+
+    if args.visual:
+        def _triple(v):
+            return [float(v[0])] * 3 if len(v) == 1 else [float(x) for x in v]
+        vis = {}
+        if args.vision_patch: vis["patch"] = args.vision_patch
+        if args.vision_merge: vis["merge"] = args.vision_merge
+        if args.vision_mean: vis["mean"] = _triple(args.vision_mean)
+        if args.vision_std: vis["std"] = _triple(args.vision_std)
+        if vis:
+            cfg["vision"] = vis
 
     for dst_name, src in payload.items():
         link_or_copy(src, out / dst_name, args.copy)
@@ -242,8 +290,8 @@ def main(argv: list[str] | None = None) -> int:
                                     encoding="utf-8")
     print(f"[ok] {out}/model.json   (eos from {eos_src})")
     print(json.dumps(cfg, indent=2, ensure_ascii=False))
-    print(f"\nload it:  bllm.NativeSession(\"{out}\")" if args.arch != "omni"
-          else f"\nload it:  bllm.NativeVlmSession(\"{out}\")")
+    print(f"\nload it:  bllm.NativeVlmSession(\"{out}\")" if cfg.get("visual")
+          else f"\nload it:  bllm.NativeSession(\"{out}\")")
     return 0
 
 

@@ -44,6 +44,23 @@ ModelConfig loadModelConfig(const std::string& dir) {
   c.mel_filters = resolve(dir, j.value("mel_filters", ""));
   if (j.contains("eos")) c.eos = j.at("eos").get<std::vector<int>>();
   if (j.contains("mrope_section")) c.mrope_section = j.at("mrope_section").get<std::vector<int>>();
+  c.mrope_interleaved = j.value("mrope_interleaved", false);
+  if (j.contains("vision")) {
+    const auto& v = j.at("vision");
+    c.vision.patch = v.value("patch", c.vision.patch);
+    c.vision.merge = v.value("merge", c.vision.merge);
+    c.vision.temporal = v.value("temporal", c.vision.temporal);
+    if (v.contains("mean")) {
+      const auto m = v.at("mean").get<std::vector<float>>();
+      if (m.size() != 3) throw std::runtime_error("[bllm] vision.mean must have 3 entries");
+      for (int i = 0; i < 3; ++i) c.vision.mean[i] = m[i];
+    }
+    if (v.contains("std")) {
+      const auto s = v.at("std").get<std::vector<float>>();
+      if (s.size() != 3) throw std::runtime_error("[bllm] vision.std must have 3 entries");
+      for (int i = 0; i < 3; ++i) c.vision.std[i] = s[i];
+    }
+  }
   if (j.contains("chat")) {
     const auto& ch = j.at("chat");
     c.chat.format = ch.value("format", "chatml");
@@ -64,6 +81,10 @@ ModelConfig loadModelConfig(const std::string& dir) {
   if (c.is_omni() && c.visual.empty())
     throw std::runtime_error("[bllm] omni model.json missing 'visual' (vision tower .hbm)");
   if (c.is_omni() && c.mrope_section.empty()) c.mrope_section = {16, 24, 24};
+  if (c.has_vision() && c.mrope_section.empty())
+    throw std::runtime_error("[bllm] a model.json with 'visual' needs 'mrope_section' — "
+                             "image rows carry 3-D positions and plain rope would "
+                             "collapse the whole patch grid onto one position");
   return c;
 }
 
