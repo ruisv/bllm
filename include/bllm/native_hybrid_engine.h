@@ -490,6 +490,17 @@ class NativeHybridEngine {
   // model once per token; this consumes N per weight load. Its absence is NOT an
   // error — an older .hbm simply keeps today's chunk=1 behaviour.
   void attachPrefill(const std::string& name) {
+    // Ask what graphs the .hbm actually holds first. Calling GetModelHandle for a
+    // missing graph works (it returns non-zero) but the DNN layer logs it at ERROR
+    // level, so every load of a model without a prefill graph — which is every
+    // model today — printed a red "Model not exists" line that looks like a fault.
+    const char** names = nullptr;
+    int32_t count = 0;
+    if (hbDNNGetModelNameList(&names, &count, packed_) != 0 || !names) { ph_ = nullptr; return; }
+    bool present = false;
+    for (int32_t i = 0; i < count; ++i)
+      if (names[i] && name == names[i]) { present = true; break; }
+    if (!present) { ph_ = nullptr; return; }
     if (hbDNNGetModelHandle(&ph_, packed_, name.c_str()) != 0) { ph_ = nullptr; return; }
     int ic = 0, oc = 0;
     if (hbDNNGetInputCount(&ic, ph_) != 0 || hbDNNGetOutputCount(&oc, ph_) != 0 ||
