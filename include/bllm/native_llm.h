@@ -15,6 +15,7 @@
 #include "bllm/stop_match.h"
 #include "bllm/tokenizer.h"
 
+#include <array>
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -161,6 +162,15 @@ class NativeLlm {
 
   double last_decode_tps() const {
     return hybrid_ ? hybrid_->last_stats().decode_tps : dense_->last_stats().decode_tps;
+  }
+
+  // Per-token host/BPU split of the last turn, in ms: {prep, infer, sample}.
+  // The graph's own time is measurable with hrt_model_exec, so this is what makes
+  // the REMAINDER attributable instead of guessed at. Hybrid only; zeros on dense.
+  std::array<double, 3> last_timing() const {
+    if (!hybrid_) return {0.0, 0.0, 0.0};
+    const auto& st = hybrid_->last_stats();
+    return {st.prep_ms, st.infer_ms, st.sample_ms};
   }
 
   // Fresh conversation / context.

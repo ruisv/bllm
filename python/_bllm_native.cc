@@ -124,6 +124,14 @@ NB_MODULE(_bllm_native, m) {
           "on any of those strings (trimmed from the reply).")
       .def("reset", &bllm::NativeLlm::reset, "Start a fresh conversation.")
       .def(
+          "last_timing",
+          [](bllm::NativeLlm& llm) {
+            const auto t = llm.last_timing();
+            return nb::make_tuple(t[0], t[1], t[2]);
+          },
+          "Per-token (prep_ms, infer_ms, sample_ms) of the last turn — host prep, "
+          "BPU submit+wait, and vocabulary scan. Hybrid models only.")
+      .def(
           "perplexity",
           [](bllm::NativeLlm& llm, const std::string& text) {
             double v; { nb::gil_scoped_release r; v = llm.perplexity(text); }

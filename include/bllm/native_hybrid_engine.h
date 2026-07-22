@@ -32,7 +32,16 @@
 
 namespace bllm {
 
-struct HybridStats { double decode_tps = 0, prefill_tps = 0, ttft_ms = 0; int ntok = 0; };
+struct HybridStats {
+  double decode_tps = 0, prefill_tps = 0, ttft_ms = 0;
+  int ntok = 0;
+  // Per-token host/BPU split over the last generate(), in ms. The BPU graph time is
+  // measurable independently (hrt_model_exec), so knowing where the REST goes is the
+  // only way to tell a host-side cost from a graph-side one instead of guessing.
+  double prep_ms = 0;     // embed lookup + rope + mask + cache clean
+  double infer_ms = 0;    // submit + wait  (should track the profiler's number)
+  double sample_ms = 0;   // scanning/sorting the vocab to pick a token
+};
 
 class NativeHybridEngine {
   using Mem = native_detail::Mem;
@@ -331,8 +340,11 @@ class NativeHybridEngine {
     logprobs_.clear();
     using clk = std::chrono::steady_clock;
     auto t0 = clk::now();
+    accPrep_ = accInfer_ = accSample_ = 0;
     for (int i = 0; i < p.max_new && curLogits_valid_ && P_ < CL_; ++i) {
+      const auto tSamp0 = clk::now();
       int tok = s.pick(logit, vocab_);
+      accSample_ += std::chrono::duration<double, std::milli>(clk::now() - tSamp0).count();
       if (tok < 0) break;                 // a constraint (grammar) has nothing left to allow
       // TTFT is measured from mark_turn_start(), so it includes the prefill (and a
       // VLM's vision encode) — not just this decode step.
@@ -349,6 +361,12 @@ class NativeHybridEngine {
     double dt = std::chrono::duration<double>(clk::now() - t0).count();
     stats_.ntok = (int)gen.size();
     stats_.decode_tps = dt > 0 ? gen.size() / dt : 0.0;
+    if (!gen.empty()) {
+      const double n = (double)gen.size();
+      stats_.prep_ms = accPrep_ / n;
+      stats_.infer_ms = accInfer_ / n;
+      stats_.sample_ms = accSample_ / n;
+    }
     return gen;
   }
 
@@ -365,6 +383,7 @@ class NativeHybridEngine {
   // vision row goes in exactly like a token row does — only the position differs.
   // `x == nullptr` means the caller already wrote into the input buffer.
   void stepRow(const float* x, Pos3 pos) {
+    const auto tPrep0 = std::chrono::steady_clock::now();
     if (x) std::memcpy(fixedMem_[0].p(), x, (size_t)H_ * sizeof(float));
     fixedMem_[0].clean();
     // cos/sin for `pos`, per the mrope axis map (plain rope when t==h==w)
@@ -389,11 +408,15 @@ class NativeHybridEngine {
     std::vector<Mem>& nxt = phase_ ? bufA_ : bufB_;
     for (int c = 0; c < nCache_; ++c) { in_[kFixedIn + c].sysMem = cur[c].m; out_[1 + c].sysMem = nxt[c].m; }
     // infer
+    const auto tInfer0 = std::chrono::steady_clock::now();
+    accPrep_ += std::chrono::duration<double, std::milli>(tInfer0 - tPrep0).count();
     hbUCPTaskHandle_t task = nullptr;
     BLLM_NATIVE_CK(hbDNNInferV2(&task, out_.data(), in_.data(), h_));
     native_detail::submitAndWait(task, sched_);
     hbUCPReleaseTask(task);
     logitMem_.inval();                          // logits are CPU-read
+    accInfer_ += std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - tInfer0).count();
     curLogits_ = logitMem_.p(); curLogits_valid_ = true;
     phase_ = !phase_;
     ++P_;
@@ -673,6 +696,7 @@ class NativeHybridEngine {
   int P_ = 0, maxPos_ = -1;
   std::chrono::steady_clock::time_point tTurn_{};
   bool turnMarked_ = false;
+  double accPrep_ = 0, accInfer_ = 0, accSample_ = 0;   // ms, reset per generate()
   bool phase_ = false, curLogits_valid_ = false;
   void* curLogits_ = nullptr;
   static constexpr int32_t kStateMagic = 0x424C4B4A;   // "BLKJ" — hybrid prompt-cache tag

@@ -170,16 +170,39 @@ class Sampler {
     //    this cut cannot win). Materialise (adjusted logit, id).
     const int cap = std::max({p_.top_k > 0 ? p_.top_k : 0, 512, p_.min_keep});
     const int k = std::min(cap, n);
-    if ((int)idx_.size() != n) { idx_.resize(n); for (int i = 0; i < n; ++i) idx_[i] = i; }
-    std::nth_element(idx_.begin(), idx_.begin() + k, idx_.end(),
-                     [&](int a, int b) { return logit(a) > logit(b); });
+
+    // Top-k by raw logit, via a bounded MIN-heap over a single sequential scan.
+    //
+    // This was std::nth_element over an index array with `logit(a) > logit(b)` as
+    // the comparator, which makes every one of the ~n comparisons a random access
+    // into the logits. On Qwen3.5's 248320-entry vocabulary that measured
+    // 4.25 ms/token against 0.38 ms for the single sequential scan greedy does —
+    // i.e. sampling cost 9% of a decode step purely in candidate selection.
+    //
+    // Scanning in order and keeping a k-sized min-heap touches each logit once and
+    // in order; the heap only pays log(k) on an actual improvement, which happens
+    // about k*ln(n/k) times, not n times.
+    auto worse = [](const Scored& a, const Scored& b) { return a.v > b.v; };  // min-heap
+    top_.clear();
+    top_.reserve(k);
+    for (int i = 0; i < n; ++i) {
+      const float v = logit(i);
+      if ((int)top_.size() < k) {
+        top_.push_back({v, i});
+        if ((int)top_.size() == k) std::make_heap(top_.begin(), top_.end(), worse);
+      } else if (v > top_.front().v) {
+        std::pop_heap(top_.begin(), top_.end(), worse);
+        top_.back() = {v, i};
+        std::push_heap(top_.begin(), top_.end(), worse);
+      }
+    }
+
+    idx_.resize(top_.size());
+    for (size_t i = 0; i < top_.size(); ++i) idx_[i] = top_[i].id;
 
     std::vector<Cand> c;
     c.reserve(k + p_.logit_bias.size());
-    for (int i = 0; i < k; ++i) {
-      const int id = idx_[i];
-      c.push_back({adjust(id, logit(id)), 0.0, id});
-    }
+    for (const Scored& t : top_) c.push_back({adjust(t.id, t.v), 0.0, t.id});
     // A bias can lift a token from anywhere in the tail above the cut, and the cut was
     // taken on RAW logits, so it cannot see that. Union the biased ids in (deduped against
     // the top-k, or their probability mass would be counted twice) — that restores the
@@ -188,7 +211,7 @@ class Sampler {
     // a bias was actually given.
     if (!p_.logit_bias.empty()) {
       picked_.clear();
-      picked_.insert(idx_.begin(), idx_.begin() + k);
+      picked_.insert(idx_.begin(), idx_.end());   // idx_ IS the top-k now
       for (const auto& kv : p_.logit_bias) {
         const int id = kv.first;
         if (id < 0 || id >= n || picked_.count(id)) continue;
@@ -356,7 +379,9 @@ class Sampler {
   std::mt19937 rng_;
   std::deque<int> recent_;                 // penalty window, newest at the back
   std::unordered_map<int, int> counts_;    // token id -> occurrences in the window
-  std::vector<int> idx_;
+  struct Scored { float v; int id; };
+  std::vector<Scored> top_;                // reused top-k buffer for candidate selection
+  std::vector<int> idx_;                   // the top-k ids, for the logit_bias dedup below
   std::unordered_set<int> picked_;         // top-k ids, only built when a bias is set
 };
 

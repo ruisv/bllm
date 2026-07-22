@@ -267,6 +267,16 @@ if _HAVE_NATIVE:
             s = list(stop) if stop else []
             return _run_async(lambda: self._llm.generate(prompt, max_new, on_text, s))
 
+        def last_timing(self) -> "tuple[float, float, float]":
+            """Per-token (prep_ms, infer_ms, sample_ms) of the last turn.
+
+            The BPU graph's own time is measurable independently (hrt_model_exec
+            perf), so this is what makes the remainder attributable: host prep
+            (embed + rope + mask + cache clean), the submit/wait around the graph,
+            and the vocabulary scan the sampler does. Hybrid models only.
+            """
+            return self._llm.last_timing()
+
         def perplexity(self, text: str) -> float:
             """Teacher-forced perplexity of raw `text` under the model (no chat template).
             Resets the conversation. The native equivalent of libxlm's xlm_ppl."""
