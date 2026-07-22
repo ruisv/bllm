@@ -36,6 +36,7 @@ import os
 import time
 from typing import Any, Iterator, Optional
 
+import bllm
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -132,13 +133,39 @@ def models(authorization: Optional[str] = Header(None)) -> dict:
     }
 
 
+def _num(body: dict, key: str, default: float):
+    """Read a numeric field, treating only null/absent as "not given".
+
+    Not ``body.get(k, d) or d``: that idiom folds an explicit 0 into the default, so
+    ``temperature: 0`` (greedy — a thing clients ask for deliberately) was
+    indistinguishable from omitting it, and ``top_p: 0`` silently became 1.0.
+    """
+    v = body.get(key)
+    return default if v is None else v
+
+
 def _sampling_from(body: dict) -> dict:
+    """Map OpenAI sampling fields onto the engine's.
+
+    presence_penalty/frequency_penalty are OpenAI's own and are honoured directly —
+    they were previously dropped on the floor while only the non-standard
+    `repetition_penalty` was read, so a client setting them saw no effect at all.
+    OpenAI defines both on [-2, 2] with 0 = off, which is exactly what the engine's
+    penalty_present/penalty_freq mean, so they pass through unscaled.
+    """
     return {
-        "temp": float(body.get("temperature", 0.0) or 0.0),
-        "top_p": float(body.get("top_p", 1.0) or 1.0),
-        "top_k": int(body.get("top_k", 0) or 0),
-        "rep_pen": float(body.get("repetition_penalty", 1.0) or 1.0),
-        "seed": int(body.get("seed", 1234) or 1234),
+        "temp": float(_num(body, "temperature", 0.0)),
+        "top_p": float(_num(body, "top_p", 1.0)),
+        "top_k": int(_num(body, "top_k", 0)),
+        "min_p": float(_num(body, "min_p", 0.0)),
+        "rep_pen": float(_num(body, "repetition_penalty", 1.0)),
+        "penalty_present": float(_num(body, "presence_penalty", 0.0)),
+        "penalty_freq": float(_num(body, "frequency_penalty", 0.0)),
+        # No seed from the client => vary per request. It used to default to a fixed
+        # 1234, which pinned the RNG on EVERY request: three identical temperature=0.8
+        # requests came back byte-identical, so temperature did nothing. An explicit
+        # seed still reproduces exactly, which is what OpenAI's `seed` promises.
+        "seed": int(_num(body, "seed", bllm.SEED_RANDOM)),
     }
 
 

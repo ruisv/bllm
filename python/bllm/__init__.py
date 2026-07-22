@@ -36,6 +36,12 @@ try:
 except ImportError:
     _HAVE_NATIVE = False
 
+# `seed` sentinel: draw a fresh seed for every generation. Mirrors llama.cpp's
+# LLAMA_DEFAULT_SEED, and is the default — a fixed default seed makes temperature
+# useless, because the sampler is rebuilt per generation and replays the same random
+# stream every turn. Pass any other value for reproducible sampling.
+SEED_RANDOM = 0xFFFFFFFF
+
 # `__all__` is built from what actually imported: on a dev host the extension is absent
 # and `from bllm import *` should still degrade quietly rather than name a missing symbol.
 __all__ = ["__version__"]
@@ -121,12 +127,14 @@ if _HAVE_NATIVE:
             self._llm.reset()
 
         def set_sampling(self, temp: float = 0.0, top_p: float = 1.0, top_k: int = 0,
-                         rep_pen: float = 1.0, seed: int = 1234, min_p: float = 0.0,
+                         rep_pen: float = 1.0, seed: int = SEED_RANDOM, min_p: float = 0.0,
                          typ_p: float = 1.0, min_keep: int = 1, penalty_last_n: int = 64,
                          penalty_freq: float = 0.0, penalty_present: float = 0.0) -> "NativeSession":
             """Configure sampling (temp<=0 => greedy). Full libxlm parity: top_k / top_p /
             min_p / typ_p (min_keep floors each filter) and repeat / frequency / presence
-            penalties over the last penalty_last_n tokens. Returns self for chaining."""
+            penalties over the last penalty_last_n tokens. seed defaults to SEED_RANDOM (a fresh
+            draw per generation, so temperature actually varies); pass a value to make
+            sampling reproducible. Returns self for chaining."""
             self._llm.set_sampling(temp, top_p, top_k, rep_pen, seed, min_p, typ_p,
                                    min_keep, penalty_last_n, penalty_freq, penalty_present)
             return self
@@ -421,7 +429,7 @@ if _HAVE_NATIVE:
             self._vlm.reset()
 
         def set_sampling(self, temp: float = 0.0, top_p: float = 1.0, top_k: int = 0,
-                         rep_pen: float = 1.0, seed: int = 1234, min_p: float = 0.0,
+                         rep_pen: float = 1.0, seed: int = SEED_RANDOM, min_p: float = 0.0,
                          typ_p: float = 1.0, min_keep: int = 1, penalty_last_n: int = 64,
                          penalty_freq: float = 0.0, penalty_present: float = 0.0) -> "NativeVlmSession":
             self._vlm.set_sampling(temp, top_p, top_k, rep_pen, seed, min_p, typ_p,

@@ -45,7 +45,7 @@ llm = bllm.NativeSession(model_dir)          # or bllm.load(...)
 
 | Method | Description |
 |---|---|
-| `set_sampling(temp=0.0, top_p=1.0, top_k=0, rep_pen=1.0, seed=1234, min_p=0.0, typ_p=1.0, min_keep=1, penalty_last_n=64, penalty_freq=0.0, penalty_present=0.0)` | Configure sampling; `temp<=0` is greedy. |
+| `set_sampling(temp=0.0, top_p=1.0, top_k=0, rep_pen=1.0, seed=SEED_RANDOM, min_p=0.0, typ_p=1.0, min_keep=1, penalty_last_n=64, penalty_freq=0.0, penalty_present=0.0)` | Configure sampling; `temp<=0` is greedy. |
 | `set_stop(stop: list[str])` | Persistent stop strings: end the turn as soon as any appears, trimmed from stream and return value. |
 | `set_bpu_priority(priority: int)` | BPU queue priority 0..255 (default 0 = lowest, so a co-resident vision pipeline preempts). |
 | `reset()` | Clear multi-turn history; start fresh. |
@@ -160,4 +160,7 @@ C++: `bllm::NativeVlm` (`bllm/native_vlm.h`).
 
 `temp<=0` → greedy (argmax). `top_k` (0 = vocab size), `top_p`, `min_p`, `typ_p` are candidate
 filters, with `min_keep` a floor per filter. `rep_pen` (repeat), `penalty_freq` (frequency) and
-`penalty_present` (presence) act over the last `penalty_last_n` tokens. `seed` fixes randomness.
+`penalty_present` (presence) act over the last `penalty_last_n` tokens. `seed` defaults to
+`bllm.SEED_RANDOM`, which draws a fresh seed for every generation — the sampler is built per
+generation, so a fixed seed would replay the same random stream each turn and temperature
+would have no visible effect. Pass an explicit `seed` to make sampling reproducible.

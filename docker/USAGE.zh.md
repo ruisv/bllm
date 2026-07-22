@@ -127,6 +127,15 @@ curl -N localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
 
 支持 `/v1/chat/completions`(流式 + 非流式)、`/v1/models`、`/health`。
 
+**采样字段**:`temperature`(默认 `0`,即贪心)、`top_p`、`presence_penalty`、
+`frequency_penalty`、`seed`、`max_tokens` / `max_completion_tokens`、`stop`、`stream`。
+另外接受几个非 OpenAI 标准但通用的扩展:`top_k`、`min_p`、`repetition_penalty`,
+以及 `enable_thinking`(Qwen3.5 思考开关,默认 `false`)。没给的字段一律取默认值,
+显式传 `0` 与不传是有区别的(`temperature: 0` = 贪心)。
+
+不传 `seed` 时每个请求重新取种子,所以 `temperature` 会真的产生变化;传了 `seed` 则
+相同请求逐字节可复现(OpenAI 的 `seed` 语义)。
+
 ### OpenAI SDK
 
 ```python

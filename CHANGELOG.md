@@ -4,6 +4,27 @@ All notable changes to BLLM are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **`temperature` had no effect.** `seed` defaulted to a fixed `1234`, and the sampler is
+  constructed fresh for every generation — so every request replayed the identical random
+  stream. Three identical `temperature=0.8` requests came back byte-identical; the knob was
+  decorative. The default is now `SEED_RANDOM` (`bllm.SEED_RANDOM`, the same sentinel and
+  value as llama.cpp's `LLAMA_DEFAULT_SEED`), which draws a fresh seed per generation. An
+  explicit `seed` still reproduces exactly, which is what OpenAI's `seed` promises — so the
+  reproducible path is unchanged, only the *unspecified* path stopped being pinned.
+- **`presence_penalty` and `frequency_penalty` were ignored over HTTP.** The server read
+  only the non-standard `repetition_penalty`, so OpenAI's own penalty fields were dropped
+  on the floor while the engine's `penalty_present`/`penalty_freq` sat unused. Both are now
+  passed through unscaled (OpenAI and the engine agree on `[-2, 2]`, 0 = off). `min_p` is
+  exposed too.
+- **An explicit `0` was indistinguishable from an omitted field.** `body.get(k, d) or d`
+  folded falsy values back into the default, so `temperature: 0` — which clients send
+  deliberately to force greedy decoding — read as "unset", and `top_p: 0` silently became
+  `1.0`. Only `null`/absent counts as unset now.
+
 ## [0.1.6]
 
 ### Added

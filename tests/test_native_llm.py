@@ -81,6 +81,32 @@ def test_sampling_knobs_at_libxlm_parity(llm):
     llm.set_sampling()                                     # restore greedy for later tests
 
 
+def test_temperature_varies_unless_a_seed_is_given(llm):
+    """The default seed must be SEED_RANDOM, not a fixed number.
+
+    A fixed default silently disabled temperature: the sampler is constructed per
+    generation, so it replayed the identical random stream every turn and the same
+    question came back byte-identical no matter how high the temperature. Measured
+    before the fix: three temperature=0.8 requests, three identical replies.
+    """
+    q = "讲一个很短的笑话。"
+
+    llm.set_sampling(temp=0.9)                 # default seed => fresh draw per generation
+    replies = set()
+    for _ in range(4):
+        llm.reset()
+        replies.add(llm.chat(q, max_new=28))
+    assert len(replies) > 1, f"temperature had no effect — all {len(replies)} replies identical"
+
+    llm.set_sampling(temp=0.9, seed=99)        # explicit seed => exactly reproducible
+    llm.reset(); a = llm.chat(q, max_new=28)
+    llm.reset(); b = llm.chat(q, max_new=28)
+    assert a == b, "an explicit seed did not reproduce"
+
+    llm.reset()
+    llm.set_sampling()                         # restore greedy for later tests
+
+
 def test_prompt_cache_round_trips_bit_identically(llm, tmp_path):
     """save_state/load_state (libxlm's path_prompt_cache): feeding a prefix then saving,
     reloading, and continuing must reproduce the in-one-go greedy continuation exactly."""

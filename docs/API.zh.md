@@ -39,7 +39,7 @@ llm = bllm.NativeSession(model_dir)          # 或 bllm.load(...)
 
 | 方法 | 说明 |
 |---|---|
-| `set_sampling(temp=0.0, top_p=1.0, top_k=0, rep_pen=1.0, seed=1234, min_p=0.0, typ_p=1.0, min_keep=1, penalty_last_n=64, penalty_freq=0.0, penalty_present=0.0)` | 配置采样；`temp<=0` 即贪心。 |
+| `set_sampling(temp=0.0, top_p=1.0, top_k=0, rep_pen=1.0, seed=SEED_RANDOM, min_p=0.0, typ_p=1.0, min_keep=1, penalty_last_n=64, penalty_freq=0.0, penalty_present=0.0)` | 配置采样；`temp<=0` 即贪心。 |
 | `set_stop(stop: list[str])` | 常驻停止串：回复中一旦出现即结束该轮并从流与返回值中裁掉。 |
 | `set_bpu_priority(priority: int)` | BPU 队列优先级 0..255（默认 0 最低，让同驻视觉抢占）。 |
 | `reset()` | 清空多轮历史，开始新会话。 |
@@ -149,4 +149,6 @@ C++：`bllm::NativeVlm`（`bllm/native_vlm.h`）。
 
 `temp<=0` → 贪心（argmax）。`top_k`（0=词表大小）、`top_p`、`min_p`、`typ_p` 为候选过滤，`min_keep` 为每个
 过滤器保底数量。`rep_pen`（重复）、`penalty_freq`（频率）、`penalty_present`（存在）作用于最近 `penalty_last_n`
-个 token。`seed` 固定随机性。
+个 token。`seed` 默认为 `bllm.SEED_RANDOM`，即每次生成重新取种子 —— 采样器是每次生成新建的，
+固定种子会让每一轮重放同一条随机流，temperature 看起来完全不起作用。传入具体的 `seed` 可获得
+可复现的采样。

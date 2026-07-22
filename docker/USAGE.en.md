@@ -139,6 +139,17 @@ curl -N localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
 Supports `/v1/chat/completions` (streaming + non-streaming), `/v1/models`,
 `/health`.
 
+**Sampling fields**: `temperature` (default `0`, i.e. greedy), `top_p`,
+`presence_penalty`, `frequency_penalty`, `seed`, `max_tokens` /
+`max_completion_tokens`, `stop`, `stream`. Plus a few common non-OpenAI extensions:
+`top_k`, `min_p`, `repetition_penalty`, and `enable_thinking` (the Qwen3.5 reasoning
+toggle, default `false`). Omitted fields take their default, and an explicit `0` is
+distinct from omitting one (`temperature: 0` means greedy).
+
+With no `seed`, each request draws a fresh one, so `temperature` actually varies the
+reply; with an explicit `seed`, identical requests reproduce byte for byte (OpenAI's
+`seed` semantics).
+
 ### OpenAI SDK
 
 ```python

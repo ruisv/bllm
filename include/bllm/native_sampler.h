@@ -23,6 +23,14 @@
 
 namespace bllm {
 
+// `seed` sentinel: draw a fresh nondeterministic seed for each generation. Same value and
+// meaning as llama.cpp's LLAMA_DEFAULT_SEED, and it is the DEFAULT — a fixed default seed
+// silently makes temperature useless, because the sampler is rebuilt per generation and
+// would replay the identical random stream every turn. (Measured before this was the
+// default: three identical temp=0.8 requests returned byte-identical replies.) Pass any
+// other value to get the reproducible behaviour back.
+inline constexpr uint64_t kSeedRandom = 0xFFFFFFFFull;
+
 // Sampling knobs. Defaults are the "disabled" values, so a zero-initialised params object
 // samples greedily. Field names/semantics mirror libxlm's common_params_sampling_t.
 struct NativeSamplingParams {
@@ -39,13 +47,13 @@ struct NativeSamplingParams {
   float penalty_freq = 0.0f;     // 0.0 = disabled (subtract count * freq)
   float penalty_present = 0.0f;  // 0.0 = disabled (subtract present once)
 
-  uint64_t seed = 1234;
+  uint64_t seed = kSeedRandom;   // kSeedRandom => nondeterministic; any other value is exact
   std::vector<int> eos = {151645, 151643};
 };
 
 class Sampler {
  public:
-  explicit Sampler(const NativeSamplingParams& p) : p_(p), rng_(p.seed) {}
+  explicit Sampler(const NativeSamplingParams& p) : p_(p), rng_(seedFor(p.seed)) {}
 
   // Feed a just-emitted token so the penalty window tracks it.
   void record(int id) {
@@ -184,6 +192,14 @@ class Sampler {
     std::sort(out.begin(), out.end(), [](const Cand& a, const Cand& b) { return a.p > b.p; });
     for (int j = 0; j < m; ++j) c[j] = out[j];
     return m;
+  }
+
+  // mt19937 consumes 32 bits, so an explicit seed is narrowed; kSeedRandom instead pulls a
+  // fresh value from the platform entropy source so each generation samples independently.
+  static std::mt19937::result_type seedFor(uint64_t seed) {
+    if (seed != kSeedRandom) return (std::mt19937::result_type)seed;
+    std::random_device rd;
+    return rd();
   }
 
   NativeSamplingParams p_;

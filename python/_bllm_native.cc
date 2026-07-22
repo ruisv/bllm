@@ -24,6 +24,8 @@ using namespace nb::literals;
 NB_MODULE(_bllm_native, m) {
   m.doc() = "BLLM native hbDNN LLM engine (no libxlm)";
 
+  m.attr("SEED_RANDOM") = bllm::kSeedRandom;
+
   nb::class_<bllm::NativeSamplingParams>(m, "SamplingParams")
       .def(nb::init<>())
       .def_rw("temp", &bllm::NativeSamplingParams::temp)
@@ -157,12 +159,13 @@ NB_MODULE(_bllm_native, m) {
       .def("clear_prefix", &bllm::NativeLlm::clear_prefix, "Drop the cached prefix.")
       .def_prop_ro("has_prefix", &bllm::NativeLlm::has_prefix)
       .def("set_sampling", &bllm::NativeLlm::set_sampling,
-           "temp"_a = 0.0f, "top_p"_a = 1.0f, "top_k"_a = 0, "rep_pen"_a = 1.0f, "seed"_a = 1234,
+           "temp"_a = 0.0f, "top_p"_a = 1.0f, "top_k"_a = 0, "rep_pen"_a = 1.0f, "seed"_a = bllm::kSeedRandom,
            "min_p"_a = 0.0f, "typ_p"_a = 1.0f, "min_keep"_a = 1, "penalty_last_n"_a = 64,
            "penalty_freq"_a = 0.0f, "penalty_present"_a = 0.0f,
            "Set sampling (temp<=0 => greedy). Full libxlm parity: top_k/top_p/min_p/typ_p "
            "(min_keep floors each filter) + repeat/freq/presence penalties over penalty_last_n. "
-           "Applies to the next generate()/chat().")
+           "seed defaults to SEED_RANDOM (a fresh draw per generation); pass a value to make "
+           "sampling reproducible. Applies to the next generate()/chat().")
       .def("set_stop", &bllm::NativeLlm::set_stop, "stop"_a,
            "Persistent stop strings for every following turn (a per-call stop=[...] overrides).")
       .def("set_thinking", &bllm::NativeLlm::set_thinking, "enabled"_a,
@@ -339,7 +342,7 @@ NB_MODULE(_bllm_native, m) {
       .def_prop_ro("video_tokens_per_second", &bllm::NativeVlm::video_tokens_per_second)
       .def("reset", &bllm::NativeVlm::reset, "Start a fresh conversation.")
       .def("set_sampling", &bllm::NativeVlm::set_sampling,
-           "temp"_a = 0.0f, "top_p"_a = 1.0f, "top_k"_a = 0, "rep_pen"_a = 1.0f, "seed"_a = 1234,
+           "temp"_a = 0.0f, "top_p"_a = 1.0f, "top_k"_a = 0, "rep_pen"_a = 1.0f, "seed"_a = bllm::kSeedRandom,
            "min_p"_a = 0.0f, "typ_p"_a = 1.0f, "min_keep"_a = 1, "penalty_last_n"_a = 64,
            "penalty_freq"_a = 0.0f, "penalty_present"_a = 0.0f)
       .def("set_stop", &bllm::NativeVlm::set_stop, "stop"_a,
