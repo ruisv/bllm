@@ -58,12 +58,27 @@ def render_chatml(messages: list[dict], enable_thinking: bool) -> tuple[str, str
     ``<|im_start|>assistant\n{reply}<|im_end|>\n``. A snapshot taken past the split
     is therefore never a prefix of the next turn's prompt and can never be reused.
     Only `history` is stable across turns, so only `history` is cacheable.
+
+    Raises HTTPException(400) on non-text content parts — see the note inline.
     """
     parts: list[str] = []
     for m in messages:
         role = m.get("role", "user")
         content = m.get("content", "")
         if isinstance(content, list):  # OpenAI array content -> concat text parts
+            # Anything that is not a text part would be dropped here, and the model
+            # would answer confidently about media it never received. That is worse
+            # than an error, so say so. Serving a vision tower is a separate piece of
+            # work (the engine below holds a text session, not a NativeVlm).
+            other = sorted({p.get("type") for p in content
+                            if isinstance(p, dict) and p.get("type") != "text"})
+            if other:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"this endpoint serves text only; unsupported content parts: "
+                           f"{', '.join(str(t) for t in other)}. Image input works through "
+                           f"the bllm.NativeVlmSession API; it is not wired into the "
+                           f"OpenAI server yet.")
             content = "".join(
                 p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
             )
