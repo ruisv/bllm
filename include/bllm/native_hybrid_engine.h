@@ -530,17 +530,26 @@ class NativeHybridEngine {
 
   // One chunk of exactly N_ already-embedded rows through the prefill graph.
   void prefillChunk(const float* rows, const Pos3* pos) {
-    auto* x = reinterpret_cast<float*>(pFixedMem_[0].p());
-    std::memcpy(x, rows, (size_t)N_ * H_ * sizeof(float));
+    // These inputs are multi-ROW, unlike decode's [1,H]: hbDNN pads each leading
+    // dimension up to its alignment, so index by the tensor's own stride rather
+    // than assuming rows are tight. (They usually are at these sizes, which is
+    // exactly what makes the assumption dangerous to rely on.)
+    const int64_t xStride = rowStride(pin_[0].properties);
+    const int64_t cStride = rowStride(pin_[1].properties);
+    const int64_t sStride = rowStride(pin_[2].properties);
+    auto* xBase = reinterpret_cast<uint8_t*>(pFixedMem_[0].p());
+    for (int j = 0; j < N_; ++j)
+      std::memcpy(xBase + (size_t)j * xStride, rows + (size_t)j * H_,
+                  (size_t)H_ * sizeof(float));
     pFixedMem_[0].clean();
 
-    auto* cs = reinterpret_cast<float*>(pFixedMem_[1].p());
-    auto* sn = reinterpret_cast<float*>(pFixedMem_[2].p());
+    auto* csBase = reinterpret_cast<uint8_t*>(pFixedMem_[1].p());
+    auto* snBase = reinterpret_cast<uint8_t*>(pFixedMem_[2].p());
     const int half = ROT_ / 2;
     for (int j = 0; j < N_; ++j) {
       const int32_t pv[3] = {pos[j].t, pos[j].h, pos[j].w};
-      float* cj = cs + (size_t)j * ROT_;
-      float* sj = sn + (size_t)j * ROT_;
+      float* cj = reinterpret_cast<float*>(csBase + (size_t)j * cStride);
+      float* sj = reinterpret_cast<float*>(snBase + (size_t)j * sStride);
       for (int i = 0; i < half; ++i) {
         const double ang = (double)pv[sec_.empty() ? 0 : sec_[i]] * inv_[i];
         const float c = (float)std::cos(ang), sv = (float)std::sin(ang);
@@ -556,17 +565,17 @@ class NativeHybridEngine {
     //   * causality within the chunk: new token j sits at CL_ - N_ + j, so query j
     //     must not see i > CL_ - N_ + j.
     // Writing only the causal half lets an early chunk attend to zeroed slots.
-    auto* mask = reinterpret_cast<float*>(pFixedMem_[3].p());
+    auto* maskBase = reinterpret_cast<uint8_t*>(pFixedMem_[3].p());
+    const auto& mp = pin_[3].properties;                 // [nHead, N, CL]
     const int T = P_ + N_;
     const int lo = CL_ - (T < CL_ ? T : CL_);
-    for (int j = 0; j < N_; ++j) {
-      const int hi = CL_ - N_ + j;                       // last index query j may see
-      for (int i = 0; i < CL_; ++i) {
-        const float m = (i >= lo && i <= hi) ? 0.0f : -1e9f;
-        for (int hh = 0; hh < nHead_; ++hh)
-          mask[((size_t)hh * N_ + j) * CL_ + i] = m;
+    for (int hh = 0; hh < nHead_; ++hh)
+      for (int j = 0; j < N_; ++j) {
+        const int hi = CL_ - N_ + j;                     // last index query j may see
+        auto* row = reinterpret_cast<float*>(maskBase + (size_t)hh * mp.stride[0] +
+                                             (size_t)j * mp.stride[1]);
+        for (int i = 0; i < CL_; ++i) row[i] = (i >= lo && i <= hi) ? 0.0f : -1e9f;
       }
-    }
     pFixedMem_[3].clean();
 
     std::vector<Mem>& cur = phase_ ? bufB_ : bufA_;
@@ -596,6 +605,10 @@ class NativeHybridEngine {
   }
 
   static constexpr int kFixedIn = 4;            // x, cos, sin, mask
+  // Bytes between consecutive rows of a [rows, cols] input.
+  static int64_t rowStride(const hbDNNTensorProperties& p) {
+    return p.stride[p.validShape.numDimensions - 2];
+  }
   static int dim(const hbDNNTensorProperties& p, int idx) { return p.validShape.dimensionSize[idx]; }
   static void fixStride(hbDNNTensorProperties& p) {
     const int nd = p.validShape.numDimensions;
