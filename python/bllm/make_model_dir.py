@@ -172,6 +172,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mel-filters", help="mel_filters_t.txt (omni audio)")
     ap.add_argument("--name", help="display name (default: out_dir basename)")
     ap.add_argument("--graph", help="graph name inside the .hbm (hybrid; default qwen35)")
+    ap.add_argument("--hbm-prefill", help="optional seq_len=N prefill graph .hbm (hybrid). "
+                                          "Amortizes the weight stream over N tokens; without "
+                                          "it prefill runs one token at a time.")
     ap.add_argument("--rope-theta", type=float, help="rope base (default: 1e7 hybrid, 1e6 omni)")
     ap.add_argument("--cache-len", type=int, default=0, help="informational")
     ap.add_argument("--bpu-cores", type=int, choices=[1, 2, 4],
@@ -254,6 +257,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.arch == "hybrid":
         cfg["graph"] = args.graph or "qwen35"
         cfg["rope_theta"] = args.rope_theta or 1e7
+        if args.hbm_prefill:
+            cfg["hbm_prefill"] = "model_prefill.hbm"
+            payload["model_prefill.hbm"] = Path(args.hbm_prefill)
         if args.visual:
             cfg["visual"] = "visual.hbm"
             payload["visual.hbm"] = Path(args.visual)

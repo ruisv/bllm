@@ -40,11 +40,17 @@ class NativeHybridEngine {
  public:
   // hbm: the hybrid model; embed_fp16: raw fp16 embedding table [vocab*hidden];
   // model_name: the graph name inside the .hbm (default "qwen35").
+  // `hbm_prefill` is optional: the seq_len=N prefill graph, either already linked
+  // into `hbm` as a second graph or shipped as its own file. hbDNN packs several
+  // files into one handle, so loading it separately means an existing decode .hbm
+  // never has to be relinked to gain a prefill graph.
   NativeHybridEngine(const std::string& hbm, const std::string& embed_fp16,
-                     const std::string& model_name = "qwen35", double rope_theta = 1e7)
+                     const std::string& model_name = "qwen35", double rope_theta = 1e7,
+                     const std::string& hbm_prefill = "")
       : theta_(rope_theta), decodeName_(model_name) {
-    const char* files[] = {hbm.c_str()};
-    BLLM_NATIVE_CK(hbDNNInitializeFromFiles(&packed_, files, 1));
+    std::vector<const char*> files{hbm.c_str()};
+    if (!hbm_prefill.empty()) files.push_back(hbm_prefill.c_str());
+    BLLM_NATIVE_CK(hbDNNInitializeFromFiles(&packed_, files.data(), (int32_t)files.size()));
     BLLM_NATIVE_CK(hbDNNGetModelHandle(&h_, packed_, model_name.c_str()));
     int ic = 0, oc = 0;
     BLLM_NATIVE_CK(hbDNNGetInputCount(&ic, h_));

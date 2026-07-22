@@ -37,6 +37,7 @@ ModelConfig loadModelConfig(const std::string& dir) {
   c.bpu_cores = j.value("bpu_cores", 1);
   c.rope_theta = j.value("rope_theta", 1e7);
   c.hbm = resolve(dir, j.value("hbm", ""));
+  c.hbm_prefill = resolve(dir, j.value("hbm_prefill", ""));
   c.tokenizer = resolve(dir, j.value("tokenizer", "tokenizer.json"));
   c.embed = resolve(dir, j.value("embed", ""));
   c.visual = resolve(dir, j.value("visual", ""));

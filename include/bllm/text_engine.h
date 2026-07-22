@@ -103,8 +103,10 @@ class HybridTextEngine final : public TextEngine {
  public:
   HybridTextEngine(const std::string& hbm, const std::string& embed_path,
                    const std::string& graph, double rope_theta,
-                   const std::vector<int>& mrope_section, bool mrope_interleaved)
-      : e_(std::make_unique<NativeHybridEngine>(hbm, embed_path, graph, rope_theta)) {
+                   const std::vector<int>& mrope_section, bool mrope_interleaved,
+                   const std::string& hbm_prefill = "")
+      : e_(std::make_unique<NativeHybridEngine>(hbm, embed_path, graph, rope_theta,
+                                                hbm_prefill)) {
     e_->set_mrope(mrope_section, mrope_interleaved);
   }
 

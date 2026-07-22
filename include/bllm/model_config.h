@@ -44,6 +44,9 @@ struct ModelConfig {
   std::string audio;                             // resolved path to the audio-tower .hbm (omni)
   std::string mel_filters;                       // resolved path to mel_filters_t.txt (omni audio)
   std::string graph = "qwen35";                  // graph name inside the .hbm (hybrid)
+  std::string hbm_prefill;                       // optional seq_len=N prefill graph (hybrid).
+                                                 // Its absence is not an error: the engine
+                                                 // falls back to one-token-at-a-time prefill.
   std::vector<int> eos;                          // stop-token ids
   std::vector<int> mrope_section;                // VLM: rope dim split across (t,h,w)
   // How that split is laid out across rope frequencies. Contiguous runs (Omni,
