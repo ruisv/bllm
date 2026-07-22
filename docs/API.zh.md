@@ -117,11 +117,27 @@ for piece in sess.stream_decode(256):
 
 现成实现见 `docker/serving/`（`cache.py` 的前缀缓存 + `engine.py` 的单 worker 线程）。
 
-## `bllm.NativeVlmSession` — 多模态（Qwen2.5-Omni）
+## `bllm.NativeVlmSession` — 多模态（Qwen2.5-Omni / Qwen3.5 图文）
 
 ```python
-vlm = bllm.NativeVlmSession(model_dir)        # 或 bllm.load(...)（arch="omni"）
+vlm = bllm.NativeVlmSession(model_dir)        # 或 bllm.load(...)
 ```
+
+`bllm.load()` 按**包里是否带 `visual` 塔**路由，而不是按 `arch`。两种包都走这个类：
+
+| 包 | 文本塔 | 模态 | 视觉 token |
+|---|---|---|---|
+| `arch="omni"`（Qwen2.5-Omni） | dense KV 双图 | 图 / 音 / 视频 | 448px → 256 |
+| `arch="hybrid"` + `visual`（Qwen3.5） | Gated-DeltaNet 单图 | **仅图** | 448px → 196 |
+
+多模态是**包**的属性、不是解码器家族的属性：同一个 hybrid 文本 `.hbm`，配上视觉塔就是
+图文模型。两者的静止图布局是**同一套**（`<vision_start>` + 视觉行 + `<vision_end>`，
+图像行走 3-D mrope 位置 `(t, t+row, t+col)`），已对 HF 参考逐位核过。
+
+> **视频只在 Omni 包上可用。** 这里的视频路径是 Qwen2.5-Omni 的 TMRoPE（每格
+> `秒数*25` 的时间位置、音视频按 2 秒块交织）；Qwen3.5 用的是**时间戳 token 分隔帧**，
+> 是另一套位置分配。对 hybrid 包传 `videos=`/`stream_begin(fps>0)` 会**明确报错**，
+> 而不是悄悄按 Omni 那套编出一个看着通顺、其实顺序错乱的答案。
 
 **属性**：`name`、`vision_tokens`、`vision_image_size`、`has_audio`、`last_decode_tps`、
 `last_ttft_ms`（首字延迟，含媒体编码）、`streaming`、`tokens_used`、`context_left`（KV 窗口剩余额度）。
