@@ -42,7 +42,7 @@ class NativeHybridEngine {
   // model_name: the graph name inside the .hbm (default "qwen35").
   NativeHybridEngine(const std::string& hbm, const std::string& embed_fp16,
                      const std::string& model_name = "qwen35", double rope_theta = 1e7)
-      : theta_(rope_theta) {
+      : theta_(rope_theta), decodeName_(model_name) {
     const char* files[] = {hbm.c_str()};
     BLLM_NATIVE_CK(hbDNNInitializeFromFiles(&packed_, files, 1));
     BLLM_NATIVE_CK(hbDNNGetModelHandle(&h_, packed_, model_name.c_str()));
@@ -119,6 +119,7 @@ class NativeHybridEngine {
     f.read(reinterpret_cast<char*>(emb_.data()), sz);
     if (emb_.size() < (size_t)vocab_ * H_) throw std::runtime_error("[hybrid] embed table too small");
 
+    attachPrefill(model_name + "_prefill");
     reset();
   }
   ~NativeHybridEngine() { if (packed_) hbDNNRelease(packed_); }
@@ -273,7 +274,19 @@ class NativeHybridEngine {
                                " tokens do not fit in the remaining " + std::to_string(context_left()) +
                                " of " + std::to_string(CL_) +
                                " cache slots. reset(), shorten the turn, or use a longer-context build.");
-    for (int id : ids) step(id);
+    if (!ph_) { for (int id : ids) step(id); return; }
+    // With a prefill graph, embed on the host and go through the chunked path —
+    // this is where a long prompt (or an image's vision rows) stops costing one
+    // full weight stream per token.
+    std::vector<float> rows((size_t)ids.size() * H_);
+    for (size_t i = 0; i < ids.size(); ++i) {
+      const int id = ids[i];
+      if (id < 0 || id >= vocab_) throw std::runtime_error("[hybrid] token id out of range");
+      const __fp16* src = emb_.data() + (size_t)id * H_;
+      float* dst = rows.data() + i * H_;
+      for (int k = 0; k < H_; ++k) dst[k] = (float)src[k];
+    }
+    feed_embeds(rows.data(), (int)ids.size(), nullptr);
   }
 
   // greedy-generate up to max_new; stop on any eos; call on_token(id) per token.
@@ -394,9 +407,23 @@ class NativeHybridEngine {
                                " rows do not fit in the remaining " +
                                std::to_string(context_left()) + " of " +
                                std::to_string(CL_) + " cache slots.");
-    for (int i = 0; i < n; ++i)
-      stepRow(rows + (size_t)i * H_, pos ? pos[i] : Pos3::scalar(maxPos_ + 1));
+    std::vector<Pos3> seq;
+    if (!pos) {                                  // continue the plain scalar sequence
+      seq.resize(n);
+      for (int i = 0; i < n; ++i) seq[i] = Pos3::scalar(maxPos_ + 1 + i);
+      pos = seq.data();
+    }
+    int i = 0;
+    // Whole chunks through the prefill graph (one weight stream per N_ rows), then
+    // the tail one row at a time. With no prefill graph N_ is 0 and this is a no-op,
+    // leaving exactly today's behaviour.
+    for (; ph_ && i + N_ <= n; i += N_)
+      prefillChunk(rows + (size_t)i * H_, pos + i);
+    for (; i < n; ++i) stepRow(rows + (size_t)i * H_, pos[i]);
   }
+
+  // Does this model carry a prefill graph, and how wide is it? (0 = chunk=1 only.)
+  int prefill_chunk() const { return ph_ ? N_ : 0; }
 
   // The next plain-rope position — what a text token following the stream so far
   // should use. Not the same as position() once an image has been fed.
@@ -450,6 +477,124 @@ class NativeHybridEngine {
     return L(tok) - (m + std::log(se));
   }
 
+  // ── optional prefill graph ────────────────────────────────────────────────
+  //
+  // A second graph in the same .hbm, identical mathematics but seq_len = N. Decode
+  // here is weight-bandwidth-bound, so feeding one token at a time streams the whole
+  // model once per token; this consumes N per weight load. Its absence is NOT an
+  // error — an older .hbm simply keeps today's chunk=1 behaviour.
+  void attachPrefill(const std::string& name) {
+    if (hbDNNGetModelHandle(&ph_, packed_, name.c_str()) != 0) { ph_ = nullptr; return; }
+    int ic = 0, oc = 0;
+    if (hbDNNGetInputCount(&ic, ph_) != 0 || hbDNNGetOutputCount(&oc, ph_) != 0 ||
+        ic != (int)in_.size() || oc != (int)out_.size()) {
+      ph_ = nullptr;                       // shape-incompatible: ignore rather than guess
+      return;
+    }
+    pin_.resize(ic); pout_.resize(oc);
+    for (int i = 0; i < ic; ++i) {
+      auto& p = pin_[i].properties;
+      BLLM_NATIVE_CK(hbDNNGetInputTensorProperties(&p, ph_, i));
+      fixStride(p);
+      pinBytes_.push_back(tensorBytes(p));
+    }
+    // x is [N, H]; every cache must match decode's exactly, since the two graphs
+    // hand the same buffers back and forth.
+    const auto& xs = pin_[0].properties.validShape;
+    N_ = xs.numDimensions >= 2 ? xs.dimensionSize[xs.numDimensions - 2] : 0;
+    if (N_ < 2 || dim(pin_[0].properties, xs.numDimensions - 1) != H_) { ph_ = nullptr; return; }
+    for (int c = 0; c < nCache_; ++c)
+      if (pinBytes_[kFixedIn + c] != inBytes_[kFixedIn + c]) { ph_ = nullptr; return; }
+    { const auto& ms = pin_[3].properties.validShape;   // mask [nHead, N, CL]
+      if (ms.numDimensions != 3 || ms.dimensionSize[0] != nHead_ ||
+          ms.dimensionSize[1] != N_ || ms.dimensionSize[2] != CL_) { ph_ = nullptr; return; } }
+
+    for (int i = 0; i < kFixedIn; ++i) {
+      pFixedMem_.emplace_back();
+      pFixedMem_[i].alloc(pinBytes_[i]);
+      pin_[i].sysMem = pFixedMem_[i].m;
+    }
+    for (int i = 0; i < oc; ++i)
+      BLLM_NATIVE_CK(hbDNNGetOutputTensorProperties(&pout_[i].properties, ph_, i));
+    pLogitMem_.alloc(pout_[0].properties.alignedByteSize);
+    pout_[0].sysMem = pLogitMem_.m;
+    pLogitStride_ = pout_[0].properties.stride[pout_[0].properties.validShape.numDimensions - 2];
+    // One row of prefill logits must fit the decode logit buffer we copy it into.
+    if (pLogitStride_ <= 0 ||
+        (uint64_t)pLogitStride_ > (uint64_t)out_[0].properties.alignedByteSize ||
+        pout_[0].properties.tensorType != logitType_) {
+      ph_ = nullptr;
+      return;
+    }
+  }
+
+  // One chunk of exactly N_ already-embedded rows through the prefill graph.
+  void prefillChunk(const float* rows, const Pos3* pos) {
+    auto* x = reinterpret_cast<float*>(pFixedMem_[0].p());
+    std::memcpy(x, rows, (size_t)N_ * H_ * sizeof(float));
+    pFixedMem_[0].clean();
+
+    auto* cs = reinterpret_cast<float*>(pFixedMem_[1].p());
+    auto* sn = reinterpret_cast<float*>(pFixedMem_[2].p());
+    const int half = ROT_ / 2;
+    for (int j = 0; j < N_; ++j) {
+      const int32_t pv[3] = {pos[j].t, pos[j].h, pos[j].w};
+      float* cj = cs + (size_t)j * ROT_;
+      float* sj = sn + (size_t)j * ROT_;
+      for (int i = 0; i < half; ++i) {
+        const double ang = (double)pv[sec_.empty() ? 0 : sec_[i]] * inv_[i];
+        const float c = (float)std::cos(ang), sv = (float)std::sin(ang);
+        cj[i] = cj[i + half] = c; sj[i] = sj[i + half] = sv;
+      }
+    }
+    pFixedMem_[1].clean(); pFixedMem_[2].clean();
+
+    // mask[nHead, N, CL] — TWO conditions, not one (see CHUNKED_PREFILL.md):
+    //   * the slot holds a real token: the window is right-aligned, so with
+    //     T = P_ + N_ tokens after this chunk, index i is occupied iff
+    //     i >= CL_ - min(T, CL_);
+    //   * causality within the chunk: new token j sits at CL_ - N_ + j, so query j
+    //     must not see i > CL_ - N_ + j.
+    // Writing only the causal half lets an early chunk attend to zeroed slots.
+    auto* mask = reinterpret_cast<float*>(pFixedMem_[3].p());
+    const int T = P_ + N_;
+    const int lo = CL_ - (T < CL_ ? T : CL_);
+    for (int j = 0; j < N_; ++j) {
+      const int hi = CL_ - N_ + j;                       // last index query j may see
+      for (int i = 0; i < CL_; ++i) {
+        const float m = (i >= lo && i <= hi) ? 0.0f : -1e9f;
+        for (int hh = 0; hh < nHead_; ++hh)
+          mask[((size_t)hh * N_ + j) * CL_ + i] = m;
+      }
+    }
+    pFixedMem_[3].clean();
+
+    std::vector<Mem>& cur = phase_ ? bufB_ : bufA_;
+    std::vector<Mem>& nxt = phase_ ? bufA_ : bufB_;
+    for (int c = 0; c < nCache_; ++c) {
+      pin_[kFixedIn + c].sysMem = cur[c].m;
+      pout_[1 + c].sysMem = nxt[c].m;
+    }
+    hbUCPTaskHandle_t task = nullptr;
+    BLLM_NATIVE_CK(hbDNNInferV2(&task, pout_.data(), pin_.data(), ph_));
+    native_detail::submitAndWait(task, sched_);
+    hbUCPReleaseTask(task);
+    pLogitMem_.inval();
+    // Only the LAST row's logits matter — they seed the next sampled token. Copy
+    // them into the decode graph's logit buffer rather than pointing at the prefill
+    // one: save_state()/snapshot() serialize logitMem_ by design, so leaving
+    // curLogits_ pointing elsewhere would silently snapshot the previous step's
+    // logits and make a restored prefix resume from the wrong distribution.
+    std::memcpy(logitMem_.p(), (const uint8_t*)pLogitMem_.p() + (size_t)(N_ - 1) * pLogitStride_,
+                (size_t)pLogitStride_);
+    curLogits_ = logitMem_.p();
+    curLogits_valid_ = true;
+    phase_ = !phase_;
+    P_ += N_;
+    for (int j = 0; j < N_; ++j)
+      if (pos[j].max() > maxPos_) maxPos_ = pos[j].max();
+  }
+
   static constexpr int kFixedIn = 4;            // x, cos, sin, mask
   static int dim(const hbDNNTensorProperties& p, int idx) { return p.validShape.dimensionSize[idx]; }
   static void fixStride(hbDNNTensorProperties& p) {
@@ -468,6 +613,15 @@ class NativeHybridEngine {
   hbDNNHandle_t h_ = nullptr;
   std::vector<hbDNNTensor> in_, out_;
   std::vector<uint64_t> inBytes_;
+  // optional seq_len=N_ prefill graph; ph_ == nullptr means chunk=1 as before
+  hbDNNHandle_t ph_ = nullptr;
+  std::vector<hbDNNTensor> pin_, pout_;
+  std::vector<uint64_t> pinBytes_;
+  std::vector<Mem> pFixedMem_;
+  Mem pLogitMem_;
+  int64_t pLogitStride_ = 0;
+  int N_ = 0;
+  std::string decodeName_;
   std::vector<uint64_t> kvRow_;   // per cache: bytes/position if window-indexed, else 0
   std::vector<Mem> fixedMem_, bufA_, bufB_;
   Mem logitMem_;
