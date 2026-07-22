@@ -207,3 +207,68 @@ def test_audio_needs_mel_filters(tmp_path):
         _run(["omni", str(tmp_path / "o"), "--hbm", str(src / "text.hbm"),
               "--visual", str(src / "visual.hbm"), "--audio", str(src / "audio.hbm"),
               "--embed", str(src / "embed.bin"), "--tokenizer", str(tok)])
+
+
+# --- hybrid + vision (Qwen3.5 image+text) -----------------------------------
+#
+# None of these four settings is discoverable from the compiled .hbm, and each
+# wrong value yields correctly-shaped garbage rather than an error. So the tool
+# must refuse to guess — especially --mrope-interleaved, which is a no-op on text
+# (t==h==w collapses both layouts to plain rope) and only misplaces tokens once an
+# image is in the stream.
+
+def _hybrid_vlm_src(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    tok = write_tokenizer(src, added=QWEN_ADDED)
+    (src / "generation_config.json").write_text('{"eos_token_id": 151645}')
+    for n in ("text.hbm", "visual.hbm", "embed.bin"):
+        (src / n).write_bytes(b"\0")
+    return src, tok
+
+
+def _hybrid_vlm_args(out, src, tok):
+    return ["hybrid", str(out), "--hbm", str(src / "text.hbm"),
+            "--embed", str(src / "embed.bin"), "--tokenizer", str(tok),
+            "--visual", str(src / "visual.hbm")]
+
+
+VISION_FLAGS = [
+    ["--mrope-section", "11", "11", "10"],
+    ["--mrope-interleaved"],
+    ["--vision-patch", "16"],
+    ["--vision-mean", "0.5", "--vision-std", "0.5"],
+]
+
+
+@pytest.mark.parametrize("drop", range(len(VISION_FLAGS)))
+def test_hybrid_vlm_requires_every_vision_setting(tmp_path, drop):
+    src, tok = _hybrid_vlm_src(tmp_path)
+    extra = [a for i, f in enumerate(VISION_FLAGS) if i != drop for a in f]
+    with pytest.raises(SystemExit):
+        _run(_hybrid_vlm_args(tmp_path / "o", src, tok) + extra)
+
+
+def test_hybrid_vlm_manifest(tmp_path):
+    src, tok = _hybrid_vlm_src(tmp_path)
+    out = tmp_path / "o"
+    extra = [a for f in VISION_FLAGS for a in f]
+    assert _run(_hybrid_vlm_args(out, src, tok) + extra) == 0
+    cfg = json.loads((out / "model.json").read_text())
+    assert cfg["arch"] == "hybrid" and cfg["visual"] == "visual.hbm"
+    assert cfg["graph"] == "qwen35" and cfg["rope_theta"] == 1e7
+    assert cfg["mrope_section"] == [11, 11, 10]
+    assert cfg["mrope_interleaved"] is True
+    # A single mean/std value expands to all three channels.
+    assert cfg["vision"] == {"patch": 16, "mean": [0.5] * 3, "std": [0.5] * 3}
+
+
+def test_hybrid_without_vision_stays_text_only(tmp_path):
+    """Adding the vision flags must not leak into a plain hybrid package."""
+    src, tok = _hybrid_vlm_src(tmp_path)
+    out = tmp_path / "o"
+    assert _run(["hybrid", str(out), "--hbm", str(src / "text.hbm"),
+                 "--embed", str(src / "embed.bin"), "--tokenizer", str(tok)]) == 0
+    cfg = json.loads((out / "model.json").read_text())
+    assert "visual" not in cfg and "vision" not in cfg
+    assert "mrope_section" not in cfg and "mrope_interleaved" not in cfg
