@@ -177,6 +177,21 @@ class VisionTower {
     if (g_.inType(0) != HB_DNN_TENSOR_TYPE_F32)
       throw std::runtime_error("[vision] expected an f32 patch input");
 
+    // The rows are spliced straight into the decoder's embedding stream, so they
+    // have to BE floats. A tower whose final linear quantizes its output comes back
+    // as scaled int16 — reading that as float silently produces garbage rows and a
+    // fluent, wrong answer, with every shape check still passing. Dequantize
+    // instead, and refuse anything neither f32 nor scaled s16.
+    outType_ = g_.outType(0);
+    if (outType_ == HB_DNN_TENSOR_TYPE_S16) {
+      outScale_ = g_.outScale(0);
+      if (!(outScale_ > 0.0f))
+        throw std::runtime_error("[vision] s16 tower output carries no scale");
+    } else if (outType_ != HB_DNN_TENSOR_TYPE_F32) {
+      throw std::runtime_error("[vision] unsupported tower output tensor type " +
+                               std::to_string(outType_));
+    }
+
     // grid² = n_patch, and the merger turns each merge² block into one token.
     const int grid = (int)std::lround(std::sqrt((double)nPatch_));
     if (grid * grid != nPatch_)
@@ -208,7 +223,7 @@ class VisionTower {
     std::memcpy(g_.inPtr(0), patches, (size_t)nPatch_ * rowLen_ * sizeof(float));
     g_.inClean(0);
     g_.infer();
-    return (const float*)g_.outPtr(0);
+    return rows();
   }
 
   // Two consecutive video frames (same size) -> one temporal grid step of tokens.
@@ -224,15 +239,27 @@ class VisionTower {
     }
     g_.inClean(0);
     g_.infer();
-    return (const float*)g_.outPtr(0);
+    return rows();
   }
 
  private:
+  // The graph's rows as floats, dequantizing if the tower emits scaled int16.
+  const float* rows() {
+    if (outType_ == HB_DNN_TENSOR_TYPE_F32) return (const float*)g_.outPtr(0);
+    const int16_t* q = (const int16_t*)g_.outPtr(0);
+    const size_t n = (size_t)nToken_ * hidden_;
+    deq_.resize(n);
+    for (size_t i = 0; i < n; ++i) deq_[i] = (float)q[i] * outScale_;
+    return deq_.data();
+  }
+
   hbDNNPackedHandle_t packed_ = nullptr;
   native_detail::Graph g_;
   VisionSpec spec_;
-  std::vector<float> chw0_, chw1_;
+  std::vector<float> chw0_, chw1_, deq_;
   int nPatch_ = 0, rowLen_ = 0, nToken_ = 0, hidden_ = 0;
+  int outType_ = 0;
+  float outScale_ = 1.0f;
 };
 
 }  // namespace bllm
