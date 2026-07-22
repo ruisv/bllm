@@ -535,6 +535,12 @@ class NativeHybridEngine {
       BLLM_NATIVE_CK(hbDNNGetOutputTensorProperties(&pout_[i].properties, ph_, i));
     pLogitMem_.alloc(pout_[0].properties.alignedByteSize);
     pout_[0].sysMem = pLogitMem_.m;
+    // The prefill graph emits only the LAST row's logits ([1, vocab]) — the other
+    // N-1 rows are never read, and materialising them would cost 127 MB of ION at
+    // N=128 plus N times the 254 MB lm_head matmul. Accept either shape: take the
+    // last row whatever the leading dimension is.
+    { const auto& ls = pout_[0].properties.validShape;
+      pLogitRows_ = ls.numDimensions >= 2 ? ls.dimensionSize[ls.numDimensions - 2] : 1; }
     pLogitStride_ = pout_[0].properties.stride[pout_[0].properties.validShape.numDimensions - 2];
     // One row of prefill logits must fit the decode logit buffer we copy it into.
     if (pLogitStride_ <= 0 ||
@@ -611,7 +617,8 @@ class NativeHybridEngine {
     // one: save_state()/snapshot() serialize logitMem_ by design, so leaving
     // curLogits_ pointing elsewhere would silently snapshot the previous step's
     // logits and make a restored prefix resume from the wrong distribution.
-    std::memcpy(logitMem_.p(), (const uint8_t*)pLogitMem_.p() + (size_t)(N_ - 1) * pLogitStride_,
+    std::memcpy(logitMem_.p(),
+                (const uint8_t*)pLogitMem_.p() + (size_t)(pLogitRows_ - 1) * pLogitStride_,
                 (size_t)pLogitStride_);
     curLogits_ = logitMem_.p();
     curLogits_valid_ = true;
@@ -650,6 +657,7 @@ class NativeHybridEngine {
   std::vector<Mem> pFixedMem_;
   Mem pLogitMem_;
   int64_t pLogitStride_ = 0;
+  int pLogitRows_ = 1;
   int N_ = 0;
   std::string decodeName_;
   std::vector<uint64_t> kvRow_;   // per cache: bytes/position if window-indexed, else 0
