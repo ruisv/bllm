@@ -27,7 +27,7 @@
 ## 目录
 
 - [特性](#特性) · [安装](#安装) · [快速上手](#快速上手) · [制作模型目录](#制作模型目录)
-- [服务化部署](#服务化部署openai-兼容-http) · [多模态](#多模态qwen25-omni) · [与视觉流水线共享 BPU](#与视觉流水线共享-bpu)
+- [服务化部署](#服务化部署openai-兼容-http) · [多模态](#多模态) · [与视觉流水线共享 BPU](#与视觉流水线共享-bpu)
 - [支持的模型](#支持的模型) · [从源码构建](#从源码构建)
 - [社区交流](#社区交流) · [参与贡献](#参与贡献) · [致谢](#致谢) · [许可证](#许可证)
 
@@ -36,7 +36,7 @@
 - **原生 BPU 推理**：直接驱动 `.hbm`，跑在通用 hbDNN / hbUCP 栈上（和视觉共用同一 BPU 驱动）。
 - **稠密 + 混合架构**：Qwen2.5 / DeepSeek-R1-Distill / InternLM2 / GLM-Edge / Phi-4-mini 等稠密文本模型，
   以及 **Qwen3.5-0.8B 混合 Gated-DeltaNet/SSM**（严格 100% 落 BPU，~21 tok/s）。
-- **多模态**：Qwen2.5-Omni 的 文本 + 图像 + 音频 + 视频，支持文件路径或原始数组（相机/麦克风零拷贝）。
+- **多模态**：Qwen2.5-Omni 的 文本 + 图像 + 音频 + 视频，以及 **Qwen3.5 图文**（自编视觉塔）；支持文件路径或原始数组（相机/麦克风零拷贝）。
 - **一行式会话**：`bllm.load(...)` / `NativeSession`，内置 C++ tokenizer、ChatML 模板、流式、多轮、采样。
 - **完整采样**：贪心 / 温度 / top-k / top-p / min-p / typical-p / 重复·频率·存在惩罚，可复现；
   另有 `logit_bias`（强推/封禁 token）与 `logprobs`（全词表精确对数概率）。
@@ -115,7 +115,7 @@ tokenizer 声明的 special token 解析停止符并打印用了哪个来源。�
 Qwen2.5 的词表里就有一个 id 128247 的字面量 `</s>`，它并不是停止符。
 
 三种 `arch`：`dense`（上面）、`hybrid`（Qwen3.5 SSM，另需 `--embed`）、
-`omni`（[多模态](#多模态qwen25-omni)，另需塔与嵌入表）。官方包结构、ION 设置等完整部署步骤见
+`omni`（[多模态](#多模态)，另需塔与嵌入表）。官方包结构、ION 设置等完整部署步骤见
 [`docs/MODELS.zh.md`](docs/MODELS.zh.md)。
 
 ## 服务化部署（OpenAI 兼容 HTTP）
@@ -157,7 +157,49 @@ curl localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
 一次只跑一个生成（单 BPU 图），排队超过 `BLLM_MAX_QUEUE` 返回 429。
 详见 [`docker/README.md`](docker/README.md)。
 
-## 多模态（Qwen2.5-Omni）
+## 多模态
+
+两条路：官方 Qwen2.5-Omni（文/图/音/视频），以及 **Qwen3.5 图文**（我们自己编的视觉塔）。
+
+### Qwen3.5 图文
+
+Qwen3.5 官方就是 image-text-to-text —— 纯文本的包只是编译时把视觉半边丢掉了。
+同一个 hybrid 文本 `.hbm` 配上视觉塔即可（塔的编译脚本在
+`host_toolchain/convert/vision/`，路线与门禁数字见 [`docs/VLM_PLAN.md`](docs/VLM_PLAN.md)）：
+
+```bash
+bllm-make-model-dir hybrid ~/models/qwen3.5-0.8b-vlm448-ctx4096-int8-s100p \
+    --hbm qwen35_0.8b_ctx4k.hbm --embed embed_fp16.bin --tokenizer tokenizer.json \
+    --visual qwen35_visual_448.hbm \
+    --mrope-section 11 11 10 --mrope-interleaved \
+    --vision-patch 16 --vision-mean 0.5 --vision-std 0.5 --cache-len 4096
+```
+
+```python
+vlm = bllm.load("~/models/qwen3.5-0.8b-vlm448-ctx4096-int8-s100p")
+print(vlm.chat("Describe this image in one sentence.", images=["bears.jpg"]))
+# -> Two brown bears walk across a dusty, arid landscape.
+```
+
+S100P 实测（0.8B）：
+
+| 桶 | token/图 | 视觉塔 encode | 塔输出 cosine vs HF fp32 | 首字延迟 |
+|---|---|---|---|---|
+| 224×224 | 49 | 59 ms | 0.99905 | 7.4 s |
+| 448×448 | 196 | 362 ms | 0.99654 | 21.7 s |
+
+> ⚠️ 后四个参数**必填且不能照抄 Omni**（patch 16 vs 14、mean/std 0.5 vs CLIP、
+> rope 分段 `11 11 10` vs `16 24 24`、频率布局 interleaved vs 连续）。编译好的 `.hbm`
+> 里看不出这些，配错只会得到**形状正确的垃圾**。尤其 `--mrope-interleaved`：
+> `t==h==w` 时两种布局完全等价，所以纯文本一切正常，**只有喂进图像之后位置才开始错**。
+>
+> ⚠️ 首字延迟的大头**不是视觉塔**，是 hybrid 目前逐 token 摄入（~69 ms/token）。
+> 448 桶 21.7 s 里视觉塔只占 0.36 s。prefill 图（`qwen35_prefill_compile.py`）是解法。
+>
+> 目前只支持**静止图像**：视频路径实现的是 Omni 的 TMRoPE，而 Qwen3.5 用时间戳 token
+> 分隔帧，传 `videos=` 会明确报错而不是悄悄编出顺序错乱的答案。
+
+### Qwen2.5-Omni（文/图/音/视频）
 
 官方发布的 Omni 是**三个塔 + 一张宿主嵌入表**，先拼成一个模型目录
 （`bllm-make-model-dir` 随 conda 包一起装好，不必 clone 本仓）：
