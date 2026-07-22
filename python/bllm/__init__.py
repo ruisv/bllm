@@ -173,6 +173,14 @@ if _HAVE_NATIVE:
         def has_grammar(self) -> bool:
             return self._llm.has_grammar
 
+        def token_bytes(self, token_id: int) -> bytes:
+            """The exact bytes a token contributes (empty for control tokens).
+
+            `decode([id])` cannot answer this: a token holding part of a multi-byte
+            character decodes to U+FFFD, so per-token byte reporting (OpenAI's logprobs
+            `bytes`) would corrupt any CJK the tokenizer split."""
+            return self._llm.token_bytes(int(token_id))
+
         def last_logprobs(self) -> "list[dict]":
             """Per-token logprobs of the last turn: [{id, logprob, top: [(id, logprob), ...]}].
 

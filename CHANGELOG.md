@@ -45,6 +45,28 @@ All notable changes to BLLM are documented here. The format follows
 
 ### Fixed
 
+- **A left-recursive grammar crashed the whole server.** `{"grammar": "root ::= root\n"}` —
+  or any rule that can reach itself without consuming input, including indirectly, through
+  an alternate, or past a nullable prefix — expanded forever inside the matcher and took the
+  process down with SIGSEGV, model and all. `grammar` is a request field, so any client
+  could send it; the same shape was reachable through `response_format` with a
+  self-referential `$ref`. Grammars are now checked for left recursion at construction
+  (nullability fixed point + a cycle search over the "can begin with" graph) and rejected
+  with a 400, with a depth cap in the matcher as a backstop. Right recursion — what `*`,
+  `+` and `?` expand into — is unaffected.
+- **`logprobs` reported the wrong `bytes` for split characters.** The payload derived them
+  from `decode([id]).encode()`, but a token holding only part of a multi-byte character
+  decodes to U+FFFD: token 94 of the Qwen vocabulary contributes the single byte `0xA1`
+  while the response claimed `[239, 191, 189]`. A client reassembling text from per-token
+  reports corrupted any CJK the tokenizer had split — which is precisely what OpenAI's
+  `bytes` field exists to prevent. It now comes from the token's real bytes
+  (`NativeSession.token_bytes()`), and `logprobs` is present as an empty array rather than
+  absent when a request asked for it but generated nothing.
+- **`bllm.Grammar` was copyable but must not be.** Its positions are pointers into its own
+  rule storage, so a copy kept pointing at the source and dangled when the source died. The
+  copy constructor is now deleted (moving, which is how the session takes ownership, is
+  unaffected).
+
 - **`temperature` had no effect.** `seed` defaulted to a fixed `1234`, and the sampler is
   constructed fresh for every generation — so every request replayed the identical random
   stream. Three identical `temperature=0.8` requests came back byte-identical; the knob was

@@ -75,6 +75,18 @@ class NativeLlm {
     sampling_.logprobs = logprobs;
   }
 
+  // The exact bytes a token contributes — what OpenAI's logprobs `bytes` field is for.
+  // decode() cannot answer this: a token holding half a multi-byte character comes back as
+  // U+FFFD, so a caller reassembling text from per-token reports would corrupt any CJK the
+  // tokenizer happened to split. Per-id, so it costs one tokenizer call, not the vocabulary
+  // table that grammars build.
+  std::string token_bytes(int id) const {
+    const std::string raw = tk_.id_to_token(id);
+    std::string out;
+    if (raw.empty() || isControlTokenText(raw) || !decodeByteLevelToken(raw, &out)) return {};
+    return out;
+  }
+
   // Per-token logprobs for the last turn, in generated order, covering exactly the tokens
   // in the returned text. Empty unless sampling was configured with logprobs >= 0. Valid
   // until the next generate()/chat().

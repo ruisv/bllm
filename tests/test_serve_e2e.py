@@ -86,10 +86,23 @@ def test_logprobs_come_back_in_openai_shape():
         assert e["bytes"] == list(e["token"].encode())
         assert e["logprob"] <= 0.0
         assert len(e["top_logprobs"]) == 3
-    # The array describes exactly the reply that was returned.
-    assert "".join(e["token"] for e in content) == r["choices"][0]["message"]["content"]
+    # The array describes exactly the reply that was returned — checked on the BYTES,
+    # which is what `bytes` is for: a token can hold part of a multi-byte character, and
+    # its `token` string is then U+FFFD while its bytes are still exact.
+    rebuilt = bytes(b for e in content for b in e["bytes"])
+    assert rebuilt.decode("utf-8") == r["choices"][0]["message"]["content"]
     # And it is absent, not null or empty, when nobody asked.
     assert "logprobs" not in chat(QUESTION)["choices"][0]
+
+
+@pytest.mark.skipif(not _CAPS.get("supports_grammar"),
+                    reason="token_bytes landed with the same runtime as grammars")
+def test_logprobs_bytes_are_exact_for_chinese():
+    """Chinese is where `token.encode()` and the token's real bytes diverge."""
+    r = chat([{"role": "user", "content": "用一句话介绍北京。"}], logprobs=True, max_tokens=32)
+    content = r["choices"][0]["logprobs"]["content"]
+    rebuilt = bytes(b for e in content for b in e["bytes"])
+    assert rebuilt.decode("utf-8") == r["choices"][0]["message"]["content"]
 
 
 def test_bad_logprobs_request_is_a_400():
@@ -137,6 +150,35 @@ def test_a_grammar_does_not_leak_into_the_next_request():
     """The session keeps a grammar until told otherwise, and requests share one session."""
     chat(QUESTION, grammar='root ::= "yes" | "no"\n', max_tokens=8)
     assert "pineapple" in chat(QUESTION, max_tokens=16)["choices"][0]["message"]["content"].lower()
+
+
+@needs_grammar
+@pytest.mark.parametrize("grammar", [
+    "root ::= root\n",                          # direct left recursion
+    "root ::= a\na ::= root\n",                 # indirect
+    'root ::= "a" | root\n',                    # via an alternate
+    "root ::= x*\nx ::= \"a\"?\n",              # a nullable body under *
+])
+def test_a_left_recursive_grammar_cannot_kill_the_server(grammar):
+    """This was a remote SIGSEGV: a rule that reaches itself without consuming input
+    expanded forever inside the matcher and took the whole process — model included — down
+    with it. `grammar` is a request field, so any client could send it."""
+    with pytest.raises(urllib.error.HTTPError) as e:
+        chat(QUESTION, grammar=grammar, max_tokens=8)
+    assert e.value.code == 400
+    assert get("/health")["status"] == "ok"     # still serving, which is the whole point
+
+
+@needs_grammar
+def test_a_self_referential_schema_is_a_400_not_a_crash():
+    """The same hazard through the schema door: `A -> A` converts to a grammar rule that
+    references only itself."""
+    schema = {"$ref": "#/$defs/A", "$defs": {"A": {"$ref": "#/$defs/A"}}}
+    with pytest.raises(urllib.error.HTTPError) as e:
+        chat(QUESTION, response_format={"type": "json_schema",
+                                        "json_schema": {"name": "a", "schema": schema}})
+    assert e.value.code == 400
+    assert get("/health")["status"] == "ok"
 
 
 @needs_grammar

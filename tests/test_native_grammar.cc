@@ -7,6 +7,7 @@
 
 #include <cstdio>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 static int failures = 0;
@@ -133,6 +134,47 @@ int main() {
     // while the same lead is fine when the grammar wants a CJK range
     bllm::Grammar cjk("root ::= [\\u4e00-\\u9fff]+\n");
     CHECK(cjk.accepts("\xE5"));
+  }
+
+  // --- left recursion is rejected, not crashed on --------------------------
+  // A rule that reaches itself without consuming input expands forever in advanceStack.
+  // Grammars arrive over HTTP, so this was a remote SIGSEGV (measured: exit 139) before the
+  // constructor started checking. Every shape here used to take the process down.
+  {
+    auto rejects = [](const std::string& gbnf) {
+      try { bllm::Grammar g(gbnf); } catch (const std::exception&) { return true; }
+      return false;
+    };
+    CHECK(rejects("root ::= root\n"));                        // direct
+    CHECK(rejects("root ::= a\na ::= b\nb ::= a\n"));          // indirect
+    CHECK(rejects("root ::= \"a\" | root\n"));                 // via an alternate
+    CHECK(rejects("root ::= opt root\nopt ::= \"x\"?\n"));     // past a nullable prefix
+    CHECK(rejects("root ::= x*\nx ::= \"a\"?\n"));             // a nullable body under *
+
+    // ... while right recursion — what *, + and ? actually expand into — stays legal.
+    auto accepts_grammar = [](const std::string& gbnf) {
+      try { bllm::Grammar g(gbnf); } catch (const std::exception&) { return false; }
+      return true;
+    };
+    CHECK(accepts_grammar("root ::= item*\nitem ::= \"a\" | \"ab\"\n"));
+    CHECK(accepts_grammar("root ::= [0-9]+\n"));
+    CHECK(accepts_grammar("root ::= (\"a\" (\"b\")*)+ \"c\"\n"));
+    CHECK(accepts_grammar("root ::= v\nv ::= o | \"1\"\no ::= \"{\" v \"}\"\n"));  // nested
+  }
+
+  // A Grammar's stacks point INTO its own rule storage, so it must move, never copy — a
+  // copy would keep pointing at the source and dangle when the source dies. The copy
+  // constructor is deleted, which makes that a compile error; moving must still work,
+  // because that is how GrammarConstraint takes ownership.
+  {
+    static_assert(!std::is_copy_constructible<bllm::Grammar>::value,
+                  "Grammar must not be copyable: its stacks alias its own rules");
+    static_assert(std::is_move_constructible<bllm::Grammar>::value, "moving must work");
+    bllm::Grammar a("root ::= \"ab\"\n");
+    bllm::Grammar b = std::move(a);
+    CHECK(b.accepts("a"));
+    b.accept("a");
+    CHECK(b.accepts("b") && !b.can_end());
   }
 
   // --- errors are reported, not guessed ------------------------------------

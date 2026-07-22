@@ -306,7 +306,7 @@ class Engine:
         res.n_completion = len(self.sess.encode(res.text)) if res.text else 0
         res.ttft_ms = round((first[0] - t0) * 1e3, 1) if first else 0.0
         res.decode_tps = round(float(getattr(self.sess, "last_decode_tps", 0.0) or 0.0), 2)
-        res.logprobs = self._logprobs_payload()
+        res.logprobs = self._logprobs_payload(job.sampling.get("logprobs", -1) >= 0)
         if self.sess.canceled:
             self.n_cancelled += 1
             res.finish_reason = "cancelled"
@@ -314,26 +314,30 @@ class Engine:
             res.finish_reason = "length"
         return res
 
-    def _logprobs_payload(self) -> Optional[list]:
+    def _logprobs_payload(self, wanted: bool) -> Optional[list]:
         """The last turn's logprobs in OpenAI's `logprobs.content[]` shape, or None.
 
-        Token ids are turned back into text here rather than in C++ because that is where
-        the tokenizer already lives on the Python side; the decodes are memoised because a
-        request with top_logprobs=5 asks for six of them per generated token, and the same
-        few thousand ids recur."""
+        `wanted` comes from the request, not from whether anything was produced: a reply
+        that generated no tokens still asked for logprobs, and answering with the key
+        missing rather than an empty array would make a client unwrap None.
+
+        `bytes` is the token's REAL bytes, via token_bytes() — `token.encode()` would be
+        wrong for a token holding half a multi-byte character, which decodes to U+FFFD.
+        That is exactly the case OpenAI's `bytes` field exists to cover. Both lookups are
+        memoised: top_logprobs=5 asks for six per generated token, and the ids recur."""
         fn = getattr(self.sess, "last_logprobs", None)
-        if fn is None:               # runtime older than logprobs support
+        if fn is None or not wanted:      # runtime older than logprobs support, or not asked
             return None
         raw = fn()
-        if not raw:                  # not requested, or nothing was generated
-            return None
-        memo: dict[int, str] = {}
+        memo: dict[int, dict] = {}
+        raw_bytes = getattr(self.sess, "token_bytes", None)
 
         def tok(i: int) -> dict:
             if i not in memo:
-                memo[i] = self.sess.decode([i])
-            text = memo[i]
-            return {"token": text, "bytes": list(text.encode("utf-8"))}
+                text = self.sess.decode([i])
+                b = raw_bytes(i) if raw_bytes is not None else text.encode("utf-8")
+                memo[i] = {"token": text, "bytes": list(b)}
+            return memo[i]
 
         return [
             {**tok(e["id"]), "logprob": e["logprob"],

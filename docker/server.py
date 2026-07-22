@@ -258,6 +258,8 @@ def _grammar_from(body: dict) -> str:
             return bllm.json_grammar(schema)
         except ValueError as exc:               # an unsupported or malformed schema
             raise HTTPException(status_code=400, detail=f"json_schema: {exc}")
+        except RecursionError:                  # nesting deeper than the converter recurses
+            raise HTTPException(status_code=400, detail="json_schema: nested too deeply")
     raise HTTPException(status_code=400, detail=f"unsupported response_format type {kind!r}")
 
 

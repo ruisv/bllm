@@ -172,6 +172,15 @@ NB_MODULE(_bllm_native, m) {
            "OpenAI's [-100, 100]. logprobs>=0 records per-token log probabilities with that "
            "many alternatives, read back with last_logprobs(). "
            "Applies to the next generate()/chat().")
+      .def("token_bytes",
+           [](bllm::NativeLlm& l, int id) {
+             const std::string b = l.token_bytes(id);
+             return nb::bytes(b.data(), b.size());
+           },
+           "id"_a,
+           "The exact bytes token `id` contributes, as bytes (empty for control tokens). "
+           "Unlike decode([id]) this survives a token that holds only part of a multi-byte "
+           "character — decode() would return U+FFFD there.")
       .def("last_logprobs",
            [](bllm::NativeLlm& l) {
              nb::list out;

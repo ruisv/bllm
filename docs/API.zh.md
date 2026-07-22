@@ -41,6 +41,7 @@ llm = bllm.NativeSession(model_dir)          # 或 bllm.load(...)
 |---|---|
 | `set_sampling(temp=0.0, top_p=1.0, top_k=0, rep_pen=1.0, seed=SEED_RANDOM, min_p=0.0, typ_p=1.0, min_keep=1, penalty_last_n=64, penalty_freq=0.0, penalty_present=0.0, logit_bias=None, logprobs=-1)` | 配置采样；`temp<=0` 即贪心。`logit_bias={token_id: 偏置}` 强推(+)/封禁(-)特定 token（OpenAI 的 [-100, 100]）；`logprobs>=0` 记录每个 token 的对数概率（外加这么多个备选），下轮结束后用 `last_logprobs()` 取。 |
 | `last_logprobs() -> list[dict]` | 上一轮的逐 token 对数概率 `[{id, logprob, top: [(id, logprob), ...]}]`。未开 `logprobs` 时为空。给的是**原始**模型分布（全词表精确 log-softmax），不随 temperature/惩罚/`logit_bias` 变——所以生成的 token 未必是 `top[0]`。 |
+| `token_bytes(token_id) -> bytes` | 该 token 真实贡献的字节（控制 token 为空）。`decode([id])` 给不了：只含半个多字节字符的 token 会解码成 U+FFFD——按 token 重组文本时中文会烂，这也是 OpenAI `bytes` 字段存在的原因。 |
 | `set_grammar(gbnf, root="root")` / `clear_grammar()` / `has_grammar` | **GBNF 语法约束解码**（llama.cpp 的格式）：每一步只允许仍能满足语法的 token，所以结构是**保证**的而不是求来的。`""` 等于清除。每轮从语法根重新开始。首次使用会建一张全词表的 token→字节表（板上约 315 ms，每会话一次），之后每步对候选各做一次语法测试（实测 14.3 → 13.4 tok/s）。 |
 | `bllm.json_grammar(schema=None) -> str` | JSON Schema → GBNF。不给 schema 就是「任意合法 JSON」。支持 `type`/`enum`/`const`/`properties`+`required`/`items`/`anyOf`/`oneOf`/`$ref`(→`$defs`)。两条有意收窄：可选字段必须按 schema 顺序出现；`additionalProperties` 一律当 false。 |
 | `set_stop(stop: list[str])` | 常驻停止串：回复中一旦出现即结束该轮并从流与返回值中裁掉。 |

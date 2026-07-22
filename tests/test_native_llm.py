@@ -161,6 +161,24 @@ def test_logprobs_report_the_real_distribution(llm):
     assert llm.last_logprobs() == [], "logprobs kept being computed after being turned off"
 
 
+def test_token_bytes_survive_a_split_character(llm):
+    """The `bytes` OpenAI reports per token must be the token's REAL bytes.
+
+    `decode([id])` cannot supply them: a token holding only part of a multi-byte character
+    decodes to U+FFFD, so a client reassembling text from per-token reports would corrupt
+    any CJK the tokenizer split. Measured on this vocabulary: token 94 contributes the
+    single byte 0xA1, while decode().encode() claimed [239, 191, 189]."""
+    llm.reset()
+    llm.set_sampling(logprobs=0)
+    reply = llm.chat("用一句话介绍北京。", max_new=32)
+    lp = llm.last_logprobs()
+    assert lp
+    rebuilt = b"".join(llm.token_bytes(e["id"]) for e in lp)
+    assert rebuilt.decode("utf-8") == reply     # exact, byte for byte, across any split
+    llm.reset()
+    llm.set_sampling()
+
+
 def test_logprobs_stop_at_the_stop_string(llm):
     """A stop string cuts the reply at a byte offset, but the tokens that matched it were
     still generated — the report must cover the returned text and nothing beyond it."""

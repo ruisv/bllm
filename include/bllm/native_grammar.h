@@ -129,6 +129,14 @@ class Grammar {
   using Stack = std::vector<const Elem*>;
   using Stacks = std::vector<Stack>;
 
+  // NOT copyable: the stacks are pointers INTO rules_, so a copy would still point at the
+  // source's element storage and dangle the moment the source dies. Moving is fine —
+  // vectors move their buffers, so the elements keep their addresses.
+  Grammar(const Grammar&) = delete;
+  Grammar& operator=(const Grammar&) = delete;
+  Grammar(Grammar&&) = default;
+  Grammar& operator=(Grammar&&) = default;
+
   // Parse `gbnf` and position the grammar at the start of `root_rule`.
   explicit Grammar(const std::string& gbnf, const std::string& root_rule = "root") {
     parse(gbnf);
@@ -144,6 +152,7 @@ class Grammar {
         if (e.type == grammar_detail::ET::RuleRef && !defined_[e.value])
           throw std::runtime_error("[grammar] rule '" + nameOf(i) + "' references '" +
                                    nameOf(e.value) + "', which is never defined");
+    checkLeftRecursion();
     reset();
   }
 
@@ -151,7 +160,6 @@ class Grammar {
   void reset() {
     partial_ = {};
     stacks_.clear();
-    Stack s;
     const Rule& r = rules_[root_];
     size_t i = 0;
     while (true) {                              // one starting stack per root alternate
@@ -193,10 +201,89 @@ class Grammar {
   }
 
  private:
+  // --- left recursion -------------------------------------------------------
+  // advanceStack() expands rule references until something needs input, so a rule that can
+  // reach ITSELF without consuming a character recurses forever: `root ::= root` overflows
+  // the stack and takes the process down. Since a grammar arrives over HTTP, that is a
+  // remote crash, not just a footgun — so it is rejected at construction, where the caller
+  // gets a "[grammar] ..." error (and the server, a 400).
+  //
+  // Detection: build the "can begin with, without consuming input" graph — the leading rule
+  // references of every alternate, continuing past any that can match empty — and look for
+  // a cycle. Right recursion (`sub ::= item sub | item`) has no such edge and is untouched;
+  // that is what the * and + operators expand into, so the common grammars stay legal.
+  void checkLeftRecursion() {
+    computeNullable();
+    std::vector<uint8_t> state(rules_.size(), 0);      // 0 unvisited, 1 on the path, 2 done
+    for (size_t i = 0; i < rules_.size(); ++i) dfsFirst((uint32_t)i, state);
+  }
+
+  void dfsFirst(uint32_t id, std::vector<uint8_t>& state) {
+    if (state[id] == 2) return;
+    if (state[id] == 1)
+      throw std::runtime_error("[grammar] rule '" + nameOf(id) + "' is left-recursive: it "
+                               "can reach itself without consuming any input, which no "
+                               "input could ever satisfy");
+    state[id] = 1;
+    for (const uint32_t next : firstRefs(rules_[id])) dfsFirst(next, state);
+    state[id] = 2;
+  }
+
+  // The rule ids an alternate can start with before anything is consumed. A nullable
+  // reference does not end the walk — what follows it is also a starting position.
+  std::vector<uint32_t> firstRefs(const Rule& r) const {
+    using grammar_detail::ET;
+    std::vector<uint32_t> out;
+    if (r.empty()) return out;          // only reachable if a rule slot was never filled
+    bool at_start = true;
+    for (size_t i = 0;; ++i) {
+      const Elem& e = r[i];
+      if (e.type == ET::End) break;
+      if (e.type == ET::Alt) { at_start = true; continue; }
+      if (!at_start) continue;                         // past the leading position
+      if (e.type == ET::RuleRef) {
+        out.push_back(e.value);
+        if (!nullable_[e.value]) at_start = false;     // it must consume: stop here
+      } else {
+        at_start = false;                              // a character: stops the walk
+      }
+    }
+    return out;
+  }
+
+  void computeNullable() {
+    nullable_.assign(rules_.size(), false);
+    for (bool changed = true; changed;) {              // fixed point: nullability spreads
+      changed = false;
+      for (size_t i = 0; i < rules_.size(); ++i)
+        if (!nullable_[i] && ruleNullable(rules_[i])) { nullable_[i] = true; changed = true; }
+    }
+  }
+
+  // Can any alternate of this rule match the empty string, given what is known so far?
+  bool ruleNullable(const Rule& r) const {
+    using grammar_detail::ET;
+    if (r.empty()) return true;
+    bool alt_empty = true;
+    for (size_t i = 0;; ++i) {
+      const Elem& e = r[i];
+      if (e.type == ET::End) return alt_empty;
+      if (e.type == ET::Alt) { if (alt_empty) return true; alt_empty = true; continue; }
+      if (e.type == ET::RuleRef) { if (!nullable_[e.value]) alt_empty = false; }
+      else alt_empty = false;                          // any char element consumes
+    }
+  }
+
   // Push every position reachable from `stack` without consuming input: a rule reference
   // expands into one stack per alternate of the referenced rule, recursively.
-  void advanceStack(const Stack& stack, Stacks& out) const {
+  void advanceStack(const Stack& stack, Stacks& out, int depth = 0) const {
     using grammar_detail::ET;
+    // Backstop for the left-recursion check above: that analysis is what keeps this from
+    // recursing forever, and a grammar arrives over HTTP, so a depth cap turns any shape it
+    // might have missed (or a legitimately absurd nesting) into an error instead of a
+    // stack overflow. Well above anything a real grammar reaches.
+    if (depth > 2048)
+      throw std::runtime_error("[grammar] rules nest too deeply to evaluate");
     // Dedup: the same position is often reachable by several paths (any rule that can be
     // entered two ways), and without this a recursive rule multiplies the stack set on
     // every step until the matcher crawls.
@@ -216,7 +303,7 @@ class Grammar {
             next.push_back(pos + 1);                           // what follows it
           if (!grammar_detail::isEndOfSequence(&sub[i]))
             next.push_back(&sub[i]);                           // this alternate
-          advanceStack(next, out);
+          advanceStack(next, out, depth + 1);
           while (!grammar_detail::isEndOfSequence(&sub[i])) ++i;
           if (sub[i].type == ET::Alt) ++i; else break;
         }
@@ -520,6 +607,7 @@ class Grammar {
   }
 
   std::vector<Rule> rules_;
+  std::vector<bool> nullable_;             // can this rule match the empty string?
   std::vector<bool> defined_;              // a name can be referenced before it is defined
   std::map<std::string, uint32_t> names_;
   uint32_t root_ = 0;
