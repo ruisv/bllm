@@ -85,6 +85,26 @@ bllm-make-model-dir omni ~/models/qwen2.5-omni-3b \
 只要视觉不要音频，就同时去掉 `--audio` 和 `--mel-filters`（这俩必须成对 —— 音频塔需要它的
 mel 滤波器组）。工具默认用符号链接，所以目录几乎不占空间；想要自包含就加 `--copy`。
 
+**Qwen3.5 图文**（hybrid 文本塔 + 视觉塔）：Qwen3.5 官方就是 image-text-to-text，
+纯文本的包只是编译时把视觉半边丢掉了。同一个文本 `.hbm` 配上视觉塔就是图文包：
+
+```bash
+bllm-make-model-dir hybrid ~/models/qwen3.5-0.8b-vlm     --hbm       qwen35_0.8b_ctx4k.hbm     --embed     embed_fp16.bin     --tokenizer qwen35_tok/tokenizer.json     --visual    qwen35_visual_448.hbm     --mrope-section 11 11 10 --mrope-interleaved     --vision-patch 16 --vision-mean 0.5 --vision-std 0.5     --cache-len 4096
+```
+
+后四个参数**必填、且不能照抄 Omni**，因为编译好的 `.hbm` 里看不出这些，配错只会得到
+**形状正确的垃圾**，没有任何检查能拦住：
+
+| 参数 | Qwen3.5 | Omni | 配错的后果 |
+|---|---|---|---|
+| `--vision-patch` | **16** | 14 | 切块几何全错 |
+| `--vision-mean/std` | **0.5** | CLIP 常数 | 像素归一化偏移 |
+| `--mrope-section` | **11 11 10** | 16 24 24 | rope 维度分配错 |
+| `--mrope-interleaved` | **必须加** | 不加 | 频率布局是 `[THWTHW…]` 而非连续分段 |
+
+最后一条最阴：`t==h==w` 时两种布局**完全等价**，所以纯文本一切正常，只有喂进图像之后
+位置才开始错。工具因此对 hybrid + `--visual` 强制要求这四个参数，不给默认值。
+
 ## 四、跑起来
 
 ```python
@@ -93,7 +113,8 @@ import bllm
 llm = bllm.load("~/models/qwen2.5-1.5b")
 print(llm.chat("你好"))
 
-vlm = bllm.load("~/models/qwen2.5-omni-3b")          # arch="omni" -> NativeVlmSession
+# load() 按包里有没有 visual 塔路由，omni 与 hybrid 图文包都走 NativeVlmSession
+vlm = bllm.load("~/models/qwen2.5-omni-3b")
 for chunk in vlm.stream_chat("描述这张图片。", ["bus.jpg"]):
     print(chunk, end="", flush=True)
 ```
