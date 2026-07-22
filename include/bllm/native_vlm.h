@@ -105,6 +105,16 @@ class NativeVlm {
     if (vision_bos_ < 0 || vision_eos_ < 0)
       throw std::runtime_error("[bllm] tokenizer has no vision start/end token");
     if (cfg_.eos.empty()) cfg_.eos = {im_end_, tk_.token_to_id("<|endoftext|>")};
+
+    // Video below implements Qwen2.5-Omni's TMRoPE: a temporal position of
+    // seconds*25 per grid step, and audio interleaved with video in 2 s chunks.
+    // Qwen3.5 does NOT lay video out that way — it separates frames with explicit
+    // timestamp tokens (`<t1><|vision_start|>frame<|vision_end|><t2>...`), which is
+    // a different position assignment entirely. Rather than quietly produce
+    // plausible-looking nonsense, only claim video where the scheme is the one
+    // implemented. Still images are unaffected: their 3-D layout IS shared, and
+    // it is checked against the HF reference.
+    video_ok_ = cfg_.is_omni();
   }
 
   const ModelConfig& config() const { return cfg_; }
@@ -187,6 +197,7 @@ class NativeVlm {
 
   // fps <= 0 means audio only (no video block).
   void stream_begin(double fps = 2.0, bool with_audio = true) {
+    if (fps > 0) requireVideo();
     if (streaming_) throw std::runtime_error("[bllm] stream already open");
     if (fps <= 0 && !with_audio) throw std::runtime_error("[bllm] stream needs video, audio, or both");
     fps_ = fps; withVideo_ = fps > 0; withAudio_ = with_audio;
@@ -251,6 +262,15 @@ class NativeVlm {
  private:
   // First of `names` the tokenizer knows, or -1. Lets one session class serve
   // checkpoints that spell the same special role differently.
+  void requireVideo() const {
+    if (!video_ok_)
+      throw std::runtime_error(
+          "[bllm] this model's video layout is not implemented: the video path here is "
+          "Qwen2.5-Omni TMRoPE (temporal position = seconds*25, audio interleaved in 2 s "
+          "chunks), and " + cfg_.arch + " models such as Qwen3.5 separate frames with "
+          "timestamp tokens instead. Still images are supported.");
+  }
+
   int firstId(std::initializer_list<const char*> names) const {
     for (const char* n : names) { const int id = tk_.token_to_id(n); if (id >= 0) return id; }
     return -1;
@@ -395,6 +415,7 @@ class NativeVlm {
 
   // <|vision_bos|>[<|audio_bos|>] <video (+ interleaved audio) tokens> [<|audio_eos|>]<|vision_eos|>
   void appendVideo(Stream& s, const VideoClip& v) {
+    requireVideo();
     if (v.frames.empty()) throw std::runtime_error("[bllm] empty video");
     if (v.fps <= 0) throw std::runtime_error("[bllm] video fps must be > 0");
     const bool with_audio = v.audio.samples && v.audio.count > 0;
@@ -504,6 +525,7 @@ class NativeVlm {
   std::vector<std::string> stop_;
   native_detail::BpuSched sched_;
   bool first_turn_ = true;
+  bool video_ok_ = false;         // is this package's video layout the one implemented?
   int im_start_ = -1, im_end_ = -1, vision_bos_ = -1, vision_eos_ = -1;
   int audio_bos_ = -1, audio_eos_ = -1;
 
