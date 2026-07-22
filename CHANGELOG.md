@@ -24,6 +24,12 @@ All notable changes to BLLM are documented here. The format follows
   folded falsy values back into the default, so `temperature: 0` — which clients send
   deliberately to force greedy decoding — read as "unset", and `top_p: 0` silently became
   `1.0`. Only `null`/absent counts as unset now.
+- **Reported TTFT excluded the prefill.** The clock started after the prompt was fed, but
+  prefill has already produced the logits the first token is drawn from, so the measurement
+  was ~0.3 ms for every request whether it hit the prefix cache or not — the one metric
+  that should show the cache working was blind to it. It now starts when the request begins
+  being served: a 428-token turn reusing 256 cached tokens reports 138 ms against 274 ms
+  for the same prompt uncached, matching the documented 2x.
 
 ## [0.1.6]
 

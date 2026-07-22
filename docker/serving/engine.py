@@ -234,6 +234,14 @@ class Engine:
         ids = job.ids
         res = Result(n_prompt=len(ids))
 
+        # TTFT starts HERE, not at the decode. Restoring a blob and prefilling the delta
+        # is most of what a client waits through — on a dense turn that crosses a chunk
+        # it is ~366 ms against ~0.3 ms of actual first-token sampling, because prefill
+        # already produced the logits the first token is drawn from. Timing only the
+        # decode reported ~0.3 ms for every request, hit or miss, which made the one
+        # number that should show the prefix cache working completely blind to it.
+        t0 = time.perf_counter()
+
         if job.cancel.is_set():  # disconnected while queued — never touch the engine
             raise Cancelled("client disconnected before the request ran")
 
@@ -271,7 +279,6 @@ class Engine:
             raise
 
         # 3. decode
-        t0 = time.perf_counter()
         first: list[float] = []
 
         def on_text(piece: str) -> None:
