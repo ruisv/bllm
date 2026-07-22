@@ -39,7 +39,8 @@ llm = bllm.NativeSession(model_dir)          # 或 bllm.load(...)
 
 | 方法 | 说明 |
 |---|---|
-| `set_sampling(temp=0.0, top_p=1.0, top_k=0, rep_pen=1.0, seed=SEED_RANDOM, min_p=0.0, typ_p=1.0, min_keep=1, penalty_last_n=64, penalty_freq=0.0, penalty_present=0.0)` | 配置采样；`temp<=0` 即贪心。 |
+| `set_sampling(temp=0.0, top_p=1.0, top_k=0, rep_pen=1.0, seed=SEED_RANDOM, min_p=0.0, typ_p=1.0, min_keep=1, penalty_last_n=64, penalty_freq=0.0, penalty_present=0.0, logit_bias=None, logprobs=-1)` | 配置采样；`temp<=0` 即贪心。`logit_bias={token_id: 偏置}` 强推(+)/封禁(-)特定 token（OpenAI 的 [-100, 100]）；`logprobs>=0` 记录每个 token 的对数概率（外加这么多个备选），下轮结束后用 `last_logprobs()` 取。 |
+| `last_logprobs() -> list[dict]` | 上一轮的逐 token 对数概率 `[{id, logprob, top: [(id, logprob), ...]}]`。未开 `logprobs` 时为空。给的是**原始**模型分布（全词表精确 log-softmax），不随 temperature/惩罚/`logit_bias` 变——所以生成的 token 未必是 `top[0]`。 |
 | `set_stop(stop: list[str])` | 常驻停止串：回复中一旦出现即结束该轮并从流与返回值中裁掉。 |
 | `set_bpu_priority(priority: int)` | BPU 队列优先级 0..255（默认 0 最低，让同驻视觉抢占）。 |
 | `reset()` | 清空多轮历史，开始新会话。 |

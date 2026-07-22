@@ -10,7 +10,8 @@
 // The candidate set is bounded to the top `max(top_k, 512, min_keep)` logits per step
 // (nth_element, no full softmax): the excluded tail carries negligible probability, and
 // penalties only push tokens down, so this matches the full sampler in practice while
-// staying O(vocab) once instead of O(vocab·exp) per token.
+// staying O(vocab) once instead of O(vocab·exp) per token. `logit_bias` is the one knob
+// that can push a token UP, so biased ids are unioned into the candidate set explicitly.
 #pragma once
 
 #include <algorithm>
@@ -19,6 +20,7 @@
 #include <deque>
 #include <random>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace bllm {
@@ -49,7 +51,64 @@ struct NativeSamplingParams {
 
   uint64_t seed = kSeedRandom;   // kSeedRandom => nondeterministic; any other value is exact
   std::vector<int> eos = {151645, 151643};
+
+  // token id -> additive logit bias, applied before every filter. OpenAI's `logit_bias`
+  // (same [-100, 100] convention: ±100 effectively forces or bans a token, 0 = no effect).
+  // Unlike the penalties this can raise a token, so it is also what forces a biased id
+  // into the candidate set — see pick().
+  std::unordered_map<int, float> logit_bias;
+
+  // OpenAI's logprobs: report each generated token's log probability plus this many
+  // alternatives (its `top_logprobs`; 0 = the chosen token only). <0 = off, the default,
+  // because the report costs two extra full-vocab passes per token. See computeLogprobs().
+  int logprobs = -1;
 };
+
+// One generated token's probability report — OpenAI's `logprobs` / `top_logprobs`.
+struct TokenLogprobs {
+  int id = 0;                                // the token that was actually generated
+  float logprob = 0.0f;                      // log p(id)
+  std::vector<std::pair<int, float>> top;    // (id, logprob) alternatives, most likely first
+};
+
+// Exact log-softmax of the RAW logits at one position: logit[id] - logsumexp(all logits),
+// accumulated in double over the whole vocab — no candidate truncation, so these are real
+// probabilities and not the sampler's renormalised view of its top 512.
+//
+// "Raw" is deliberate: the report describes what the MODEL believes, so it is unaffected by
+// temperature, the penalties, logit_bias and the top-k/p filters. That keeps it comparable
+// across requests with different sampling settings, which is the point of asking for
+// logprobs at all (confidence, scoring, classification). The consequence to document: the
+// generated token is not necessarily the highest-logprob entry here — sampling drew it from
+// the adjusted distribution, this reports the unadjusted one.
+//
+// Cost is two full-vocab passes (plus a partial sort for the alternatives) per token, on
+// top of a decode step that already costs tens of ms. Measured on S100P / Qwen3.5-0.8B
+// (151k vocab): 14.3 tok/s off, 13.9 with logprobs, 13.6 with 5 alternatives — 3-5%. Hence
+// opt-in rather than always-on.
+template <class LogitFn>
+TokenLogprobs computeLogprobs(LogitFn logit, int n, int chosen, int top_n) {
+  double mx = logit(0);
+  for (int i = 1; i < n; ++i) { const double v = logit(i); if (v > mx) mx = v; }
+  double se = 0.0;
+  for (int i = 0; i < n; ++i) se += std::exp((double)logit(i) - mx);
+  const double logZ = mx + std::log(se);        // max-shifted, so no overflow
+
+  TokenLogprobs out;
+  out.id = chosen;
+  out.logprob = (float)((double)logit(chosen) - logZ);
+  const int k = std::min(std::max(top_n, 0), n);
+  if (k > 0) {
+    std::vector<int> idx(n);
+    for (int i = 0; i < n; ++i) idx[i] = i;
+    std::partial_sort(idx.begin(), idx.begin() + k, idx.end(),
+                      [&](int a, int b) { return logit(a) > logit(b); });
+    out.top.reserve(k);
+    for (int i = 0; i < k; ++i)
+      out.top.emplace_back(idx[i], (float)((double)logit(idx[i]) - logZ));
+  }
+  return out;
+}
 
 class Sampler {
  public:
@@ -70,9 +129,12 @@ class Sampler {
     }
   }
 
-  // temp<=0 is deterministic (argmax). Only when there is no penalty is it a pure raw
-  // argmax we can shortcut; with penalties the argmax is over the penalised logits.
-  bool greedy_raw() const { return p_.temp <= 0.0f && !has_penalty(); }
+  // temp<=0 is deterministic (argmax). Only when nothing rewrites the logits is it a pure
+  // raw argmax we can shortcut; with penalties or a bias the argmax is over the adjusted
+  // logits, which needs the candidate path.
+  bool greedy_raw() const {
+    return p_.temp <= 0.0f && !has_penalty() && p_.logit_bias.empty();
+  }
 
   // logit(i) returns the (dequantized) logit for token i; n = vocab size.
   template <class LogitFn>
@@ -84,17 +146,33 @@ class Sampler {
     }
 
     // 1. Candidate set: the top `k` logits (penalties only lower tokens, so a token below
-    //    this cut cannot win). Materialise (penalised logit, id).
+    //    this cut cannot win). Materialise (adjusted logit, id).
     const int cap = std::max({p_.top_k > 0 ? p_.top_k : 0, 512, p_.min_keep});
     const int k = std::min(cap, n);
     if ((int)idx_.size() != n) { idx_.resize(n); for (int i = 0; i < n; ++i) idx_[i] = i; }
     std::nth_element(idx_.begin(), idx_.begin() + k, idx_.end(),
                      [&](int a, int b) { return logit(a) > logit(b); });
 
-    std::vector<Cand> c(k);
+    std::vector<Cand> c;
+    c.reserve(k + p_.logit_bias.size());
     for (int i = 0; i < k; ++i) {
       const int id = idx_[i];
-      c[i] = {penalise(id, logit(id)), 0.0, id};
+      c.push_back({adjust(id, logit(id)), 0.0, id});
+    }
+    // A bias can lift a token from anywhere in the tail above the cut, and the cut was
+    // taken on RAW logits, so it cannot see that. Union the biased ids in (deduped against
+    // the top-k, or their probability mass would be counted twice) — that restores the
+    // invariant the truncation rests on: the candidate set contains everything that could
+    // win. |logit_bias| is client-sized (tens of ids), so this is cheap and only runs when
+    // a bias was actually given.
+    if (!p_.logit_bias.empty()) {
+      picked_.clear();
+      picked_.insert(idx_.begin(), idx_.begin() + k);
+      for (const auto& kv : p_.logit_bias) {
+        const int id = kv.first;
+        if (id < 0 || id >= n || picked_.count(id)) continue;
+        c.push_back({adjust(id, logit(id)), 0.0, id});
+      }
     }
     std::sort(c.begin(), c.end(), [](const Cand& a, const Cand& b) { return a.lg > b.lg; });
 
@@ -110,7 +188,7 @@ class Sampler {
     for (auto& x : c) x.p /= sum;
 
     // 3. Filters, each keeping at least min_keep (already prob-sorted descending).
-    int keep = k;
+    int keep = (int)c.size();
     keep = apply_top_k(keep);
     keep = apply_top_p(c, keep);
     keep = apply_min_p(c, keep);
@@ -132,14 +210,22 @@ class Sampler {
     return p_.rep_pen != 1.0f || p_.penalty_freq != 0.0f || p_.penalty_present != 0.0f;
   }
 
-  // llama.cpp penalty on one token's logit, using its count in the window.
-  double penalise(int id, double lg) const {
-    if (!has_penalty()) return lg;
-    auto it = counts_.find(id);
-    if (it == counts_.end()) return lg;
-    const int cnt = it->second;
-    if (p_.rep_pen != 1.0f) lg = lg <= 0.0 ? lg * p_.rep_pen : lg / p_.rep_pen;
-    lg -= cnt * (double)p_.penalty_freq + (double)p_.penalty_present;
+  // Everything that rewrites one token's logit: the llama.cpp penalties (from its count in
+  // the window) then the client's bias. Bias last so it is not scaled by rep_pen — it is a
+  // request-level override, not part of the repetition model.
+  double adjust(int id, double lg) const {
+    if (has_penalty()) {
+      auto it = counts_.find(id);
+      if (it != counts_.end()) {
+        const int cnt = it->second;
+        if (p_.rep_pen != 1.0f) lg = lg <= 0.0 ? lg * p_.rep_pen : lg / p_.rep_pen;
+        lg -= cnt * (double)p_.penalty_freq + (double)p_.penalty_present;
+      }
+    }
+    if (!p_.logit_bias.empty()) {
+      auto it = p_.logit_bias.find(id);
+      if (it != p_.logit_bias.end()) lg += (double)it->second;
+    }
     return lg;
   }
 
@@ -207,6 +293,7 @@ class Sampler {
   std::deque<int> recent_;                 // penalty window, newest at the back
   std::unordered_map<int, int> counts_;    // token id -> occurrences in the window
   std::vector<int> idx_;
+  std::unordered_set<int> picked_;         // top-k ids, only built when a bias is set
 };
 
 }  // namespace bllm

@@ -45,7 +45,8 @@ llm = bllm.NativeSession(model_dir)          # or bllm.load(...)
 
 | Method | Description |
 |---|---|
-| `set_sampling(temp=0.0, top_p=1.0, top_k=0, rep_pen=1.0, seed=SEED_RANDOM, min_p=0.0, typ_p=1.0, min_keep=1, penalty_last_n=64, penalty_freq=0.0, penalty_present=0.0)` | Configure sampling; `temp<=0` is greedy. |
+| `set_sampling(temp=0.0, top_p=1.0, top_k=0, rep_pen=1.0, seed=SEED_RANDOM, min_p=0.0, typ_p=1.0, min_keep=1, penalty_last_n=64, penalty_freq=0.0, penalty_present=0.0, logit_bias=None, logprobs=-1)` | Configure sampling; `temp<=0` is greedy. `logit_bias={token_id: bias}` forces (+) or bans (-) tokens on OpenAI's [-100, 100]; `logprobs>=0` records per-token log probabilities (plus that many alternatives), read back with `last_logprobs()`. |
+| `last_logprobs() -> list[dict]` | Last turn's per-token log probabilities, `[{id, logprob, top: [(id, logprob), ...]}]`. Empty unless `logprobs` was set. These are the **raw** model distribution (an exact full-vocab log-softmax), unmoved by temperature / penalties / `logit_bias` — so the generated token need not be `top[0]`. |
 | `set_stop(stop: list[str])` | Persistent stop strings: end the turn as soon as any appears, trimmed from stream and return value. |
 | `set_bpu_priority(priority: int)` | BPU queue priority 0..255 (default 0 = lowest, so a co-resident vision pipeline preempts). |
 | `reset()` | Clear multi-turn history; start fresh. |

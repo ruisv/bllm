@@ -55,16 +55,29 @@ class NativeLlm {
 
   // Sampling controls (default greedy). Full parity with libxlm's knobs; applied to both
   // the dense and hybrid backends. min_p/typ_p disabled at 0/1, penalties at 1/0/0.
+  // `logit_bias` (OpenAI's, id -> additive bias on [-100, 100]) forces or bans tokens; an
+  // empty map clears it, so it resets like every other knob here. `logprobs` >= 0 makes the
+  // next turn record per-token log probabilities (that many alternatives each), readable
+  // afterwards via last_logprobs(); -1 (the default) skips the extra full-vocab passes.
   void set_sampling(float temp, float top_p, int top_k, float rep_pen, uint64_t seed,
                     float min_p = 0.0f, float typ_p = 1.0f, int min_keep = 1,
                     int penalty_last_n = 64, float penalty_freq = 0.0f,
-                    float penalty_present = 0.0f) {
+                    float penalty_present = 0.0f,
+                    std::unordered_map<int, float> logit_bias = {},
+                    int logprobs = -1) {
     sampling_.temp = temp; sampling_.top_p = top_p; sampling_.top_k = top_k;
     sampling_.rep_pen = rep_pen; sampling_.seed = seed;
     sampling_.min_p = min_p; sampling_.typ_p = typ_p; sampling_.min_keep = min_keep;
     sampling_.penalty_last_n = penalty_last_n; sampling_.penalty_freq = penalty_freq;
     sampling_.penalty_present = penalty_present;
+    sampling_.logit_bias = std::move(logit_bias);
+    sampling_.logprobs = logprobs;
   }
+
+  // Per-token logprobs for the last turn, in generated order, covering exactly the tokens
+  // in the returned text. Empty unless sampling was configured with logprobs >= 0. Valid
+  // until the next generate()/chat().
+  const std::vector<TokenLogprobs>& last_logprobs() const { return logprobs_; }
 
   // Stop strings: end a turn as soon as any of them appears in the decoded text, and
   // return the reply WITHOUT the stop string. Complements eos-token stopping (a stop
@@ -332,6 +345,7 @@ class NativeLlm {
     if (!cfg_.eos.empty()) sp.eos = cfg_.eos;
     if (hybrid_) hybrid_->generate(sp, on_token);
     else dense_->generate(sp, on_token);
+    collectLogprobs(gen, cut);
     if (cut != std::string::npos) return full.substr(0, cut);
     // No stop string: flush any suffix held back mid-stream (a stop-prefix that never
     // completed) so the stream ends up with the whole reply.
@@ -339,11 +353,30 @@ class NativeLlm {
     return full.empty() ? tk_.decode(gen) : full;
   }
 
+  // Take the engine's per-token logprobs for this turn, trimmed to the tokens that survive
+  // into the returned text. A stop string cuts `full` at a BYTE offset mid-generation, and
+  // the tokens that matched it were still generated — reporting them would hand the client
+  // a logprobs array longer than the content it describes. decode() of a prefix grows
+  // monotonically with the token count, so binary-search the count that still fits.
+  void collectLogprobs(const std::vector<int>& gen, size_t cut) {
+    const auto& src = hybrid_ ? hybrid_->last_logprobs() : dense_->last_logprobs();
+    logprobs_.assign(src.begin(), src.end());
+    if (cut == std::string::npos || logprobs_.empty()) return;
+    size_t lo = 0, hi = std::min(logprobs_.size(), gen.size());
+    while (lo < hi) {
+      const size_t mid = (lo + hi + 1) / 2;
+      if (tk_.decode(std::vector<int>(gen.begin(), gen.begin() + mid)).size() <= cut) lo = mid;
+      else hi = mid - 1;
+    }
+    logprobs_.resize(lo);
+  }
+
   ModelConfig cfg_;
   Tokenizer tk_;
   std::unique_ptr<NativeHybridEngine> hybrid_;
   std::unique_ptr<NativeEngine> dense_;
   NativeSamplingParams sampling_;                 // default: greedy
+  std::vector<TokenLogprobs> logprobs_;           // last turn's, trimmed to the reply
   std::vector<std::string> stop_;                 // persistent stop strings (default: none)
   bool first_turn_ = true;
   bool thinking_ = true;                          // Qwen3.5 reasoning: prefill empty <think> when false

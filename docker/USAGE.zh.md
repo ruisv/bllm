@@ -128,10 +128,19 @@ curl -N localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
 支持 `/v1/chat/completions`(流式 + 非流式)、`/v1/models`、`/health`。
 
 **采样字段**:`temperature`(默认 `0`,即贪心)、`top_p`、`presence_penalty`、
-`frequency_penalty`、`seed`、`max_tokens` / `max_completion_tokens`、`stop`、`stream`。
+`frequency_penalty`、`logit_bias`、`logprobs` / `top_logprobs`、`seed`、
+`max_tokens` / `max_completion_tokens`、`stop`、`stream`。
 另外接受几个非 OpenAI 标准但通用的扩展:`top_k`、`min_p`、`repetition_penalty`,
 以及 `enable_thinking`(Qwen3.5 思考开关,默认 `false`)。没给的字段一律取默认值,
 显式传 `0` 与不传是有区别的(`temperature: 0` = 贪心)。
+
+`logit_bias` 用 `{"token id": 偏置}`(OpenAI 的 [-100, 100]),超范围直接 400,
+不会悄悄截断。`logprobs: true` 时每个 token 回一条对数概率,`top_logprobs: N`
+(0..20)再附 N 个备选。给的是**原始**模型分布(全词表精确 log-softmax),不随
+temperature / 惩罚 / `logit_bias` 变——所以生成的 token 未必是 `top_logprobs[0]`,
+好处是不同采样设置之间可比。**流式**时对数概率**整批挂在最后一个 chunk 上**:
+delta 是解码后的文本片段(停止串的回退会合并/延后 token),没有诚实的逐 chunk 对齐;
+按惯例把各 chunk 的 `logprobs.content` 拼起来的客户端拿到的数组完全正确。
 
 不传 `seed` 时每个请求重新取种子,所以 `temperature` 会真的产生变化;传了 `seed` 则
 相同请求逐字节可复现(OpenAI 的 `seed` 语义)。

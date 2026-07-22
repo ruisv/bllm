@@ -49,6 +49,7 @@ class Result:
     finish_reason: str = "stop"
     ttft_ms: float = 0.0
     decode_tps: float = 0.0
+    logprobs: Optional[list] = None   # OpenAI logprobs.content[], only when requested
 
 
 @dataclass
@@ -67,6 +68,10 @@ class _Job:
 
 
 _SENTINEL = object()
+
+# Sampling knobs newer than some released runtimes: droppable if set_sampling rejects
+# them, rather than failing the request. See Engine._apply_sampling.
+_OPTIONAL_SAMPLING = frozenset({"logit_bias", "logprobs"})
 
 
 class Engine:
@@ -95,6 +100,7 @@ class Engine:
         self._prefix_ops = ("snapshot", "restore", "feed_ids", "decode_stream", "cache_align")
         self.supports_prefix_cache = all(hasattr(self.sess, a) for a in self._prefix_ops)
         self.supports_cancel = hasattr(self.sess, "request_cancel")
+        self._unsupported_sampling: set[str] = set()
 
         # Chunk alignment is a correctness requirement for the cache, not a tuning
         # knob — see cache.py. 0 means this engine does not chunk (hybrid), so any
@@ -267,7 +273,7 @@ class Engine:
         res.n_cached = covered
         delta = ids[covered:]
 
-        self.sess.set_sampling(**job.sampling)
+        self._apply_sampling(job.sampling)
 
         # 2. prefill only what is new, snapshotting at the aligned boundary so the
         #    cached state is one the un-cached path would also have produced
@@ -296,6 +302,7 @@ class Engine:
         res.n_completion = len(self.sess.encode(res.text)) if res.text else 0
         res.ttft_ms = round((first[0] - t0) * 1e3, 1) if first else 0.0
         res.decode_tps = round(float(getattr(self.sess, "last_decode_tps", 0.0) or 0.0), 2)
+        res.logprobs = self._logprobs_payload()
         if self.sess.canceled:
             self.n_cancelled += 1
             res.finish_reason = "cancelled"
@@ -303,11 +310,58 @@ class Engine:
             res.finish_reason = "length"
         return res
 
+    def _logprobs_payload(self) -> Optional[list]:
+        """The last turn's logprobs in OpenAI's `logprobs.content[]` shape, or None.
+
+        Token ids are turned back into text here rather than in C++ because that is where
+        the tokenizer already lives on the Python side; the decodes are memoised because a
+        request with top_logprobs=5 asks for six of them per generated token, and the same
+        few thousand ids recur."""
+        fn = getattr(self.sess, "last_logprobs", None)
+        if fn is None:               # runtime older than logprobs support
+            return None
+        raw = fn()
+        if not raw:                  # not requested, or nothing was generated
+            return None
+        memo: dict[int, str] = {}
+
+        def tok(i: int) -> dict:
+            if i not in memo:
+                memo[i] = self.sess.decode([i])
+            text = memo[i]
+            return {"token": text, "bytes": list(text.encode("utf-8"))}
+
+        return [
+            {**tok(e["id"]), "logprob": e["logprob"],
+             "top_logprobs": [{**tok(i), "logprob": lp} for i, lp in e["top"]]}
+            for e in raw
+        ]
+
+    def _apply_sampling(self, sampling: dict) -> None:
+        """set_sampling(), minus any knob this runtime is too old to know about.
+
+        The image installs bllm from the conda channel, so the server can be newer than
+        the runtime under it (same reason the prefix cache feature-detects). A knob added
+        after that runtime raises TypeError; dropping it serves the request with the rest
+        of the sampling honoured, which beats 500-ing on an optional field. The drop is
+        remembered, so the retry happens once and not per request."""
+        s = {k: v for k, v in sampling.items() if k not in self._unsupported_sampling}
+        try:
+            self.sess.set_sampling(**s)
+        except TypeError:
+            extra = [k for k in s if k in _OPTIONAL_SAMPLING]
+            if not extra:
+                raise            # a real argument error, not an old runtime
+            self._unsupported_sampling.update(extra)
+            print(f"[bllm-serve] this bllm runtime does not support {', '.join(extra)} — "
+                  f"the option will be ignored. Install a newer bllm.", flush=True)
+            self.sess.set_sampling(**{k: v for k, v in s.items() if k not in extra})
+
     def _serve_legacy(self, job: _Job, res: Result) -> Result:
         """Runtime without the snapshot primitives: reset and generate from text, the
         way the pre-rewrite server did. No cache, but still serialized on the worker."""
         self.sess.reset()
-        self.sess.set_sampling(**job.sampling)
+        self._apply_sampling(job.sampling)
         t0 = time.perf_counter()
         first: list[float] = []
 

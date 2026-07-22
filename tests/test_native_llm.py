@@ -107,6 +107,72 @@ def test_temperature_varies_unless_a_seed_is_given(llm):
     llm.set_sampling()                         # restore greedy for later tests
 
 
+def test_logit_bias_bans_and_forces_tokens(llm):
+    """logit_bias is the one knob that can push a token UP, past the candidate cut the
+    sampler takes on raw logits — so this exercises more than the arithmetic (the unit
+    coverage for the truncation invariant is in tests/test_native_sampler.cc)."""
+    q = "法国的首都是哪里？只答城市名。"
+    llm.reset(); llm.set_sampling()
+    plain = llm.chat(q, max_new=8)
+    assert "巴黎" in plain
+
+    banned = llm.encode("巴黎")                        # every token the answer is made of
+    llm.reset()
+    llm.set_sampling(logit_bias={t: -100.0 for t in banned})
+    assert "巴黎" not in llm.chat(q, max_new=8)
+
+    # And the other direction: +100 on a token the answer would never contain forces it.
+    forced = llm.encode("香蕉")
+    llm.reset()
+    llm.set_sampling(logit_bias={forced[0]: 100.0})
+    assert llm.decode([forced[0]]) in llm.chat(q, max_new=8)
+
+    llm.reset()
+    llm.set_sampling()                                 # clears the bias for later tests
+    assert "巴黎" in llm.chat(q, max_new=8)
+
+
+def test_logprobs_report_the_real_distribution(llm):
+    """logprobs are an exact full-vocab log-softmax of the raw logits, one entry per
+    generated token — so they are real probabilities (<= 0, alternatives summing to <= 1)
+    and they line up with the reply."""
+    import math
+
+    llm.reset()
+    llm.set_sampling(logprobs=3)
+    reply = llm.chat("法国的首都是哪里？只答城市名。", max_new=8)
+    lp = llm.last_logprobs()
+    assert lp, "logprobs=3 produced no report"
+    assert "".join(llm.decode([e["id"]]) for e in lp) == reply   # one entry per reply token
+
+    for e in lp:
+        assert e["logprob"] <= 0.0
+        assert len(e["top"]) == 3
+        alts = [p for _, p in e["top"]]
+        assert alts == sorted(alts, reverse=True)                # most likely first
+        assert sum(math.exp(p) for p in alts) <= 1.0 + 1e-4      # a slice of one distribution
+        # greedy picked the argmax, and the report is of the same (unadjusted) logits
+        assert e["id"] == e["top"][0][0]
+        assert e["logprob"] == pytest.approx(e["top"][0][1], abs=1e-5)
+
+    llm.reset()
+    llm.set_sampling()                                   # logprobs off again
+    llm.chat("法国的首都是哪里？只答城市名。", max_new=8)
+    assert llm.last_logprobs() == [], "logprobs kept being computed after being turned off"
+
+
+def test_logprobs_stop_at_the_stop_string(llm):
+    """A stop string cuts the reply at a byte offset, but the tokens that matched it were
+    still generated — the report must cover the returned text and nothing beyond it."""
+    llm.reset()
+    llm.set_sampling(logprobs=0)
+    reply = llm.chat("从1数到9，每个数字单独一行，只输出数字。", max_new=60, stop=["5"])
+    lp = llm.last_logprobs()
+    assert "".join(llm.decode([e["id"]]) for e in lp) == reply
+    llm.reset()
+    llm.set_sampling()
+
+
 def test_prompt_cache_round_trips_bit_identically(llm, tmp_path):
     """save_state/load_state (libxlm's path_prompt_cache): feeding a prefix then saving,
     reloading, and continuing must reproduce the in-one-go greedy continuation exactly."""

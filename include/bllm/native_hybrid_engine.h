@@ -138,6 +138,10 @@ class NativeHybridEngine {
   int context_left() const { return CL_ - P_; }
   const HybridStats& last_stats() const { return stats_; }
 
+  // Per-token logprobs for the last generate(), in order; empty unless it ran with
+  // params.logprobs >= 0. Same contract as NativeEngine::last_logprobs().
+  const std::vector<TokenLogprobs>& last_logprobs() const { return logprobs_; }
+
   void reset() {
     for (int c = 0; c < nCache_; ++c) {
       std::memset(bufA_[c].p(), 0, inBytes_[kFixedIn + c]); bufA_[c].clean();
@@ -280,12 +284,15 @@ class NativeHybridEngine {
                  : reinterpret_cast<const int16_t*>(curLogits_)[i] * logitScale_;
     };
     std::vector<int> gen;
+    logprobs_.clear();
     using clk = std::chrono::steady_clock;
     auto t0 = clk::now();
     for (int i = 0; i < p.max_new && curLogits_valid_ && P_ < CL_; ++i) {
       int tok = s.pick(logit, vocab_);
       if (eos.count(tok)) break;
       gen.push_back(tok);
+      // Report against the logits this token came out of, before step() advances them.
+      if (p.logprobs >= 0) logprobs_.push_back(computeLogprobs(logit, vocab_, tok, p.logprobs));
       if (on_token && on_token(tok)) break;
       s.record(tok);
       step(tok);
@@ -416,6 +423,7 @@ class NativeHybridEngine {
   // Bumped from "BLKH" when K/V trimming changed the payload: an old blob has a
   // 5-word header and full-window K/V, so it must be rejected rather than misread.
   HybridStats stats_;
+  std::vector<TokenLogprobs> logprobs_;    // last generate()'s, when asked for
 };
 
 }  // namespace bllm

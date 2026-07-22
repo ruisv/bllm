@@ -140,11 +140,23 @@ Supports `/v1/chat/completions` (streaming + non-streaming), `/v1/models`,
 `/health`.
 
 **Sampling fields**: `temperature` (default `0`, i.e. greedy), `top_p`,
-`presence_penalty`, `frequency_penalty`, `seed`, `max_tokens` /
-`max_completion_tokens`, `stop`, `stream`. Plus a few common non-OpenAI extensions:
-`top_k`, `min_p`, `repetition_penalty`, and `enable_thinking` (the Qwen3.5 reasoning
-toggle, default `false`). Omitted fields take their default, and an explicit `0` is
-distinct from omitting one (`temperature: 0` means greedy).
+`presence_penalty`, `frequency_penalty`, `logit_bias`, `logprobs` / `top_logprobs`,
+`seed`, `max_tokens` / `max_completion_tokens`, `stop`, `stream`. Plus a few common
+non-OpenAI extensions: `top_k`, `min_p`, `repetition_penalty`, and `enable_thinking`
+(the Qwen3.5 reasoning toggle, default `false`). Omitted fields take their default, and
+an explicit `0` is distinct from omitting one (`temperature: 0` means greedy).
+
+`logit_bias` takes `{"token id": bias}` on OpenAI's [-100, 100]; a value outside that
+range is a 400 rather than a silent clamp. `logprobs: true` returns each token's log
+probability, and `top_logprobs: N` (0..20) adds N alternatives. These are the **raw**
+model distribution (an exact full-vocab log-softmax), unmoved by temperature, the
+penalties or `logit_bias` — so the generated token need not be `top_logprobs[0]`, and
+the numbers stay comparable across requests with different sampling settings. When
+**streaming**, the logprobs arrive **all at once on the final chunk**: a delta is a
+decoded text slice (a stop-string holdback can merge or defer tokens), so there is no
+honest per-chunk alignment to publish, and a client that concatenates every chunk's
+`logprobs.content` — the normal way to consume them — still gets exactly the right
+array.
 
 With no `seed`, each request draws a fresh one, so `temperature` actually varies the
 reply; with an explicit `seed`, identical requests reproduce byte for byte (OpenAI's

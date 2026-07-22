@@ -6,6 +6,29 @@ All notable changes to BLLM are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`logit_bias`** — force or ban specific tokens, on OpenAI's `[-100, 100]` scale.
+  `set_sampling(logit_bias={id: bias})` in Python, `logit_bias: {"<id>": bias}` over HTTP
+  (out-of-range values are a 400, not a silent clamp). The subtlety is in the sampler: it
+  bounds its candidate set to the top 512 logits, and that cut is safe only because the
+  penalties can *lower* a token but never raise one. A bias breaks exactly that assumption,
+  so biased ids are unioned into the candidate set after the cut — otherwise a `+100` on a
+  token buried in the tail would be silently thrown away before it could win.
+- **`logprobs` / `top_logprobs`** — per-token log probabilities, in OpenAI's
+  `choices[].logprobs.content[]` shape, plus `NativeSession.last_logprobs()` on the Python
+  API. The values are an exact full-vocab log-softmax of the **raw** logits (double
+  accumulation, no candidate truncation): they describe what the model believes, so
+  temperature, the penalties and `logit_bias` do not move them and they stay comparable
+  across requests — which does mean the generated token need not be `top_logprobs[0]`.
+  Opt-in, because it costs two extra full-vocab passes per token (measured on S100P /
+  Qwen3.5-0.8B: 14.3 → 13.6 tok/s with 5 alternatives, 3-5%). When streaming, the array
+  arrives whole on the final chunk: a delta is a decoded text slice, not a token, so no
+  honest per-chunk alignment exists — a client that concatenates each chunk's
+  `logprobs.content` still ends up with exactly the right array. The report is also trimmed
+  to the returned text, so a stop string that cuts the reply does not leave logprobs
+  describing tokens the client never received.
+
 ### Fixed
 
 - **`temperature` had no effect.** `seed` defaulted to a fixed `1234`, and the sampler is

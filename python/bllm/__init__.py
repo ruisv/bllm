@@ -129,15 +129,30 @@ if _HAVE_NATIVE:
         def set_sampling(self, temp: float = 0.0, top_p: float = 1.0, top_k: int = 0,
                          rep_pen: float = 1.0, seed: int = SEED_RANDOM, min_p: float = 0.0,
                          typ_p: float = 1.0, min_keep: int = 1, penalty_last_n: int = 64,
-                         penalty_freq: float = 0.0, penalty_present: float = 0.0) -> "NativeSession":
+                         penalty_freq: float = 0.0, penalty_present: float = 0.0,
+                         logit_bias: "dict[int, float] | None" = None,
+                         logprobs: int = -1) -> "NativeSession":
             """Configure sampling (temp<=0 => greedy). Full libxlm parity: top_k / top_p /
             min_p / typ_p (min_keep floors each filter) and repeat / frequency / presence
             penalties over the last penalty_last_n tokens. seed defaults to SEED_RANDOM (a fresh
             draw per generation, so temperature actually varies); pass a value to make
-            sampling reproducible. Returns self for chaining."""
+            sampling reproducible. logit_bias={token_id: bias} forces (+) or bans (-) specific
+            tokens on OpenAI's [-100, 100] scale. logprobs>=0 records per-token log
+            probabilities (with that many alternatives each) for the next turn, read back via
+            last_logprobs(). Returns self for chaining."""
             self._llm.set_sampling(temp, top_p, top_k, rep_pen, seed, min_p, typ_p,
-                                   min_keep, penalty_last_n, penalty_freq, penalty_present)
+                                   min_keep, penalty_last_n, penalty_freq, penalty_present,
+                                   dict(logit_bias or {}), int(logprobs))
             return self
+
+        def last_logprobs(self) -> "list[dict]":
+            """Per-token logprobs of the last turn: [{id, logprob, top: [(id, logprob), ...]}].
+
+            Empty unless set_sampling(logprobs=N) was in force for that turn. The values are
+            the RAW model log-probabilities — an exact full-vocab log-softmax — so they do not
+            move with temperature, the penalties or logit_bias, and the generated token is not
+            necessarily the top entry (sampling drew it from the adjusted distribution)."""
+            return self._llm.last_logprobs()
 
         def set_thinking(self, enabled: bool) -> "NativeSession":
             """Qwen3.5 reasoning toggle. enabled=False prefills an empty <think></think> so the
@@ -431,9 +446,11 @@ if _HAVE_NATIVE:
         def set_sampling(self, temp: float = 0.0, top_p: float = 1.0, top_k: int = 0,
                          rep_pen: float = 1.0, seed: int = SEED_RANDOM, min_p: float = 0.0,
                          typ_p: float = 1.0, min_keep: int = 1, penalty_last_n: int = 64,
-                         penalty_freq: float = 0.0, penalty_present: float = 0.0) -> "NativeVlmSession":
+                         penalty_freq: float = 0.0, penalty_present: float = 0.0,
+                         logit_bias: "dict[int, float] | None" = None) -> "NativeVlmSession":
             self._vlm.set_sampling(temp, top_p, top_k, rep_pen, seed, min_p, typ_p,
-                                   min_keep, penalty_last_n, penalty_freq, penalty_present)
+                                   min_keep, penalty_last_n, penalty_freq, penalty_present,
+                                   dict(logit_bias or {}))
             return self
 
         def set_stop(self, stop: "list[str]") -> "NativeVlmSession":

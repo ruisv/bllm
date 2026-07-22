@@ -80,6 +80,33 @@ def test_null_is_treated_as_absent():
     assert s["penalty_present"] == 0.0
 
 
+def test_logit_bias_keys_become_ints():
+    """JSON object keys are always strings; the engine keys the map by token id."""
+    s = _sampling_from({"logit_bias": {"1234": -100, "77": 5.5}})
+    assert s["logit_bias"] == {1234: -100.0, 77: 5.5}
+
+
+def test_no_logit_bias_is_an_empty_map():
+    """Empty means "no bias" all the way down — set_sampling then clears any previous
+    request's bias instead of leaving it applied to this one."""
+    assert _sampling_from({})["logit_bias"] == {}
+    assert _sampling_from({"logit_bias": None})["logit_bias"] == {}
+
+
+@pytest.mark.parametrize("bad", [
+    {"logit_bias": {"abc": 1}},        # key is not a token id
+    {"logit_bias": {"1": "high"}},     # value is not a number
+    {"logit_bias": {"1": 1000}},       # outside OpenAI's [-100, 100]
+    {"logit_bias": {"1": -1000}},
+    {"logit_bias": [1, 2]},            # not an object at all
+])
+def test_bad_logit_bias_is_a_400(bad):
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as e:
+        _sampling_from(bad)
+    assert e.value.status_code == 400
+
+
 def test_values_pass_through():
     s = _sampling_from({"temperature": 0.8, "top_p": 0.9, "top_k": 40, "min_p": 0.05,
                         "repetition_penalty": 1.1, "seed": 7})

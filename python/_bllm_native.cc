@@ -6,6 +6,7 @@
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/function.h>
 #include <nanobind/stl/string.h>
+#include <nanobind/stl/unordered_map.h>
 #include <nanobind/stl/vector.h>
 
 #include <deque>
@@ -40,7 +41,8 @@ NB_MODULE(_bllm_native, m) {
       .def_rw("penalty_present", &bllm::NativeSamplingParams::penalty_present)
       .def_rw("max_new", &bllm::NativeSamplingParams::max_new)
       .def_rw("seed", &bllm::NativeSamplingParams::seed)
-      .def_rw("eos", &bllm::NativeSamplingParams::eos);
+      .def_rw("eos", &bllm::NativeSamplingParams::eos)
+      .def_rw("logit_bias", &bllm::NativeSamplingParams::logit_bias);
 
   nb::class_<bllm::NativeStats>(m, "Stats")
       .def_ro("ttft_ms", &bllm::NativeStats::ttft_ms)
@@ -162,10 +164,33 @@ NB_MODULE(_bllm_native, m) {
            "temp"_a = 0.0f, "top_p"_a = 1.0f, "top_k"_a = 0, "rep_pen"_a = 1.0f, "seed"_a = bllm::kSeedRandom,
            "min_p"_a = 0.0f, "typ_p"_a = 1.0f, "min_keep"_a = 1, "penalty_last_n"_a = 64,
            "penalty_freq"_a = 0.0f, "penalty_present"_a = 0.0f,
+           "logit_bias"_a = std::unordered_map<int, float>{}, "logprobs"_a = -1,
            "Set sampling (temp<=0 => greedy). Full libxlm parity: top_k/top_p/min_p/typ_p "
            "(min_keep floors each filter) + repeat/freq/presence penalties over penalty_last_n. "
            "seed defaults to SEED_RANDOM (a fresh draw per generation); pass a value to make "
-           "sampling reproducible. Applies to the next generate()/chat().")
+           "sampling reproducible. logit_bias={id: bias} forces (+) or bans (-) tokens, "
+           "OpenAI's [-100, 100]. logprobs>=0 records per-token log probabilities with that "
+           "many alternatives, read back with last_logprobs(). "
+           "Applies to the next generate()/chat().")
+      .def("last_logprobs",
+           [](bllm::NativeLlm& l) {
+             nb::list out;
+             for (const auto& t : l.last_logprobs()) {
+               nb::list alts;
+               for (const auto& a : t.top) alts.append(nb::make_tuple(a.first, a.second));
+               nb::dict d;
+               d["id"] = t.id;
+               d["logprob"] = t.logprob;
+               d["top"] = alts;
+               out.append(d);
+             }
+             return out;
+           },
+           "Per-token logprobs of the last turn: [{id, logprob, top: [(id, logprob), ...]}], "
+           "in generated order. Empty unless set_sampling(logprobs=N) was set for that turn. "
+           "These are the RAW model log-probabilities (an exact full-vocab log-softmax), so "
+           "temperature/penalties/logit_bias do not move them and the generated token need "
+           "not be the top entry.")
       .def("set_stop", &bllm::NativeLlm::set_stop, "stop"_a,
            "Persistent stop strings for every following turn (a per-call stop=[...] overrides).")
       .def("set_thinking", &bllm::NativeLlm::set_thinking, "enabled"_a,
@@ -344,7 +369,8 @@ NB_MODULE(_bllm_native, m) {
       .def("set_sampling", &bllm::NativeVlm::set_sampling,
            "temp"_a = 0.0f, "top_p"_a = 1.0f, "top_k"_a = 0, "rep_pen"_a = 1.0f, "seed"_a = bllm::kSeedRandom,
            "min_p"_a = 0.0f, "typ_p"_a = 1.0f, "min_keep"_a = 1, "penalty_last_n"_a = 64,
-           "penalty_freq"_a = 0.0f, "penalty_present"_a = 0.0f)
+           "penalty_freq"_a = 0.0f, "penalty_present"_a = 0.0f,
+           "logit_bias"_a = std::unordered_map<int, float>{})
       .def("set_stop", &bllm::NativeVlm::set_stop, "stop"_a,
            "Persistent stop strings for every following turn (a per-call stop=[...] overrides).")
       .def("set_bpu_priority", &bllm::NativeVlm::set_bpu_priority, "priority"_a,

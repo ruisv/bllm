@@ -87,6 +87,81 @@ int main() {
     CHECK(s.pick([&](int i) { return two[i]; }, 3) == 0);   // 0 no longer in window
   }
 
+  // logit_bias forces a token in and bans another, greedily.
+  {
+    bllm::NativeSamplingParams p;                    // greedy
+    p.logit_bias[3] = 100.0f;                        // OpenAI's "always pick this"
+    CHECK(pick(p, lg) == 3);
+    p.logit_bias.clear();
+    p.logit_bias[1] = -100.0f;                       // ban the argmax
+    CHECK(pick(p, lg) == 3);                         // next-best of {0.1, 0.2, 0.3}
+  }
+
+  // The bias must survive candidate truncation. With a vocab far larger than the 512-logit
+  // cap, boost a token buried in the tail: the top-k cut is taken on RAW logits and cannot
+  // see it, so this fails unless biased ids are unioned into the candidate set.
+  {
+    std::vector<float> big(4000, 0.0f);
+    for (int i = 0; i < 600; ++i) big[i] = 10.0f + (float)i / 1000.0f;   // the top-512 live here
+    const int buried = 3999;
+    big[buried] = -5.0f;
+    bllm::NativeSamplingParams p;
+    p.logit_bias[buried] = 100.0f;
+    CHECK(pick(p, big) == buried);
+    // And with temperature on, the sampled token is still always the boosted one.
+    p.temp = 1.0f; p.seed = 5;
+    for (int i = 0; i < 20; ++i) CHECK(pick(p, big) == buried);
+  }
+
+  // Banning the top few tokens hands it to the next one down, not to a duplicate or a
+  // token outside the candidate set.
+  {
+    bllm::NativeSamplingParams p; p.temp = 1.0f; p.seed = 11; p.top_k = 2;
+    p.logit_bias[1] = -100.0f;                       // ban 5.0 → {0.3, 0.2} survive top_k=2
+    for (int i = 0; i < 30; ++i) { const int t = pick(p, lg); CHECK(t == 3 || t == 2); }
+  }
+
+  // A bias on an out-of-range id is ignored rather than sampled or crashing.
+  {
+    bllm::NativeSamplingParams p;
+    p.logit_bias[99999] = 100.0f;
+    p.logit_bias[-1] = 100.0f;
+    CHECK(pick(p, lg) == 1);
+  }
+
+  // computeLogprobs: an exact full-vocab log-softmax.
+  {
+    // Uniform logits over 4 tokens => every logprob is log(1/4).
+    std::vector<float> flat(4, 2.5f);
+    auto lp = bllm::computeLogprobs([&](int i) { return flat[i]; }, 4, 2, 4);
+    CHECK(std::fabs(lp.logprob - std::log(0.25)) < 1e-5);
+    CHECK(lp.id == 2);
+    CHECK(lp.top.size() == 4);
+    double mass = 0.0;
+    for (const auto& t : lp.top) mass += std::exp(t.second);
+    CHECK(std::fabs(mass - 1.0) < 1e-5);              // the whole distribution sums to 1
+
+    // Skewed: the alternatives come back most-likely first, and match the argmax.
+    auto s = bllm::computeLogprobs([&](int i) { return lg[i]; }, (int)lg.size(), 0, 3);
+    CHECK(s.top.size() == 3);
+    CHECK(s.top[0].first == 1);                        // token 1 has logit 5.0
+    CHECK(s.top[0].second > s.top[1].second && s.top[1].second > s.top[2].second);
+    CHECK(s.logprob < s.top[0].second);                // token 0 is not the most likely
+    // Every logprob is <= 0, i.e. a real probability.
+    for (const auto& t : s.top) CHECK(t.second <= 0.0);
+
+    // top_n = 0 reports only the chosen token; a huge top_n clamps to the vocab.
+    CHECK(bllm::computeLogprobs([&](int i) { return lg[i]; }, 5, 1, 0).top.empty());
+    CHECK(bllm::computeLogprobs([&](int i) { return lg[i]; }, 5, 1, 99).top.size() == 5);
+
+    // Large logits must not overflow: exp(900) is inf, so only the max-shift keeps this
+    // finite. p(0) rounds to exactly 1 here, hence <= rather than <.
+    std::vector<float> big = {900.0f, 800.0f};
+    auto b = bllm::computeLogprobs([&](int i) { return big[i]; }, 2, 0, 2);
+    CHECK(std::isfinite(b.logprob) && b.logprob <= 0.0);
+    CHECK(std::isfinite(b.top[1].second) && b.top[1].second < -99.0);   // the loser: ~ -100
+  }
+
   if (failures == 0) std::printf("all native-sampler tests passed\n");
   return failures == 0 ? 0 : 1;
 }

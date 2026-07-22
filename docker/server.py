@@ -166,7 +166,57 @@ def _sampling_from(body: dict) -> dict:
         # requests came back byte-identical, so temperature did nothing. An explicit
         # seed still reproduces exactly, which is what OpenAI's `seed` promises.
         "seed": int(_num(body, "seed", bllm.SEED_RANDOM)),
+        "logit_bias": _logit_bias_from(body),
+        "logprobs": _logprobs_from(body),
     }
+
+
+def _logprobs_from(body: dict) -> int:
+    """OpenAI's `logprobs` (bool) + `top_logprobs` (0..20) collapsed onto the engine's one
+    integer: -1 = off, N >= 0 = report each token's logprob plus N alternatives.
+
+    top_logprobs without logprobs=true is an error in the OpenAI API, and here it would
+    silently cost two extra full-vocab passes per token for a field nobody reads back, so
+    it is rejected rather than quietly honoured or quietly dropped."""
+    want = body.get("logprobs")
+    top = body.get("top_logprobs")
+    if top is not None and not want:
+        raise HTTPException(status_code=400,
+                            detail="top_logprobs requires logprobs=true")
+    if not want:
+        return -1
+    if top is None:
+        return 0
+    if not isinstance(top, int) or isinstance(top, bool) or not 0 <= top <= 20:
+        raise HTTPException(status_code=400,
+                            detail="top_logprobs must be an integer in [0, 20]")
+    return top
+
+
+def _logit_bias_from(body: dict) -> dict:
+    """OpenAI `logit_bias`: {"<token id>": bias} with bias on [-100, 100].
+
+    The keys arrive as strings (JSON object keys always do) and the engine wants ints.
+    Out-of-range values are rejected rather than clamped: a client that sends 1000 is
+    working from a different scale, and silently reinterpreting it would hide that.
+    """
+    raw = body.get("logit_bias")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=400, detail="logit_bias must be an object")
+    out: dict[int, float] = {}
+    for k, v in raw.items():
+        try:
+            tid, bias = int(k), float(v)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400,
+                                detail=f"logit_bias: bad entry {k!r}: {v!r}")
+        if not -100.0 <= bias <= 100.0:
+            raise HTTPException(status_code=400,
+                                detail=f"logit_bias[{tid}]={bias} is outside [-100, 100]")
+        out[tid] = bias
+    return out
 
 
 @app.post("/v1/chat/completions")
@@ -216,10 +266,13 @@ async def chat_completions(request: Request,
         status, payload = _error_payload(exc)
         return JSONResponse(status_code=status, content=payload)
 
+    choice: dict = {"index": 0, "message": {"role": "assistant", "content": res.text},
+                    "finish_reason": res.finish_reason}
+    if res.logprobs is not None:
+        choice["logprobs"] = {"content": res.logprobs}
     return JSONResponse({
         "id": cid, "object": "chat.completion", "created": created, "model": engine.name,
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": res.text},
-                     "finish_reason": res.finish_reason}],
+        "choices": [choice],
         "usage": _usage(res),
     })
 
@@ -285,7 +338,13 @@ async def _sse(request: Request, cid: str, created: int, job):
     if job.error is not None:
         yield _error_event(job.error)
     else:
-        yield _chunk(cid, created, {}, finish_reason=res.finish_reason, usage=_usage(res))
+        # logprobs ride on the final chunk, all of them at once, rather than per delta: a
+        # delta is a decoded text slice (a stop-string holdback can merge or defer tokens),
+        # so there is no honest per-chunk alignment to publish. A client that concatenates
+        # every chunk's logprobs.content — the normal way to consume them — still ends up
+        # with exactly the right array, just at the end of the stream.
+        yield _chunk(cid, created, {}, finish_reason=res.finish_reason, usage=_usage(res),
+                     logprobs=res.logprobs)
     yield "data: [DONE]\n\n"
 
 
@@ -298,10 +357,13 @@ def _error_event(exc: BaseException) -> str:
 
 
 def _chunk(cid: str, created: int, delta: dict, finish_reason: Optional[str] = None,
-           usage: Optional[dict] = None) -> str:
+           usage: Optional[dict] = None, logprobs: Optional[list] = None) -> str:
+    choice: dict[str, Any] = {"index": 0, "delta": delta, "finish_reason": finish_reason}
+    if logprobs is not None:
+        choice["logprobs"] = {"content": logprobs}
     obj: dict[str, Any] = {
         "id": cid, "object": "chat.completion.chunk", "created": created, "model": engine.name,
-        "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        "choices": [choice],
     }
     if usage is not None:
         obj["usage"] = usage

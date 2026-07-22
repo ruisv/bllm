@@ -77,6 +77,42 @@ def test_usage_is_real_tokens_not_an_estimate():
     assert "cached_tokens" in u.get("prompt_tokens_details", {})
 
 
+def test_logprobs_come_back_in_openai_shape():
+    r = chat(QUESTION, logprobs=True, top_logprobs=3)
+    content = r["choices"][0]["logprobs"]["content"]
+    assert content, "logprobs=true returned no content array"
+    for e in content:
+        assert isinstance(e["token"], str) and e["token"]
+        assert e["bytes"] == list(e["token"].encode())
+        assert e["logprob"] <= 0.0
+        assert len(e["top_logprobs"]) == 3
+    # The array describes exactly the reply that was returned.
+    assert "".join(e["token"] for e in content) == r["choices"][0]["message"]["content"]
+    # And it is absent, not null or empty, when nobody asked.
+    assert "logprobs" not in chat(QUESTION)["choices"][0]
+
+
+def test_bad_logprobs_request_is_a_400():
+    """top_logprobs without logprobs=true would cost two full-vocab passes per token
+    for a field the response never carries."""
+    with pytest.raises(urllib.error.HTTPError) as e:
+        chat(QUESTION, top_logprobs=3)
+    assert e.value.code == 400
+
+
+def test_logit_bias_is_validated_not_clamped():
+    """A value off OpenAI's [-100, 100] means the client is working from a different
+    scale; reinterpreting it silently would hide that. (Whether a bias actually moves the
+    sampler is covered where token ids are reachable: tests/test_native_llm.py and
+    tests/test_native_sampler.cc — the HTTP API publishes no token ids.)"""
+    with pytest.raises(urllib.error.HTTPError) as e:
+        chat(QUESTION, logit_bias={"1234": 1000})
+    assert e.value.code == 400
+    with pytest.raises(urllib.error.HTTPError) as e:
+        chat(QUESTION, logit_bias={"not-a-token": 1})
+    assert e.value.code == 400
+
+
 @needs_cache
 def test_second_turn_reuses_the_prefix():
     msgs = [{"role": "system", "content": "You are a helpful assistant."},

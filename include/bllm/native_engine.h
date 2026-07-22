@@ -294,6 +294,10 @@ class NativeEngine {
   int context_left() const { return cacheLen_ - P_; }
   const NativeStats& last_stats() const { return stats_; }
 
+  // Per-token logprobs for the last generate(), one entry per generated token, in order.
+  // Empty unless that generate() ran with params.logprobs >= 0.
+  const std::vector<TokenLogprobs>& last_logprobs() const { return logprobs_; }
+
   // How this engine's BPU tasks are queued. Default: lowest priority, any core, so a
   // co-resident vision pipeline wins the queue. See native_detail::BpuSched — priority
   // orders the queue but does not preempt a running graph.
@@ -463,6 +467,7 @@ class NativeEngine {
     auto logit = [this](int i) { return curLogits_[i] * logitScale_; };
     std::unordered_set<int> eos(p.eos.begin(), p.eos.end());
     std::vector<int> gen;
+    logprobs_.clear();
     using clk = std::chrono::steady_clock;
     // TTFT is measured from the start of the turn (prefill, and any vision encode
     // the caller marked), not from the first sample — the logits already exist here.
@@ -473,6 +478,8 @@ class NativeEngine {
       if (eos.count(tok)) break;
       if (gen.empty()) { tFirst = clk::now(); stats_.ttft_ms = std::chrono::duration<double>(tFirst - tTurn_).count() * 1000.0; }
       gen.push_back(tok);
+      // Report against the logits this token came out of, before the step advances them.
+      if (p.logprobs >= 0) logprobs_.push_back(computeLogprobs(logit, vocab_, tok, p.logprobs));
       const bool stop = on_token && on_token(tok);
       if (stop) break;                          // skip the next decode step we won't use
       s.record(tok);
@@ -735,6 +742,7 @@ class NativeEngine {
   std::vector<int16_t> savedLogits_;                   // holds the restored last logits
   std::chrono::steady_clock::time_point tTurn_ = std::chrono::steady_clock::now();
   NativeStats stats_;
+  std::vector<TokenLogprobs> logprobs_;                // last generate()'s, when asked for
   std::function<void(int, float*)> embedder_;
   std::vector<double> inv_;
   std::vector<int> sec_;
