@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Board test: the serving primitives — snapshot/restore/feed_ids/decode_stream.
 
-The correctness floor for the session-pool + prefix-cache serving layer
-(``docs/SERVING_PLAN.md``). Two separate properties, and the distinction matters:
+The correctness floor for the session-pool + prefix-cache serving layer.
+Two separate properties, and the distinction matters:
 
 1. **restore() is transparent.** Restoring a snapshot and appending is identical to
    having fed the same two runs without ever snapshotting. This is about the state

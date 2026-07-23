@@ -164,8 +164,7 @@ curl localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
 ### Qwen3.5 图文
 
 Qwen3.5 官方就是 image-text-to-text —— 纯文本的包只是编译时把视觉半边丢掉了。
-同一个 hybrid 文本 `.hbm` 配上视觉塔即可（塔的编译脚本在
-`host_toolchain/convert/vision/`，路线与门禁数字见 [`docs/VLM_PLAN.md`](docs/VLM_PLAN.md)）：
+同一个 hybrid 文本 `.hbm` 配上视觉塔即可（视觉塔离线转换，成品包直接可用）：
 
 ```bash
 bllm-make-model-dir hybrid ~/models/qwen3.5-0.8b-vlm448-ctx4096-int8-s100p \
@@ -285,7 +284,7 @@ llm.set_bpu_priority(0)      # 最低,让视觉抢占 BPU 队列
 模型转换（`.hbm` 如何产出）是离线流程，不在本仓范围；本仓消费成品 `.hbm` + tokenizer 配置。
 
 > **S600 多核**：大模型可绑定多个 BPU 核并行 decode——Qwen3.5-4B 用满 4 核 **27 tok/s**、
-> 0.8B 单核 **42.7 tok/s**。板端实测见 [`docs/S600_RESULTS.md`](docs/S600_RESULTS.md)。
+> 0.8B 单核 **42.7 tok/s**（板端实测）。
 
 ### 预编译模型下载
 

@@ -22,6 +22,13 @@ CLAUDE.local.md
 docs/INFRA.md
 # S600 on-board test record: sandbox creds + dgx2 paths (private)
 docs/S600_ONBOARD.md
+# development plans + debugging records — kept local, opened later (private)
+docs/VLM_PLAN.md
+docs/PREFILL_DEBUG.md
+docs/SAMPLING_PLAN.md
+docs/SERVING_PLAN.md
+docs/MODELZOO_PLAN.md
+docs/S600_RESULTS.md
 # any *.local override files
 *.local
 

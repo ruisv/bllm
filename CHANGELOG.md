@@ -255,8 +255,7 @@ applies either way, and the cache switches itself on under a new enough runtime.
   (~14.5 / 6.9 tok/s), joining the 0.8B.
 - **S600 multi-core BPU** — an `.hbm` compiled for N BPU cores (nash-p, N ∈ {1, 2, 4}) is
   recorded via `make_model_dir.py --bpu-cores N` (`model.json` `bpu_cores`). A large model
-  saturates 4 cores (Qwen3.5-4B, 27 tok/s on S600); small models stay single-core. See
-  [`docs/S600_RESULTS.md`](docs/S600_RESULTS.md).
+  saturates 4 cores (Qwen3.5-4B, 27 tok/s on S600); small models stay single-core.
 
 ## [0.1.1]
 

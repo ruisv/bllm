@@ -262,8 +262,8 @@ produced) is an offline process, out of scope here; this repo consumes a finishe
 tokenizer config.
 
 > **S600 multi-core**: a large model can bind several BPU cores and decode in parallel —
-> Qwen3.5-4B saturates 4 cores at **27 tok/s**, the 0.8B does **42.7 tok/s** on one core. See
-> the on-board measurements in [`docs/S600_RESULTS.md`](docs/S600_RESULTS.md).
+> Qwen3.5-4B saturates 4 cores at **27 tok/s**, the 0.8B does **42.7 tok/s** on one core
+> (on-board measurements).
 
 ### Pre-compiled model downloads
 
