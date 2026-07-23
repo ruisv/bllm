@@ -167,11 +167,11 @@ Qwen3.5 官方就是 image-text-to-text —— 纯文本的包只是编译时把
 同一个 hybrid 文本 `.hbm` 配上视觉塔即可（视觉塔离线转换，成品包直接可用）：
 
 ```bash
-bllm-make-model-dir hybrid ~/models/qwen3.5-0.8b-vlm448-ctx4096-int8-s100p \
-    --hbm qwen35_0.8b_ctx4k.hbm --embed embed_fp16.bin --tokenizer tokenizer.json \
-    --visual qwen35_visual_448.hbm \
+bllm-make-model-dir hybrid ~/models/qwen3.5-0.8b-vlm448-ctx2k \
+    --hbm qwen35_0.8b_ctx2k.hbm --embed embed_fp16.bin --tokenizer tokenizer.json \
+    --visual qwen35_visual_448.hbm --hbm-prefill qwen35_prefill_n32.hbm \
     --mrope-section 11 11 10 --mrope-interleaved \
-    --vision-patch 16 --vision-mean 0.5 --vision-std 0.5 --cache-len 4096
+    --vision-patch 16 --vision-mean 0.5 --vision-std 0.5 --cache-len 2048
 ```
 
 ```python
@@ -180,20 +180,20 @@ print(vlm.chat("Describe this image in one sentence.", images=["bears.jpg"]))
 # -> Two brown bears walk across a dusty, arid landscape.
 ```
 
-S100P 实测（0.8B）：
+S100P 实测（0.8B，含分块 prefill 图）：
 
-| 桶 | token/图 | 视觉塔 encode | 塔输出 cosine vs HF fp32 | 首字延迟 |
-|---|---|---|---|---|
-| 224×224 | 49 | 59 ms | 0.99905 | 7.4 s |
-| 448×448 | 196 | 362 ms | 0.99654 | 21.7 s |
+| 桶 | token/图 | 塔输出 cosine vs HF fp32 | 首字延迟 |
+|---|---|---|---|
+| 320×320（更快，推荐） | 100 | 0.9987 | **1.23 s** |
+| 448×448 | 196 | 0.99654 | **2.30 s** |
 
 > ⚠️ 后四个参数**必填且不能照抄 Omni**（patch 16 vs 14、mean/std 0.5 vs CLIP、
 > rope 分段 `11 11 10` vs `16 24 24`、频率布局 interleaved vs 连续）。编译好的 `.hbm`
 > 里看不出这些，配错只会得到**形状正确的垃圾**。尤其 `--mrope-interleaved`：
 > `t==h==w` 时两种布局完全等价，所以纯文本一切正常，**只有喂进图像之后位置才开始错**。
 >
-> ⚠️ 首字延迟的大头**不是视觉塔**，是 hybrid 目前逐 token 摄入（~69 ms/token）。
-> 448 桶 21.7 s 里视觉塔只占 0.36 s。prefill 图（`qwen35_prefill_compile.py`）是解法。
+> ⚠️ 首字延迟的大头是把视觉行喂进文本模型，**不是视觉塔**（448 塔 encode 仅 0.36 s）。
+> 分块 delta-rule 的 prefill 图（`--hbm-prefill`）把逐 token 摄入摊薄到秒级，分辨率越低越快。
 >
 > 目前只支持**静止图像**：视频路径实现的是 Omni 的 TMRoPE，而 Qwen3.5 用时间戳 token
 > 分隔帧，传 `videos=` 会明确报错而不是悄悄编出顺序错乱的答案。
