@@ -24,6 +24,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -425,6 +426,24 @@ class NativeHybridEngine {
     // 14x14 h/w grid, so the next text token continues from the grid's far corner,
     // not from P_.
     if (pos.max() > maxPos_) maxPos_ = pos.max();
+    if (const char* g = std::getenv("BLLM_DECODE_DUMP_STEP")) {
+      if (P_ == std::atoi(g)) {
+        logitMem_.inval();
+        int best = argmax();
+        std::fprintf(stderr, "[decode-dump] after step P_=%d argmax=%d\n", P_, best);
+        if (const char* fp = std::getenv("BLLM_DECODE_DUMP_FILE")) {
+          std::ofstream f(fp, std::ios::binary);
+          if (logitType_ == HB_DNN_TENSOR_TYPE_F32)
+            f.write((const char*)curLogits_, (size_t)vocab_ * 4);
+          else {
+            std::vector<float> tmp(vocab_);
+            const int16_t* lg = (const int16_t*)curLogits_;
+            for (int i = 0; i < vocab_; ++i) tmp[i] = lg[i] * logitScale_;
+            f.write((const char*)tmp.data(), (size_t)vocab_ * 4);
+          }
+        }
+      }
+    }
   }
 
   // Splice a run of already-embedded rows in at explicit positions — vision rows,
@@ -635,6 +654,33 @@ class NativeHybridEngine {
     native_detail::submitAndWait(task, sched_);
     hbUCPReleaseTask(task);
     pLogitMem_.inval();
+    if (const char* dbg = std::getenv("BLLM_PREFILL_DUMP")) {
+      // Dump the engine's actual inputs + the graph's raw last-row logits, so the
+      // exact same inputs can be replayed through the x86 sim. Separates "engine
+      // built bad inputs" from "board compile != x86". Only the first chunk.
+      static bool once = false;
+      if (!once) {
+        once = true;
+        auto dump = [&](const char* nm, const void* p, size_t n) {
+          std::ofstream f(std::string(dbg) + "/" + nm, std::ios::binary);
+          f.write((const char*)p, n);
+        };
+        for (int i = 0; i < 4; ++i) pFixedMem_[i].inval();
+        dump("eng_x.bin", pFixedMem_[0].p(), (size_t)pinBytes_[0]);
+        dump("eng_cos.bin", pFixedMem_[1].p(), (size_t)pinBytes_[1]);
+        dump("eng_sin.bin", pFixedMem_[2].p(), (size_t)pinBytes_[2]);
+        dump("eng_mask.bin", pFixedMem_[3].p(), (size_t)pinBytes_[3]);
+        dump("eng_logit_lastrow.bin",
+             (const uint8_t*)pLogitMem_.p() + (size_t)(pLogitRows_ - 1) * pLogitStride_,
+             (size_t)pLogitStride_);
+        std::fprintf(stderr, "[prefill-dump] wrote inputs+lastrow to %s "
+                     "(logitType=%d rows=%d stride=%lld scale=%g)\n",
+                     dbg, (int)pout_[0].properties.tensorType, pLogitRows_,
+                     (long long)pLogitStride_,
+                     (double)(pout_[0].properties.scale.scaleData && pout_[0].properties.scale.scaleLen > 0
+                              ? pout_[0].properties.scale.scaleData[0] : 1.0f));
+      }
+    }
     // Only the LAST row's logits matter — they seed the next sampled token. Copy
     // them into the decode graph's logit buffer rather than pointing at the prefill
     // one: save_state()/snapshot() serialize logitMem_ by design, so leaving
