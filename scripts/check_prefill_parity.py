@@ -18,8 +18,11 @@ Compared, in decreasing order of strictness:
 """
 import argparse
 
-PROMPT = ("Explain in two sentences why the sky appears blue, then list three "
-          "other colours the sky can appear and when.")
+# MUST exceed the prefill chunk, or no chunk runs and the test is vacuous — the
+# whole point is to exercise the chunk. Built long and asserted against the reported
+# prefill_chunk below.
+PROMPT = ("The history of computing spans many decades and countless people. " * 24
+          + " In a single word, name the field just described.")
 CONTROL_TEXT = "The quick brown fox jumps over the lazy dog. " * 4
 
 
@@ -32,7 +35,8 @@ def run(path, prompt, max_new, topk):
     text = s.chat(prompt, max_new=max_new)
     lps = s.last_logprobs()
     ppl = s.perplexity(CONTROL_TEXT)
-    return {"chunk": chunk, "text": text, "lps": lps, "ppl": ppl}
+    ntok = len(s.encode(prompt)) if hasattr(s, "encode") else 0
+    return {"chunk": chunk, "text": text, "lps": lps, "ppl": ppl, "prompt_tokens": ntok}
 
 
 def main():
@@ -49,6 +53,15 @@ def main():
     if not a["chunk"]:
         print("!! the 'with' package reports no prefill graph — nothing was actually compared")
         return 2
+    # The prompt MUST be longer than the chunk, or the whole prompt falls to decode
+    # and no prefill chunk runs — a green result that proves nothing. This hole made
+    # an earlier run report PARITY OK on a graph that in fact produced garbage.
+    ntok = a.get("prompt_tokens", 0)
+    if ntok <= a["chunk"]:
+        print(f"!! prompt is {ntok} tokens, not > chunk {a['chunk']}: NO chunk ran, "
+              "the comparison is vacuous. Lengthen PROMPT.")
+        return 2
+    print(f"prompt {ntok} tokens > chunk {a['chunk']}: at least one prefill chunk ran")
 
     ok = True
 
