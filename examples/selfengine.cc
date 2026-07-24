@@ -4,6 +4,13 @@
 // header so this CLI and the Python binding (python/_bllm_native) share one
 // implementation.
 //
+// DENSE MODELS ONLY. This drives the dense prefill/decode dual-graph format
+// (Qwen2.5, DeepSeek-R1-Distill, InternLM2, official OE-LLM .hbm). A HYBRID
+// Qwen3.5 (Gated-DeltaNet/SSM) .hbm has a different graph layout and needs a host
+// embed table — use `bllm_qwen35 --hbm m.hbm --embed embed_tokens.bin` for that,
+// or simplest `bllm.load(<model_dir>)` which auto-routes by arch. (Feeding a
+// hybrid .hbm here now aborts with a hint instead of a cryptic DNN error.)
+//
 // Build (project):  ninja -C build bllm_selfengine   (gated on FindHobot)
 // One-shot:  ./bllm_selfengine --hbm m.hbm --ids "785,6722,315,9625,374" --max-new 24
 // Server  :  ./bllm_selfengine --hbm m.hbm --serve [--temp .7 --top-p .9 --eos "151645,151643"]
@@ -17,6 +24,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -60,7 +68,16 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  bllm::NativeEngine eng(hbm);
+  // Construct in an optional so a load error (e.g. a hybrid .hbm fed to this dense
+  // engine) prints the hint and exits cleanly instead of terminate()/core dump.
+  std::optional<bllm::NativeEngine> engOpt;
+  try {
+    engOpt.emplace(hbm);
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "%s\n", e.what());
+    return 1;
+  }
+  bllm::NativeEngine& eng = *engOpt;
   if (!eos_str.empty()) sp.eos = parseIds(eos_str);
   std::fprintf(stderr, "[selfengine] loaded via hbDNN (libxlm never touched): "
                "layers=%d kv=%d head_dim=%d cache_len=%d vocab=%d\n",

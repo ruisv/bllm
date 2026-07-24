@@ -241,6 +241,33 @@ class NativeEngine {
                         const char* decode_name = "decode") {
     const char* files[] = {hbm.c_str()};
     BLLM_NATIVE_CK(hbDNNInitializeFromFiles(&packed_, files, 1));
+    // Fail with a HINT, not a cryptic "Model not exists: prefill". The most common
+    // mistake is pointing this DENSE engine at a HYBRID (Qwen3.5 Gated-DeltaNet/SSM)
+    // .hbm, whose graph is named "qwen35" (no prefill/decode) and which also needs a
+    // host embed table — so the dense prefill/decode lookup below would abort deep in
+    // the DNN layer with no guidance. Check the graph names first and say what to use.
+    {
+      const char** names = nullptr;
+      int32_t count = 0;
+      hbDNNGetModelNameList(&names, &count, packed_);
+      bool hasPrefill = false, hasDecode = false;
+      std::string avail;
+      for (int32_t i = 0; i < count && names; ++i) {
+        if (!names[i]) continue;
+        if (!avail.empty()) avail += ", ";
+        avail += names[i];
+        if (std::string(prefill_name) == names[i]) hasPrefill = true;
+        if (std::string(decode_name) == names[i]) hasDecode = true;
+      }
+      if (!hasPrefill || !hasDecode)
+        throw std::runtime_error(
+            "[native] this .hbm has no dense '" + std::string(prefill_name) + "'/'" +
+            std::string(decode_name) + "' graphs (found: [" + avail + "]).\n"
+            "  NativeEngine / bllm_selfengine drives DENSE models only.\n"
+            "  For a hybrid Qwen3.5 (Gated-DeltaNet/SSM) model use the hybrid path:\n"
+            "    bllm_qwen35 --hbm <model>.hbm --embed <embed_tokens>.bin --ids \"..\"\n"
+            "  or, simplest, bllm.load(<model_dir>) which auto-routes by arch.");
+    }
     prefill_.init(packed_, prefill_name);
     decode_.init(packed_, decode_name);
 
