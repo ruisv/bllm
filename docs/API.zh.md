@@ -10,7 +10,9 @@ Python 包 `bllm`。C++ 对应类型见每节末尾。English: [API.en.md](API.e
 
 加载模型，返回相应的会话对象。
 
-- `path` 为**模型目录**（含 `model.json`）→ 稠密/混合返回 `NativeSession`，`arch="omni"` 返回 `NativeVlmSession`。
+- `path` 为**模型目录**（含 `model.json`）→ 按**是否带视觉塔**路由，而不是按 `arch`：目录含
+  `visual`（Qwen2.5-Omni 或 **Qwen3.5 图文**）返回 `NativeVlmSession`，否则（纯文本稠密/混合）
+  返回 `NativeSession`。
 - `path` 为**裸 `.hbm`** 且传 `tokenizer_dir=<目录>` → 运行时合成清单并返回 `NativeSession`。
 - 多余的关键字参数透传给会话构造函数。
 

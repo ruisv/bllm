@@ -11,8 +11,9 @@ Python package `bllm`. The matching C++ type is noted at the end of each section
 
 Load a model and return the right session object.
 
-- `path` is a **model directory** (with `model.json`) → `NativeSession` for dense/hybrid,
-  `NativeVlmSession` for `arch="omni"`.
+- `path` is a **model directory** (with `model.json`) → routed on whether it carries a
+  **vision tower**, not on `arch`: a dir with a `visual` (Qwen2.5-Omni or **Qwen3.5
+  image+text**) returns `NativeVlmSession`, otherwise (text-only dense/hybrid) `NativeSession`.
 - `path` is a **bare `.hbm`** and you pass `tokenizer_dir=<dir>` → the runtime synthesizes the
   manifest and returns a `NativeSession`.
 - Extra keyword args are forwarded to the session constructor.
@@ -126,7 +127,7 @@ for piece in sess.stream_decode(256):
 A working implementation lives in `docker/serving/` (`cache.py` for the cache,
 `engine.py` for the single-worker engine).
 
-## `bllm.NativeVlmSession` — multimodal (Qwen2.5-Omni)
+## `bllm.NativeVlmSession` — multimodal (Qwen2.5-Omni / Qwen3.5 image+text)
 
 ```python
 vlm = bllm.NativeVlmSession(model_dir)        # or bllm.load(...) with arch="omni"

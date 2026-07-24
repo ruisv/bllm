@@ -4,10 +4,37 @@ All notable changes to BLLM are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.0] — 2026-07-24
+
+The **Qwen3.5 image+text (VLM)** release. A self-built vision tower plus a
+chunked-prefill graph bring on-board image understanding to the hybrid Qwen3.5
+line, decode gets **1.4–1.7× faster on the same int8 weights**, and structured
+output / sampling gain grammar constraints, `logit_bias`, `logprobs` and a batch
+of correctness fixes.
 
 ### Added
 
+- **Qwen3.5 image+text (VLM) — the headline of this release.** Qwen3.5 is natively
+  an image-text-to-text model; BLLM now compiles its vision tower (patch-16 /
+  LayerNorm, self-built — not the Omni patch-14 tower) and splices the vision rows
+  into the hybrid decoder's embedding stream with interleaved 3-D mrope.
+  `bllm.load(<vlm_dir>)` routes to `NativeVlmSession`; `chat(text, images=[...])`
+  takes file paths or raw `HxWx3` uint8 arrays. Strictly 100% BPU vision tower.
+  On S100P / 0.8B, image TTFT **1.23 s (320px, 100 tok) / 2.30 s (448px, 196 tok)**
+  with the prefill graph; the tower output matches HF fp32 at cosine 0.999 / 0.997.
+  The four vision settings a hybrid VLM cannot default (patch, mean/std, mrope
+  section, interleaved) are forced by `bllm-make-model-dir` — a wrong one yields
+  shape-correct garbage only after an image is fed. Video is refused on this family
+  (Qwen3.5 separates frames with timestamp tokens, not Omni's TMRoPE).
+- **Chunked prefill graph — prompt/image ingestion amortized ~76×.** The hybrid
+  engine previously fed a prompt one token at a time (weight-bandwidth-bound,
+  ~69 ms/token — a 2048-token document took ~5 minutes). It now drives an optional
+  seq_len=N prefill graph carried in its own `.hbm` (`--hbm-prefill`), turning
+  ingestion into one weight stream per N-token chunk. The GDN part uses the parallel
+  chunked delta-rule (WY/UT transform) verified bit-exact against the sequential
+  recurrence. A model without the prefill graph gracefully keeps the old per-token
+  path. Prefill↔decode parity is a shipped gate (`scripts/check_prefill_parity.py`),
+  asserted non-vacuous (prompt > chunk).
 - **GBNF grammar-constrained decoding — structured output that is guaranteed, not
   requested.** `set_grammar("root ::= ...")` on the Python session, and over HTTP
   `response_format: {"type": "json_object"}` / `{"type": "json_schema", ...}` or a raw
@@ -43,8 +70,47 @@ All notable changes to BLLM are documented here. The format follows
   to the returned text, so a stop string that cuts the reply does not leave logprobs
   describing tokens the client never received.
 
+### Changed
+
+- **Decode 1.4–1.7× faster on the same weights — attention by grouped matmul, not
+  `expand_win`.** The old form expanded the KV window from 2 to 8 heads and
+  materialised four `[cache_len, n_heads, head_dim]` tensors per layer per token
+  (403 MB/token at ctx2k, more than the model's own weights at ctx4k). It now groups
+  the queries instead — `q[NKV, REP, HDa]` against `Kᵀ`, one batched matmul, K/V read
+  exactly once (201 MB → 25 MB per 1024 slots). Pure memory-traffic reduction, the
+  int8 weights are unchanged; re-download the latest `.hbm` to get it. Measured on
+  S100P (decode graph latency, tok/s ceiling), same weights:
+
+  | model | cache_len | before (expand_win) | after (matmul) | speedup |
+  |---|---|---|---|---|
+  | Qwen3.5-0.8B | ctx2k | 15.7 tok/s | **22.5 tok/s** | 1.43× |
+  | Qwen3.5-0.8B | ctx4k | 11.3 tok/s | **19.5 tok/s** | 1.73× |
+  | Qwen3.5-2B | ctx4k | 9.1 tok/s | **13.7 tok/s** | 1.51× |
+
+  The speedup grows with `cache_len` because the old form's overhead scaled with the
+  KV window while the matmul form does not — the longer the context, the bigger the win.
+- **Sampler top-k by sequential scan + a k-sized min-heap, not `nth_element`.** The
+  candidate-set build over a 248k-token vocabulary was a random-access trap (every
+  comparison a cache miss): 4.25 ms/token, 9% of a sampled step. A single ordered pass
+  with a heap touches each logit once → 1.00 ms, sampled decode +7%. Greedy is unchanged.
+- **Prefill emits only the last row of logits.** For an N-row prefill the previous graph
+  materialised `[N, 248320]` f32 (127 MB of ION at N=128) and ran the 254 MB lm_head N
+  times, though only the last row seeds the first sampled token.
+
 ### Fixed
 
+- **A hybrid `.hbm` fed to the dense engine now says what to use** instead of a cryptic
+  `Model not exists: prefill`. `NativeEngine` / `bllm_selfengine` drives the dense
+  prefill/decode format; a hybrid Qwen3.5 (Gated-DeltaNet/SSM) `.hbm` (graph named
+  `qwen35`, needs a host embed table) is now detected up front and the error names the
+  hybrid path (`bllm_qwen35 --hbm .. --embed ..`, or `bllm.load(<dir>)`), exiting cleanly
+  rather than aborting.
+- **A quantized vision-tower output was being read as float** — the tower can emit
+  scaled int16, which as float is shape-correct noise; the VLM path now de-quantizes by
+  the graph's declared dtype.
+- **Image parts were silently dropped by the server.** An OpenAI `image_url` content part
+  on a text-only model was ignored and the model answered from the text alone; it is now
+  an explicit error rather than a confident hallucination.
 - **A left-recursive grammar crashed the whole server.** `{"grammar": "root ::= root\n"}` —
   or any rule that can reach itself without consuming input, including indirectly, through
   an alternate, or past a nullable prefix — expanded forever inside the matcher and took the
