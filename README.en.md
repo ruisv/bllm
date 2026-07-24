@@ -1,59 +1,129 @@
 <!-- English README; 中文（默认）见 README.md -->
 
-# BLLM — On-board LLM / VLM Runtime for RDK BPU
+# BLLM — an on-board LLM framework for the RDK BPU
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![C++](https://img.shields.io/badge/C%2B%2B-17-00599C.svg)](CMakeLists.txt)
 [![Python](https://img.shields.io/badge/python-3.9%E2%80%933.14-3776AB.svg)](python/CMakeLists.txt)
-[![Platform](https://img.shields.io/badge/platform-RDK%20S100%20%2F%20S100P%20%2F%20S600%20(aarch64)-0A7BBB.svg)](#install)
+[![Platform](https://img.shields.io/badge/platform-RDK%20S100%20%2F%20S100P%20%2F%20S600%20(aarch64)-0A7BBB.svg)](#1-install-one-minute)
 [![Version](https://img.shields.io/badge/version-0.2.0-informational.svg)](CHANGELOG.md)
 
 [简体中文](README.md) | **English**
 
-**BLLM** (BPU LLM) is a C++17 on-board **LLM / VLM runtime** for D-Robotics
-**RDK S100 / S100P / S600**. It runs compiled `.hbm` model graphs directly on the board's
-BPU (hbDNN / hbUCP) — a self-built native engine with its own KV / SSM cache, sampler and
-decode loop — behind a clean C++ / Python task-style API. **No extra LLM SDK required.**
+> ### Run an on-device LLM on your board in minutes.
+> One session-style C++ / Python API for chat, streaming, multimodal, structured
+> output and OpenAI-compatible serving — all on the board's BPU.
+> **Runs on the generic official runtime; no extra LLM SDK required.**
 
-It is the large-language-model sibling of [bcdl](https://github.com/ruisv/bcdl) (RDK BPU
-computer-vision runtime).
+```python
+import bllm
+
+llm = bllm.load("~/models/qwen3.5-2b")           # one directory = one model
+for chunk in llm.stream_chat("Introduce Beijing in one sentence"):
+    print(chunk, end="", flush=True)
+```
+
+```bash
+conda install -c https://mirrors.ruis.ai/conda -c conda-forge bllm
+```
+
+BLLM is the large-model sibling of [**bcdl**](https://github.com/ruisv/bcdl) (RDK
+BPU computer vision) — the two share one BPU and can be scheduled against each other.
 
 <p align="center">
   <img src="docs/demo.gif" width="760" alt="Qwen3.5-0.8B hybrid SSM streaming chat on the RDK S100P BPU"><br>
-  <em>Qwen3.5-0.8B (hybrid SSM) streaming natively on the RDK S100P BPU · ~14 tok/s</em>
+  <em>Qwen3.5-0.8B (hybrid SSM) streaming natively on the RDK S100P BPU</em>
 </p>
 
-> 📖 API docs: [English](docs/API.en.md) · [中文](docs/API.zh.md)
+**Jump to:**
+[Why BLLM](#why-bllm) ·
+[Relation to the official runtime](#relation-to-the-official-runtime) ·
+[Architecture](#architecture) ·
+[Quick start](#quick-start) ·
+[What you can build](#what-you-can-build) ·
+[Serving](#serving-openai-compatible-api) ·
+[Multimodal](#multimodal) ·
+[Sharing the BPU](#sharing-the-bpu-with-a-vision-pipeline) ·
+[Performance](#performance) ·
+[Supported models](#supported-models) ·
+[Capabilities](#capabilities) ·
+[Build from source](#build-from-source) ·
+[Community](#community)
 
-## Contents
+## Why BLLM
 
-- [Features](#features) · [Install](#install) · [Quick start](#quick-start) · [Making a model directory](#making-a-model-directory)
-- [Serving](#serving-openai-compatible-api) · [Multimodal](#multimodal-qwen25-omni) · [Sharing the BPU](#sharing-the-bpu-with-a-vision-pipeline)
-- [Supported models](#supported-models) · [Build from source](#build-from-source)
-- [Community](#community) · [Contributing](#contributing) · [Acknowledgements](#acknowledgements) · [License](#license)
+The hard part of on-device LLMs is not "run inference once". It is: how to lay out
+a model directory, where the stop tokens come from, how to apply the chat template,
+how to manage the KV / SSM cache, how not to overflow context across turns, how to
+make sampling reproducible, how to guarantee the JSON parses, how to expose an API,
+and how to coexist with vision work on the same BPU. BLLM makes all of that the
+default.
 
-## Features
+- **✅ One-line load** — `bllm.load(dir)` detects the model type, finds the chat
+  template and resolves stop tokens from the most authoritative source available
+  (a guessed eos means a model that **never stops**). A bare `.hbm` works too.
+- **✅ One-line install** — prebuilt conda packages (Python 3.9–3.14); no compiler
+  on the board.
+- **✅ One session API** — chat / streaming / multi-turn / sampling / multimodal
+  behind the same interface, with C++ and Python as peers. Swapping model does not
+  mean rewriting code.
+- **✅ Structured output is a guarantee, not a request** — GBNF grammar constraints
+  and JSON Schema → grammar apply *while decoding*, so `json.loads()` cannot fail.
+- **✅ Serving out of the box** — OpenAI-compatible HTTP (streaming + non-streaming),
+  Docker images, and conversation prefix caching (measured on-board: 31.6 s → 1.3 s,
+  ~25×).
+- **✅ Architectures the official toolchain doesn't cover** — Qwen3.5 hybrid
+  Gated-DeltaNet/SSM strictly 100% on the BPU (**BLLM-native only**), plus GLM-Edge
+  and Phi-4-mini.
+- **✅ Coexists with vision** — on a single BPU core, lowering the LLM's priority
+  takes a co-resident detector's p99 from 41 ms down to **2.95 ms** — not "run both
+  and watch them starve each other".
 
-- **Native BPU inference** — drives `.hbm` directly on the generic hbDNN / hbUCP stack
-  (same BPU driver the vision stack uses).
-- **Dense + hybrid** — Qwen2.5 / DeepSeek-R1-Distill / InternLM2 / GLM-Edge / Phi-4-mini
-  dense text models, plus **Qwen3.5-0.8B hybrid Gated-DeltaNet/SSM** (strict 100% on the BPU,
-  ~21 tok/s).
-- **Multimodal** — Qwen2.5-Omni text + image + audio + video, from file paths or raw arrays
-  (zero-copy camera/microphone).
-- **One-line sessions** — `bllm.load(...)` / `NativeSession`, with a built-in C++ tokenizer,
-  ChatML templating, streaming, multi-turn, sampling.
-- **Full sampling** — greedy / temperature / top-k / top-p / min-p / typical-p / repeat,
-  frequency and presence penalties; reproducible. Plus `logit_bias` (force or ban tokens)
-  and `logprobs` (exact full-vocab log probabilities).
-- **Structured output** — GBNF grammar-constrained decoding, and JSON Schema -> grammar.
-  The constraint applies *while decoding*, so `json.loads()` on the reply cannot fail —
-  a guarantee, not a request made in the prompt.
-- **Production features** — perplexity, async submit, prompt cache (KV+SSM state save/restore,
-  bit-identical), stop strings (stops early), and BPU priority / time-slice control to share
-  the BPU with a vision pipeline.
+## Relation to the official runtime
 
-## Install
+BLLM's compute comes from the same D-Robotics BPU runtime (`hbDNN` / `hbUCP`), and
+it happily consumes officially released `.hbm` files. The table below compares
+**abstraction level and positioning**, not quality:
+
+| | Official OE-LLM runtime (sample-level) | BLLM |
+|---|---|---|
+| Shape | a standalone LLM runtime + sample programs | a reusable framework running directly on the generic hbDNN / hbUCP — **no extra LLM SDK** |
+| Interface | mostly C APIs | C++17 library + Python bindings, task-style session API |
+| Loading a model | organise paths and flags per the sample | `bllm.load(dir)`; `bllm-make-model-dir` writes the manifest and resolves stop tokens |
+| Model coverage | the officially released `.hbm` | the official `.hbm` **plus** architectures it doesn't cover (Qwen3.5 hybrid SSM / GLM-Edge / Phi-4-mini) |
+| Sessions | template, history and cache are yours to assemble | built-in C++ tokenizer, ChatML templating, multi-turn, streaming, prompt cache |
+| Generation control | basic sampling | full sampling + `logit_bias` + `logprobs` + GBNF grammar constraints |
+| Serving | build it yourself | OpenAI-compatible HTTP + Docker + prefix cache + `/metrics` |
+| Coexisting with vision | handle it yourself | BPU priority / time-slice control alongside [bcdl](https://github.com/ruisv/bcdl) |
+
+In one line: **the official runtime proved the BPU can run LLMs; BLLM turns that
+into a product in minutes.**
+
+## Architecture
+
+```
+           your application / any OpenAI-compatible client
+                              ↓
+   ┌────────────────────────────────────────────────────┐
+   │  BLLM                                               │
+   │  sessions & templating · sampling & grammar          │
+   │  KV/SSM cache · vision tower · prefix cache · server  │
+   └────────────────────────────────────────────────────┘
+                              ↓
+          D-Robotics hobot runtime (official, generic)
+                       hbDNN · hbUCP
+                              ↓
+                         BPU "Nash"
+```
+
+The inference engine is self-built — decode loop, KV / SSM cache, sampler and
+tokenizer all live in BLLM — and underneath it depends only on the generic BPU
+runtime the board already ships. That is the same driver the vision stack uses,
+which is why the two can share a board and schedule against each other.
+
+## Quick start
+
+### 1. Install (one minute)
 
 On the board (aarch64, a conda env), install from our conda channel:
 
@@ -74,26 +144,31 @@ sudo /usr/hobot/bin/hb_switch_ion.sh balanced && sudo reboot   # <=3B; bpu_first
 Performance mode does not survive a reboot; set it once per boot (see
 [`docs/MODELS.en.md`](docs/MODELS.en.md)).
 
-## Quick start
+### 2. Get a model (one minute)
 
-A model is a **directory** (`.hbm` + `tokenizer.json` + a `model.json` manifest); load it in
-one line:
+Fastest route: **download a ready-to-`bllm.load()` package** — the file names
+already encode context length / target board / quantization width:
+
+**📦 [Google Drive — model downloads](https://drive.google.com/drive/folders/1tR3MtP0iriptqpeHOSzdpRMT_ckdqDQ8)**
+
+```bash
+sha256sum -c qwen3.5-4b-ctx512-int8-s100.tar.gz.sha256   # integrity check
+tar xzf qwen3.5-4b-ctx512-int8-s100.tar.gz
+```
+
+Already have an officially released `.hbm`? Assemble it into a model directory with
+`bllm-make-model-dir` — see [Making a model directory](#making-a-model-directory).
+
+### 3. Run (one minute)
 
 ```python
 import bllm
 
-llm = bllm.load("/path/to/qwen2.5-1.5b")        # a dir, or a bare .hbm + tokenizer_dir=
+llm = bllm.load("qwen3.5-4b-ctx512-int8-s100")  # a dir, or a bare .hbm + tokenizer_dir=
 llm.set_sampling(temp=0.7, top_p=0.9)           # omit for greedy
 for chunk in llm.stream_chat("Introduce Beijing in one sentence"):  # streaming, multi-turn
     print(chunk, end="", flush=True)
 print(llm.last_decode_tps)
-```
-
-A bare `.hbm` (OE package) works directly — the runtime synthesizes the manifest:
-
-```python
-llm = bllm.load("Qwen2.5_1.5B.hbm", tokenizer_dir="Qwen2.5_1.5B_config/")
-print(llm.chat("Hello"))
 ```
 
 C++:
@@ -106,12 +181,29 @@ std::string reply = llm.chat("Hello", 400, [](const std::string& s){ std::cout <
 
 REPL: `bllm_chat_native --model <dir>` (see [`examples/chat_native.cc`](examples/chat_native.cc)).
 
+> 📖 Full API docs: [English](docs/API.en.md) · [中文](docs/API.zh.md)
+
+## What you can build
+
+| Capability | How it looks | Example |
+|---|---|---|
+| **Chat / streaming** | `llm.chat(...)` · `llm.stream_chat(...)` | [`chat_native.cc`](examples/chat_native.cc) · [`native_session.py`](examples/native_session.py) |
+| **Multi-turn & context** | the session owns the history; `llm.context_left` tracks the budget | [`docs/API.en.md`](docs/API.en.md) |
+| **Sampling** | `llm.set_sampling(temp=…, top_p=…, …)`, reproducible | [sampling reference](docs/API.en.md) |
+| **Structured output** | `llm.set_grammar("root ::= …")` / JSON Schema | [`docs/API.en.md`](docs/API.en.md) |
+| **Image + text (VLM)** | `vlm.chat("describe this", images=["a.jpg"])` | [`vlm_native.py`](examples/vlm_native.py) · [`qwen35_native.cc`](examples/qwen35_native.cc) |
+| **Text / image / audio / video** | Qwen2.5-Omni, file paths or raw arrays (zero-copy camera/mic) | [`vlm_native.cc`](examples/vlm_native.cc) |
+| **Text embeddings** | `NativeEmbedder` (Qwen3-VL-Embedding; C++ API, no Python binding yet) | [`embed_native.cc`](examples/embed_native.cc) |
+| **Serving** | OpenAI-compatible HTTP + Docker | [`docker/README.md`](docker/README.md) |
+| **Sharing the BPU** | `llm.set_bpu_priority(0)` | [Sharing the BPU](#sharing-the-bpu-with-a-vision-pipeline) |
+
 ## Making a model directory
 
-An official release scatters the `.hbm` across `model/` and the tokenizer across `config/`;
-`bllm-make-model-dir` assembles them into the directory above. It ships with the `bllm`
-package — no need to clone this repo (equivalently `python -m bllm.make_model_dir`, or
-`scripts/make_model_dir.py` in a source tree):
+A model is a **directory** (`.hbm` + `tokenizer.json` + a `model.json` manifest). An official
+release scatters the `.hbm` across `model/` and the tokenizer across `config/`;
+`bllm-make-model-dir` assembles them. It ships with the `bllm` package — no need to clone this
+repo (equivalently `python -m bllm.make_model_dir`, or `scripts/make_model_dir.py` in a source
+tree):
 
 ```bash
 R=<sdk>/oellm_runtime
@@ -127,7 +219,7 @@ prints which one it used. A guessed eos yields a model that never stops: Qwen2.5
 holds a literal `</s>` at id 128247 that is not a stop token.
 
 Three `arch` values: `dense` (above), `hybrid` (Qwen3.5 SSM, also needs `--embed`), and
-`omni` ([multimodal](#multimodal-qwen25-omni), also needs its towers + embed table). Full
+`omni` ([multimodal](#multimodal), also needs its towers + embed table). Full
 deployment steps — official package layout, ION sizing — are in
 [`docs/MODELS.en.md`](docs/MODELS.en.md).
 
@@ -165,7 +257,6 @@ curl localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"hello"}]}'
 ```
 
-
 The server **caches conversation prefixes**: the OpenAI protocol is stateless, so a client
 re-sends its whole history each turn and the server prefills only what is new. Hits appear in
 `usage.prompt_tokens_details.cached_tokens`, aggregates on `GET /metrics`. Matching is exact
@@ -174,7 +265,54 @@ token-prefix comparison, so an edited history simply misses and falls back to a 
 dense TTFT 274 → 141 ms. One generation runs at a time (single BPU graph); requests beyond
 `BLLM_MAX_QUEUE` get a 429. See [`docker/README.md`](docker/README.md).
 
-## Multimodal (Qwen2.5-Omni)
+## Multimodal
+
+Two routes: the official Qwen2.5-Omni (text/image/audio/video), and **Qwen3.5
+image+text** with a vision tower we compiled ourselves.
+
+### Qwen3.5 image + text
+
+Qwen3.5 is natively an image-text-to-text model — the text-only package simply drops
+the vision half at compile time. The same hybrid text `.hbm` plus a vision tower is
+all it takes (the tower is converted offline; prebuilt packages are ready to use):
+
+```bash
+bllm-make-model-dir hybrid ~/models/qwen3.5-0.8b-vlm448-ctx2k \
+    --hbm qwen35_0.8b_ctx2k.hbm --embed embed_fp16.bin --tokenizer tokenizer.json \
+    --visual qwen35_visual_448.hbm --hbm-prefill qwen35_prefill_n32.hbm \
+    --mrope-section 11 11 10 --mrope-interleaved \
+    --vision-patch 16 --vision-mean 0.5 --vision-std 0.5 --cache-len 2048
+```
+
+```python
+vlm = bllm.load("~/models/qwen3.5-0.8b-vlm448-ctx4096-int8-s100p")
+print(vlm.chat("Describe this image in one sentence.", images=["bears.jpg"]))
+# -> Two brown bears walk across a dusty, arid landscape.
+```
+
+Measured on S100P (0.8B, with the chunked prefill graph):
+
+| bucket | tokens/image | tower cosine vs HF fp32 | first token |
+|---|---|---|---|
+| 320×320 (faster, recommended) | 100 | 0.9987 | **1.23 s** |
+| 448×448 | 196 | 0.99654 | **2.30 s** |
+
+> ⚠️ Those last four settings are **mandatory and must not be copied from Omni**
+> (patch 16 vs 14, mean/std 0.5 vs CLIP, rope section `11 11 10` vs `16 24 24`,
+> interleaved vs contiguous frequency layout). A compiled `.hbm` does not reveal
+> them, and getting one wrong yields **shape-correct garbage**. `--mrope-interleaved`
+> especially: when `t==h==w` the two layouts are identical, so text-only looks
+> perfect and **positions only go wrong once an image is fed**.
+>
+> ⚠️ Most of the first-token latency is feeding the vision rows into the text model,
+> **not the tower** (the 448 tower encodes in 0.36 s). The chunked delta-rule prefill
+> graph (`--hbm-prefill`) amortizes ingestion down to seconds; lower resolution is faster.
+>
+> Still images only for now: the video path implements Omni's TMRoPE, whereas Qwen3.5
+> separates frames with timestamp tokens — passing `videos=` raises explicitly rather
+> than quietly producing a mis-ordered answer.
+
+### Qwen2.5-Omni (text / image / audio / video)
 
 The official Omni release is **three towers plus a host embedding table**. Assemble them into
 a model directory first (`bllm-make-model-dir` ships with the conda package):
@@ -246,46 +384,74 @@ llm.set_bpu_priority(0)      # lowest — let vision preempt the BPU queue
 Measured (yolo26s vs Qwen2.5-1.5B decode, detector p99): with both knobs the detector p99 drops
 from 41 ms to **2.95 ms** at 383 FPS, LLM 24→17 tok/s; near-free when idle.
 
+## Performance
+
+Measured on the board (int8 weights; decode throughput and first-token latency):
+
+| model | board | context | decode |
+|---|---|---|---|
+| Qwen3.5-0.8B (hybrid SSM) | S100P | 2048 | **22.5 tok/s** |
+| Qwen3.5-0.8B (hybrid SSM) | S100P | 4096 | **19.5 tok/s** |
+| Qwen3.5-2B (hybrid SSM) | S100P | 4096 | **13.7 tok/s** |
+| Qwen2.5-1.5B (dense) | S100P | 1024 | **~24 tok/s** |
+| Qwen3.5-0.8B (hybrid SSM) | S600 (single core) | — | **42.7 tok/s** |
+| Qwen3.5-4B (hybrid SSM) | S600 (4 cores) | — | **27 tok/s** |
+
+First token: image+text VLM (0.8B) **1.23 s** (320px) / **2.30 s** (448px). With a
+server-side prefix-cache hit, hybrid goes **31.6 s → 1.3 s** and dense TTFT
+**274 → 141 ms**.
+
 ## Supported models
 
-Official pre-compiled **text** LLMs run through one config-free path (auto model-type,
-auto chat template, per-model quirks like int8 KV handled internally):
+These run through one config-free path (auto model-type, auto chat template, per-model
+quirks like int8 KV handled internally), validated across q8/q4 × context 1024/4096
+variants.
+
+**Officially released `.hbm` (D-Robotics)**:
 
 - **Qwen2.5** 1.5B / 7B (Base + Instruct)
 - **DeepSeek-R1-Distill-Qwen** 1.5B / 7B
-- **InternLM2-1.8B** · **GLM-Edge** · **Phi-4-mini**
-- **Qwen3.5-0.8B / 2B / 4B** (hybrid SSM, native-only; strict 100% on-BPU int8)
+- **InternLM2-1.8B**
 - **Qwen2.5-Omni-3B** (multimodal)
 
-Validated across q8/q4 × context 1024/4096 variants. Model conversion (how a `.hbm` is
-produced) is an offline process, out of scope here; this repo consumes a finished `.hbm` +
-tokenizer config.
+**Converted by us** (architectures the official toolchain does not cover; converted
+offline and validated on the board):
 
-> **S600 multi-core**: a large model can bind several BPU cores and decode in parallel —
-> Qwen3.5-4B saturates 4 cores at **27 tok/s**, the 0.8B does **42.7 tok/s** on one core
-> (on-board measurements).
+- **Qwen3.5-0.8B / 2B / 4B** (hybrid SSM, **BLLM-native only**; strict 100% on-BPU int8)
+- **GLM-Edge** · **Phi-4-mini**
 
-### Pre-compiled model downloads
+Model conversion (how a `.hbm` is produced) is an offline process, out of scope here; this
+repo consumes a finished `.hbm` + tokenizer config. Prebuilt packages: see
+[Quick start step 2](#2-get-a-model-one-minute).
 
-We publish **ready-to-`bllm.load()` model packages** (each a directory: `model.hbm` +
-`tokenizer.json` + `model.json`, plus `embed_tokens.bin` for hybrid models). The file names
-already encode **context length / target board / quantization width**, so they read for
-themselves:
+## Capabilities
 
-**📦 [Google Drive — model downloads](https://drive.google.com/drive/folders/1tR3MtP0iriptqpeHOSzdpRMT_ckdqDQ8)**
-
-Verify, extract, and load (Qwen3.5-4B as an example):
-
-```bash
-sha256sum -c qwen3.5-4b-ctx512-int8-s100.tar.gz.sha256   # integrity check
-tar xzf qwen3.5-4b-ctx512-int8-s100.tar.gz
-python -c "import bllm; s=bllm.load('qwen3.5-4b-ctx512-int8-s100'); print(s.chat('Hello'))"
-```
+- **Native BPU inference** — drives `.hbm` directly on the generic hbDNN / hbUCP stack
+  (same BPU driver the vision stack uses).
+- **Dense + hybrid** — Qwen2.5 / DeepSeek-R1-Distill / InternLM2 / GLM-Edge / Phi-4-mini
+  dense text models, plus **Qwen3.5 hybrid Gated-DeltaNet/SSM** (strict 100% on the BPU).
+- **Multimodal** — Qwen2.5-Omni text + image + audio + video, and **Qwen3.5 image+text**
+  (self-built vision tower), from file paths or raw arrays (zero-copy camera/microphone).
+- **One-line sessions** — `bllm.load(...)` / `NativeSession`, with a built-in C++ tokenizer,
+  ChatML templating, streaming, multi-turn, sampling.
+- **Full sampling** — greedy / temperature / top-k / top-p / min-p / typical-p / repeat,
+  frequency and presence penalties; reproducible. Plus `logit_bias` (force or ban tokens)
+  and `logprobs` (exact full-vocab log probabilities).
+- **Structured output** — GBNF grammar-constrained decoding, and JSON Schema -> grammar.
+  The constraint applies *while decoding*, so `json.loads()` on the reply cannot fail —
+  a guarantee, not a request made in the prompt.
+- **Text embeddings** — `NativeEmbedder` (Qwen3-VL-Embedding, C++ API) for retrieval and
+  similarity.
+- **Chunked prefill** — hybrid models ingest prompts and images through a seq_len=N prefill
+  graph, ~76× faster than token-by-token (a model without one falls back gracefully).
+- **Production features** — perplexity, async submit, prompt cache (KV+SSM state save/restore,
+  bit-identical), stop strings (stops early), and BPU priority / time-slice control to share
+  the BPU with a vision pipeline.
 
 ## Build from source
 
-Most users just `conda install bllm` (see [Install](#install)). To hack on the source, clone
-and build **on the board** (the runtime lives only there):
+Most users just `conda install bllm` (see [Install](#1-install-one-minute)). To hack on the
+source, clone and build **on the board** (the runtime lives only there):
 
 ```bash
 # on an RDK S100 / S100P / S600 board
@@ -309,6 +475,16 @@ target_link_libraries(app PRIVATE bllm::native)
 
 In Python, `import bllm` works whether or not the extension is built;
 `bllm.available_backends()` returns `("native",)` or `()`.
+
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| [`docs/API.en.md`](docs/API.en.md) · [`docs/API.zh.md`](docs/API.zh.md) | **API reference** — sessions, multimodal, sampling, serving primitives. |
+| [`docs/MODELS.en.md`](docs/MODELS.en.md) · [`docs/MODELS.zh.md`](docs/MODELS.zh.md) | **Deployment guide** — official package layout, model directories, ION and performance mode. |
+| [`docker/README.md`](docker/README.md) | **Serving** — the OpenAI-compatible server, images, prefix cache and metrics. |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to set up, build (on the board), test, and submit changes. |
+| [`CHANGELOG.md`](CHANGELOG.md) | Release notes (Keep a Changelog / SemVer). |
 
 ## Community
 

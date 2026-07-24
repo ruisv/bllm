@@ -1,51 +1,117 @@
 <!-- 中文为默认文档；English: README.en.md -->
 
-# BLLM — RDK BPU 端侧 LLM / VLM 运行时
+# BLLM — RDK BPU 端侧大模型框架
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![C++](https://img.shields.io/badge/C%2B%2B-17-00599C.svg)](CMakeLists.txt)
 [![Python](https://img.shields.io/badge/python-3.9%E2%80%933.14-3776AB.svg)](python/CMakeLists.txt)
-[![Platform](https://img.shields.io/badge/platform-RDK%20S100%20%2F%20S100P%20%2F%20S600%20(aarch64)-0A7BBB.svg)](#安装)
+[![Platform](https://img.shields.io/badge/platform-RDK%20S100%20%2F%20S100P%20%2F%20S600%20(aarch64)-0A7BBB.svg)](#快速上手)
 [![Version](https://img.shields.io/badge/version-0.2.0-informational.svg)](CHANGELOG.md)
 
 **简体中文** | [English](README.en.md)
 
-**BLLM**（BPU LLM）是面向 D-Robotics **RDK S100 / S100P / S600** 的 C++17 端侧
-**大语言模型 / 多模态**运行时库。它把已编译的 `.hbm` 模型图直接跑在板载 BPU
-（hbDNN / hbUCP）上——自建的原生推理引擎，自带 KV / SSM 缓存、采样器与解码循环——
-并给出一套简洁的 C++ / Python 任务式 API。**无需任何额外的大模型 SDK**。
+> ### 几分钟在板子上跑起一个端侧大模型。
+> 统一的 C++ / Python 会话式 API：对话、流式、多模态、结构化输出、OpenAI 服务，
+> 全部落在板载 BPU 上。**跑在官方通用运行时之上，不需要额外的大模型 SDK。**
 
-它是视觉库 [bcdl](https://github.com/ruisv/bcdl)（RDK BPU 视觉推理）的大模型姊妹库。
+```python
+import bllm
+
+llm = bllm.load("~/models/qwen3.5-2b")           # 一个目录 = 一个模型
+for chunk in llm.stream_chat("用一句话介绍北京"):
+    print(chunk, end="", flush=True)
+```
+
+```bash
+conda install -c https://mirrors.ruis.ai/conda -c conda-forge bllm
+```
+
+它是视觉框架 [**bcdl**](https://github.com/ruisv/bcdl)（RDK BPU 视觉推理）的大模型姊妹库，
+两者共享同一块 BPU 并可协同调度。
 
 <p align="center">
   <img src="docs/demo.gif" width="760" alt="Qwen3.5-0.8B 混合 SSM 在 RDK S100P BPU 上流式对话"><br>
-  <em>Qwen3.5-0.8B（混合 SSM）在 RDK S100P BPU 上原生流式对话 · ~14 tok/s</em>
+  <em>Qwen3.5-0.8B（混合 SSM）在 RDK S100P BPU 上原生流式对话</em>
 </p>
 
-> 📖 API 文档：[中文](docs/API.zh.md) · [English](docs/API.en.md)
+**导航：**
+[为什么用](#为什么用-bllm) ·
+[与官方运行时的关系](#与官方运行时的关系) ·
+[架构](#架构) ·
+[快速上手](#快速上手) ·
+[能做什么](#能做什么) ·
+[服务化部署](#服务化部署openai-兼容-http) ·
+[多模态](#多模态) ·
+[与视觉共享 BPU](#与视觉流水线共享-bpu) ·
+[性能](#性能) ·
+[支持的模型](#支持的模型) ·
+[能力清单](#能力清单) ·
+[从源码构建](#从源码构建) ·
+[社区交流](#社区交流)
 
-## 目录
+## 为什么用 BLLM
 
-- [特性](#特性) · [安装](#安装) · [快速上手](#快速上手) · [制作模型目录](#制作模型目录)
-- [服务化部署](#服务化部署openai-兼容-http) · [多模态](#多模态) · [与视觉流水线共享 BPU](#与视觉流水线共享-bpu)
-- [支持的模型](#支持的模型) · [从源码构建](#从源码构建)
-- [社区交流](#社区交流) · [参与贡献](#参与贡献) · [致谢](#致谢) · [许可证](#许可证)
+端侧跑大模型，难的不是"推理一次"，而是：模型目录怎么组织、停止符从哪来、
+ChatML 模板怎么拼、KV / SSM 缓存怎么管、多轮怎么不越界、采样怎么可复现、
+输出的 JSON 怎么保证能解析、要对外提供服务怎么办、和视觉任务抢 BPU 怎么办。
+BLLM 把这些做成默认行为。
 
-## 特性
+- **✅ 一行加载** —— `bllm.load(dir)`：自动识别模型类型、发现对话模板、按权威性
+  解析停止符（猜错 eos 的下场是模型**永不停止**），裸 `.hbm` 也能直接吃。
+- **✅ 一行安装** —— 预编译 conda 包（Python 3.9–3.14），板上不需要编译。
+- **✅ 统一的会话 API** —— 对话 / 流式 / 多轮 / 采样 / 多模态用同一套接口，
+  C++ 与 Python 对等；换模型不换代码。
+- **✅ 结构化输出是保证，不是请求** —— GBNF 语法约束 + JSON Schema → 语法，
+  **解码期**就只允许仍能满足语法的 token，所以 `json.loads()` 不会失败。
+- **✅ 开箱即用的服务化** —— OpenAI 兼容 HTTP（流式 + 非流式）+ Docker 镜像 +
+  对话前缀缓存（板上实测 31.6s → 1.3s，约 25×）。
+- **✅ 覆盖官方没覆盖的架构** —— Qwen3.5 混合 Gated-DeltaNet/SSM 严格 100% 落 BPU
+  （**BLLM 原生独有**），另有 GLM-Edge、Phi-4-mini。
+- **✅ 能和视觉共存** —— 单 BPU 核上把 LLM 优先级压低，同驻检测器的 p99 从 41 ms
+  降到 **2.95 ms**，不是"各跑各的然后互相拖死"。
 
-- **原生 BPU 推理**：直接驱动 `.hbm`，跑在通用 hbDNN / hbUCP 栈上（和视觉共用同一 BPU 驱动）。
-- **稠密 + 混合架构**：Qwen2.5 / DeepSeek-R1-Distill / InternLM2 / GLM-Edge / Phi-4-mini 等稠密文本模型，
-  以及 **Qwen3.5-0.8B 混合 Gated-DeltaNet/SSM**（严格 100% 落 BPU，~21 tok/s）。
-- **多模态**：Qwen2.5-Omni 的 文本 + 图像 + 音频 + 视频，以及 **Qwen3.5 图文**（自编视觉塔）；支持文件路径或原始数组（相机/麦克风零拷贝）。
-- **一行式会话**：`bllm.load(...)` / `NativeSession`，内置 C++ tokenizer、ChatML 模板、流式、多轮、采样。
-- **完整采样**：贪心 / 温度 / top-k / top-p / min-p / typical-p / 重复·频率·存在惩罚，可复现；
-  另有 `logit_bias`（强推/封禁 token）与 `logprobs`（全词表精确对数概率）。
-- **结构化输出**：GBNF 语法约束解码 + JSON Schema → 语法。**解码期**只允许仍能满足语法的
-  token，所以 `json.loads()` 不会失败——是保证，不是提示词里的请求。
-- **生产特性**：困惑度、异步提交、提示缓存（KV+SSM 状态存取，逐位一致）、停止串（命中即停）、
-  与视觉流水线共享 BPU 的优先级/时间片控制。
+## 与官方运行时的关系
 
-## 安装
+BLLM 的算力同样来自 D-Robotics 官方 BPU 运行时（`hbDNN` / `hbUCP`），也同样
+可以直接吃官方发布的 `.hbm`。下表比较的是**抽象层次与定位**，不是优劣：
+
+| | 官方 OE-LLM 运行时（示例级） | BLLM |
+|---|---|---|
+| 形态 | 独立的大模型运行时 + 示例程序 | 可复用的框架，直接跑在通用 hbDNN / hbUCP 上，**无需额外大模型 SDK** |
+| 接口 | 以 C API 为主 | C++17 库 + Python 绑定，任务式会话 API |
+| 加载模型 | 按示例的路径与参数组织 | `bllm.load(dir)` 一行；`bllm-make-model-dir` 生成清单并解析停止符 |
+| 模型覆盖 | 官方发布的 `.hbm` | 官方 `.hbm` **加上**官方未覆盖的架构（Qwen3.5 混合 SSM / GLM-Edge / Phi-4-mini） |
+| 会话 | 模板、历史、缓存自己拼 | 内置 C++ tokenizer、ChatML 模板、多轮、流式、提示缓存 |
+| 生成控制 | 基础采样 | 全套采样 + `logit_bias` + `logprobs` + GBNF 语法约束 |
+| 服务化 | 自行搭建 | OpenAI 兼容 HTTP + Docker + 前缀缓存 + `/metrics` |
+| 与视觉共存 | 自行处理 | BPU 优先级 / 时间片控制，与 [bcdl](https://github.com/ruisv/bcdl) 协同 |
+
+一句话：**官方运行时证明了 BPU 能跑大模型；BLLM 让你几分钟内把它做成产品。**
+
+## 架构
+
+```
+              你的应用 / OpenAI 兼容客户端
+                          ↓
+   ┌───────────────────────────────────────────────┐
+   │  BLLM                                          │
+   │  会话与模板 · 采样与语法约束 · KV/SSM 缓存      │
+   │  视觉塔与多模态 · 前缀缓存 · HTTP 服务          │
+   └───────────────────────────────────────────────┘
+                          ↓
+        D-Robotics hobot 运行时（官方，通用）
+                 hbDNN · hbUCP
+                          ↓
+                     BPU "Nash"
+```
+
+自建的原生推理引擎：解码循环、KV / SSM 缓存、采样器、tokenizer 都在 BLLM 里，
+下面只依赖板子本来就有的通用 BPU 运行时 —— 和视觉栈用的是同一个驱动，
+所以两者可以同板共存、互相调度。
+
+## 快速上手
+
+### 1. 装（一分钟）
 
 板上（aarch64，conda 环境）直接从我们的 conda 源安装：
 
@@ -65,25 +131,31 @@ sudo /usr/hobot/bin/hb_switch_ion.sh balanced && sudo reboot   # ≤3B；7B 用 
 
 性能模式不跨重启保持，每次开机设一遍（见 [`docs/MODELS.zh.md`](docs/MODELS.zh.md)）。
 
-## 快速上手
+### 2. 拿一个模型（一分钟）
 
-一个模型是一个**目录**（`.hbm` + `tokenizer.json` + `model.json` 清单），一行加载：
+最快的一条：**下载我们编译好、可直接 `bllm.load()` 的模型包**（文件名已标注
+上下文长度 / 目标板子 / 量化位宽）：
+
+**📦 [Google Drive — 模型下载](https://drive.google.com/drive/folders/1tR3MtP0iriptqpeHOSzdpRMT_ckdqDQ8)**
+
+```bash
+sha256sum -c qwen3.5-4b-ctx512-int8-s100.tar.gz.sha256   # 完整性校验
+tar xzf qwen3.5-4b-ctx512-int8-s100.tar.gz
+```
+
+已经有官方发布的 `.hbm`？用 `bllm-make-model-dir` 拼成模型目录即可，见
+[制作模型目录](#制作模型目录)。
+
+### 3. 跑（一分钟）
 
 ```python
 import bllm
 
-llm = bllm.load("/path/to/qwen2.5-1.5b")        # 目录，或 裸 .hbm + tokenizer_dir=
-llm.set_sampling(temp=0.7, top_p=0.9)           # 不设即贪心
-for chunk in llm.stream_chat("用一句话介绍北京"):  # 流式、多轮
+llm = bllm.load("qwen3.5-4b-ctx512-int8-s100")   # 目录，或 裸 .hbm + tokenizer_dir=
+llm.set_sampling(temp=0.7, top_p=0.9)            # 不设即贪心
+for chunk in llm.stream_chat("用一句话介绍北京"):   # 流式、多轮
     print(chunk, end="", flush=True)
 print(llm.last_decode_tps)
-```
-
-裸 `.hbm`（OE 包）也能直接吃，运行时自动合成清单：
-
-```python
-llm = bllm.load("Qwen2.5_1.5B.hbm", tokenizer_dir="Qwen2.5_1.5B_config/")
-print(llm.chat("你好"))
 ```
 
 C++：
@@ -96,11 +168,28 @@ std::string reply = llm.chat("你好", 400, [](const std::string& s){ std::cout 
 
 REPL：`bllm_chat_native --model <dir>`（见 [`examples/chat_native.cc`](examples/chat_native.cc)）。
 
+> 📖 完整 API 文档：[中文](docs/API.zh.md) · [English](docs/API.en.md)
+
+## 能做什么
+
+| 能力 | 一句话用法 | 示例 |
+|---|---|---|
+| **对话 / 流式** | `llm.chat(...)` · `llm.stream_chat(...)` | [`chat_native.cc`](examples/chat_native.cc) · [`native_session.py`](examples/native_session.py) |
+| **多轮与上下文** | 会话自持历史，`llm.context_left` 跟踪剩余额度 | [`docs/API.zh.md`](docs/API.zh.md) |
+| **采样** | `llm.set_sampling(temp=…, top_p=…, …)`，可复现 | [采样参数速览](docs/API.zh.md) |
+| **结构化输出** | `llm.set_grammar("root ::= …")` / JSON Schema | [`docs/API.zh.md`](docs/API.zh.md) |
+| **图文（VLM）** | `vlm.chat("描述这张图", images=["a.jpg"])` | [`vlm_native.py`](examples/vlm_native.py) · [`qwen35_native.cc`](examples/qwen35_native.cc) |
+| **文 / 图 / 音 / 视频** | Qwen2.5-Omni，路径或原始数组（相机/麦克风零拷贝） | [`vlm_native.cc`](examples/vlm_native.cc) |
+| **文本嵌入** | `NativeEmbedder`（Qwen3-VL-Embedding；C++ API，暂无 Python 绑定） | [`embed_native.cc`](examples/embed_native.cc) |
+| **服务化** | OpenAI 兼容 HTTP + Docker | [`docker/README.md`](docker/README.md) |
+| **与视觉共享 BPU** | `llm.set_bpu_priority(0)` | [与视觉流水线共享 BPU](#与视觉流水线共享-bpu) |
+
 ## 制作模型目录
 
-下载的官方模型（`.hbm` 散在 `model/`、tokenizer 散在 `config/`）用 `bllm-make-model-dir`
-拼成上面那个目录 —— 它随 `bllm` 包一起装好，不必 clone 本仓
-（等价形式：`python -m bllm.make_model_dir`；源码树里是 `scripts/make_model_dir.py`）：
+一个模型是一个**目录**（`.hbm` + `tokenizer.json` + `model.json` 清单）。下载的官方模型
+（`.hbm` 散在 `model/`、tokenizer 散在 `config/`）用 `bllm-make-model-dir` 拼成这个目录 ——
+它随 `bllm` 包一起装好，不必 clone 本仓（等价形式：`python -m bllm.make_model_dir`；
+源码树里是 `scripts/make_model_dir.py`）：
 
 ```bash
 R=<sdk>/oellm_runtime
@@ -148,7 +237,6 @@ MODEL_DIR=~/models/qwen3.5-2b docker compose up -d --build
 curl localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"你好"}]}'
 ```
-
 
 服务端会**缓存对话前缀**：OpenAI 协议无状态、客户端每轮重发全部历史，服务端只 prefill
 新增部分。命中量在 `usage.prompt_tokens_details.cached_tokens`，整体统计看 `GET /metrics`。
@@ -258,11 +346,27 @@ S100/S100P 单 BPU 核，LLM 与视觉（bcdl）会争用。一次解码是一�
 + 运行时把 LLM 优先级压低：
 
 ```python
-llm.set_bpu_priority(0)      # 最低,让视觉抢占 BPU 队列
+llm.set_bpu_priority(0)      # 最低，让视觉抢占 BPU 队列
 ```
 
 实测（yolo26s vs Qwen2.5-1.5B 解码，检测器 p99）：两个旋钮都开时检测器 p99 从 41 ms 降到 **2.95 ms**、
 383 FPS，LLM 24→17 tok/s；空载时几乎不损耗。
+
+## 性能
+
+板端实测（int8 权重，解码吞吐 / 首字延迟）：
+
+| 模型 | 板子 | 上下文 | 解码 |
+|---|---|---|---|
+| Qwen3.5-0.8B（混合 SSM） | S100P | 2048 | **22.5 tok/s** |
+| Qwen3.5-0.8B（混合 SSM） | S100P | 4096 | **19.5 tok/s** |
+| Qwen3.5-2B（混合 SSM） | S100P | 4096 | **13.7 tok/s** |
+| Qwen2.5-1.5B（稠密） | S100P | 1024 | **约 24 tok/s** |
+| Qwen3.5-0.8B（混合 SSM） | S600（单核） | — | **42.7 tok/s** |
+| Qwen3.5-4B（混合 SSM） | S600（4 核并行） | — | **27 tok/s** |
+
+首字延迟：图文 VLM（0.8B）**1.23 s**（320px）/ **2.30 s**（448px）；
+服务端命中对话前缀缓存后 hybrid **31.6 s → 1.3 s**、dense TTFT **274 → 141 ms**。
 
 ## 支持的模型
 
@@ -282,29 +386,28 @@ llm.set_bpu_priority(0)      # 最低,让视觉抢占 BPU 队列
 - **GLM-Edge** · **Phi-4-mini**
 
 模型转换（`.hbm` 如何产出）是离线流程，不在本仓范围；本仓消费成品 `.hbm` + tokenizer 配置。
+预编译好的模型包见[快速上手](#快速上手)。
 
-> **S600 多核**：大模型可绑定多个 BPU 核并行 decode——Qwen3.5-4B 用满 4 核 **27 tok/s**、
-> 0.8B 单核 **42.7 tok/s**（板端实测）。
+## 能力清单
 
-### 预编译模型下载
-
-我们把一批**编译好、可直接 `bllm.load()` 的模型包**放在网盘（每个是一个目录：`model.hbm` +
-`tokenizer.json` + `model.json`，混合模型另含 `embed_tokens.bin`）。文件名已标注**上下文长度 /
-目标板子 / 量化位宽**，一看即知：
-
-**📦 [Google Drive — 模型下载](https://drive.google.com/drive/folders/1tR3MtP0iriptqpeHOSzdpRMT_ckdqDQ8)**
-
-下载后校验、解压即可加载（以 Qwen3.5-4B 为例）：
-
-```bash
-sha256sum -c qwen3.5-4b-ctx512-int8-s100.tar.gz.sha256   # 完整性校验
-tar xzf qwen3.5-4b-ctx512-int8-s100.tar.gz
-python -c "import bllm; s=bllm.load('qwen3.5-4b-ctx512-int8-s100'); print(s.chat('你好'))"
-```
+- **原生 BPU 推理**：直接驱动 `.hbm`，跑在通用 hbDNN / hbUCP 栈上（和视觉共用同一 BPU 驱动）。
+- **稠密 + 混合架构**：Qwen2.5 / DeepSeek-R1-Distill / InternLM2 / GLM-Edge / Phi-4-mini 等稠密文本模型，
+  以及 **Qwen3.5 混合 Gated-DeltaNet/SSM**（严格 100% 落 BPU）。
+- **多模态**：Qwen2.5-Omni 的 文本 + 图像 + 音频 + 视频，以及 **Qwen3.5 图文**（自编视觉塔）；支持文件路径或原始数组（相机/麦克风零拷贝）。
+- **一行式会话**：`bllm.load(...)` / `NativeSession`，内置 C++ tokenizer、ChatML 模板、流式、多轮、采样。
+- **完整采样**：贪心 / 温度 / top-k / top-p / min-p / typical-p / 重复·频率·存在惩罚，可复现；
+  另有 `logit_bias`（强推/封禁 token）与 `logprobs`（全词表精确对数概率）。
+- **结构化输出**：GBNF 语法约束解码 + JSON Schema → 语法。**解码期**只允许仍能满足语法的
+  token，所以 `json.loads()` 不会失败——是保证，不是提示词里的请求。
+- **文本嵌入**：`NativeEmbedder`（Qwen3-VL-Embedding，C++ API）—— 检索 / 相似度场景可直接用。
+- **分块 prefill**：混合模型的 prompt / 图像摄入走 seq_len=N 的 prefill 图，
+  比逐 token 摄入约快 76×（无 prefill 图的模型自动退回逐 token 路径）。
+- **生产特性**：困惑度、异步提交、提示缓存（KV+SSM 状态存取，逐位一致）、停止串（命中即停）、
+  与视觉流水线共享 BPU 的优先级/时间片控制。
 
 ## 从源码构建
 
-多数用户直接 `conda install bllm` 即可（见[安装](#安装)）。想改源码/自行构建，则**在板上**
+多数用户直接 `conda install bllm` 即可（见[快速上手](#快速上手)）。想改源码/自行构建，则**在板上**
 克隆并构建（运行时只在板上）：
 
 ```bash
@@ -327,6 +430,16 @@ target_link_libraries(app PRIVATE bllm::native)
 ```
 
 Python 里 `import bllm` 在有无扩展时都能导入；`bllm.available_backends()` 返回 `("native",)` 或 `()`。
+
+## 文档
+
+| 文档 | 涵盖内容 |
+|---|---|
+| [`docs/API.zh.md`](docs/API.zh.md) · [`docs/API.en.md`](docs/API.en.md) | **API 参考** —— 会话、多模态、采样参数、服务化原语。 |
+| [`docs/MODELS.zh.md`](docs/MODELS.zh.md) · [`docs/MODELS.en.md`](docs/MODELS.en.md) | **部署手册** —— 官方包结构、模型目录、ION 与性能模式。 |
+| [`docker/README.md`](docker/README.md) | **服务化** —— OpenAI 兼容服务、镜像构建、前缀缓存与指标。 |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | 如何搭建、构建（在板上）、测试并提交改动。 |
+| [`CHANGELOG.md`](CHANGELOG.md) | 发布说明（Keep a Changelog / SemVer）。 |
 
 ## 社区交流
 
