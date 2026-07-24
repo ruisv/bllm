@@ -4,6 +4,19 @@ All notable changes to BLLM are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **C++ API reference, in both languages.** `docs/CPP_API.zh.md` and
+  `docs/CPP_API.en.md` document the surface that previously existed only as
+  headers: `NativeLlm` (generation, sampling, grammars, stop strings, thinking,
+  state and reusable prefixes, the serving primitives), `NativeVlm` (media types,
+  live streaming, the KV budget, the Omni-only video path), `NativeEmbedder`
+  (which had no documentation at all in either language), `ModelConfig`,
+  `Tokenizer`, the sampling parameters, and the engine layer beneath the
+  sessions. Includes a C++ ⇄ Python mapping table; the Python references and both
+  READMEs now link to it.
+
 ## [0.2.0] — 2026-07-24
 
 The **Qwen3.5 image+text (VLM)** release. A self-built vision tower plus a

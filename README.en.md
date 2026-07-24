@@ -181,7 +181,7 @@ std::string reply = llm.chat("Hello", 400, [](const std::string& s){ std::cout <
 
 REPL: `bllm_chat_native --model <dir>` (see [`examples/chat_native.cc`](examples/chat_native.cc)).
 
-> 📖 Full API docs: [English](docs/API.en.md) · [中文](docs/API.zh.md)
+> 📖 Full API docs: Python [English](docs/API.en.md) · [中文](docs/API.zh.md) | C++ [English](docs/CPP_API.en.md) · [中文](docs/CPP_API.zh.md)
 
 ## What you can build
 
@@ -480,7 +480,8 @@ In Python, `import bllm` works whether or not the extension is built;
 
 | Document | What it covers |
 |---|---|
-| [`docs/API.en.md`](docs/API.en.md) · [`docs/API.zh.md`](docs/API.zh.md) | **API reference** — sessions, multimodal, sampling, serving primitives. |
+| [`docs/API.en.md`](docs/API.en.md) · [`docs/API.zh.md`](docs/API.zh.md) | **Python API reference** — sessions, multimodal, sampling, serving primitives. |
+| [`docs/CPP_API.en.md`](docs/CPP_API.en.md) · [`docs/CPP_API.zh.md`](docs/CPP_API.zh.md) | **C++ API reference** — `NativeLlm` / `NativeVlm` / `NativeEmbedder`, grammars, the engine layer. |
 | [`docs/MODELS.en.md`](docs/MODELS.en.md) · [`docs/MODELS.zh.md`](docs/MODELS.zh.md) | **Deployment guide** — official package layout, model directories, ION and performance mode. |
 | [`docker/README.md`](docker/README.md) | **Serving** — the OpenAI-compatible server, images, prefix cache and metrics. |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to set up, build (on the board), test, and submit changes. |

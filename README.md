@@ -168,7 +168,7 @@ std::string reply = llm.chat("你好", 400, [](const std::string& s){ std::cout 
 
 REPL：`bllm_chat_native --model <dir>`（见 [`examples/chat_native.cc`](examples/chat_native.cc)）。
 
-> 📖 完整 API 文档：[中文](docs/API.zh.md) · [English](docs/API.en.md)
+> 📖 完整 API 文档：Python [中文](docs/API.zh.md) · [English](docs/API.en.md)｜C++ [中文](docs/CPP_API.zh.md) · [English](docs/CPP_API.en.md)
 
 ## 能做什么
 
@@ -435,7 +435,8 @@ Python 里 `import bllm` 在有无扩展时都能导入；`bllm.available_backen
 
 | 文档 | 涵盖内容 |
 |---|---|
-| [`docs/API.zh.md`](docs/API.zh.md) · [`docs/API.en.md`](docs/API.en.md) | **API 参考** —— 会话、多模态、采样参数、服务化原语。 |
+| [`docs/API.zh.md`](docs/API.zh.md) · [`docs/API.en.md`](docs/API.en.md) | **Python API 参考** —— 会话、多模态、采样参数、服务化原语。 |
+| [`docs/CPP_API.zh.md`](docs/CPP_API.zh.md) · [`docs/CPP_API.en.md`](docs/CPP_API.en.md) | **C++ API 参考** —— `NativeLlm` / `NativeVlm` / `NativeEmbedder`、语法约束、引擎层。 |
 | [`docs/MODELS.zh.md`](docs/MODELS.zh.md) · [`docs/MODELS.en.md`](docs/MODELS.en.md) | **部署手册** —— 官方包结构、模型目录、ION 与性能模式。 |
 | [`docker/README.md`](docker/README.md) | **服务化** —— OpenAI 兼容服务、镜像构建、前缀缓存与指标。 |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | 如何搭建、构建（在板上）、测试并提交改动。 |

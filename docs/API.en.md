@@ -81,7 +81,7 @@ print(llm.ask("What are the conclusions?"))
 print(llm.ask("Which risks are mentioned?"))  # reuses the prefix, no re-prefill
 ```
 
-C++: `bllm::NativeLlm` (`bllm/native_llm.h`); `set_prefix`/`ask` are backed by the engine
+C++: `bllm::NativeLlm` (`bllm/native_llm.h`, see [CPP_API.en.md](CPP_API.en.md)); `set_prefix`/`ask` are backed by the engine
 in-memory `snapshot()`/`restore()` (`bllm::NativeHybridEngine` and `bllm::NativeEngine`).
 
 
@@ -159,7 +159,7 @@ vlm = bllm.NativeVlmSession(model_dir)        # or bllm.load(...) with arch="omn
 > rather than silently evicting (evicting the earliest tokens turns these full-attention models
 > into gibberish). A vision tower's compiled resolution sets the video budget.
 
-C++: `bllm::NativeVlm` (`bllm/native_vlm.h`).
+C++: `bllm::NativeVlm` (`bllm/native_vlm.h`, see [CPP_API.en.md](CPP_API.en.md)).
 
 ## Sampling parameters at a glance
 

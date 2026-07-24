@@ -76,7 +76,7 @@ print(llm.ask("这份报告的结论是什么？"))
 print(llm.ask("它提到了哪些风险？"))            # 复用前缀，不再重复 prefill
 ```
 
-C++：`bllm::NativeLlm`（`bllm/native_llm.h`）。`set_prefix`/`ask` 由引擎内存快照
+C++：`bllm::NativeLlm`（`bllm/native_llm.h`，见 [CPP_API.zh.md](CPP_API.zh.md)）。`set_prefix`/`ask` 由引擎内存快照
 `snapshot()`/`restore()`（`bllm::NativeHybridEngine` 与 `bllm::NativeEngine`）支撑。
 
 
@@ -165,7 +165,7 @@ vlm = bllm.NativeVlmSession(model_dir)        # 或 bllm.load(...)
 > 越过 `context_left` 会抛异常而非静默丢弃（丢弃最早 token 会让这类全注意力模型输出乱码）。视觉塔分辨率
 > 在离线导出时定死，决定视频预算。
 
-C++：`bllm::NativeVlm`（`bllm/native_vlm.h`）。
+C++：`bllm::NativeVlm`（`bllm/native_vlm.h`，见 [CPP_API.zh.md](CPP_API.zh.md)）。
 
 ## 采样参数速览
 
