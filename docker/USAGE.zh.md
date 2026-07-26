@@ -160,6 +160,30 @@ delta 是解码后的文本片段(停止串的回退会合并/延后 token),没�
 不传 `seed` 时每个请求重新取种子,所以 `temperature` 会真的产生变化;传了 `seed` 则
 相同请求逐字节可复现(OpenAI 的 `seed` 语义)。
 
+### 图文(VLM)
+
+`BLLM_MODEL` 指向一个带 `visual` 塔的目录(见 `docs/MODELS.zh.md` 的 hybrid 打包一节)
+时,`/v1/chat/completions` 接受 OpenAI 的 `image_url` content part —— base64 内联或
+`http(s)://` 直链都行:
+
+```bash
+curl localhost:8866/v1/chat/completions -H 'Content-Type: application/json' -d '{
+  "messages": [{"role": "user", "content": [
+    {"type": "text", "text": "这张图里有什么?"},
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0K..."}}
+  ]}]
+}'
+```
+
+`/metrics` 的 `is_vlm` 字段说明当前模型是不是图文包。指向纯文本目录时收到
+`image_url` 会直接 400(而不是默默丢图后一本正经地瞎编)。
+
+多轮追问同一张图不会重跑视觉塔:引擎自己记着已经喂进当前会话的历史,续问只是在
+末尾追一轮。历史被编辑、换了张图,或两个不相关的对话交替打进来,就整段重来一遍
+——答案总是对的,只是这种情况下没有省下重算的收益(图文会话是单进程单会话,没有
+纯文本那套 ids 级前缀缓存可用,靠的是回放而不是快照/回滚)。视频输入目前不支持
+(Qwen3.5 用时间戳 token 分帧,和 Omni 的 TMRoPE 不是一回事)。
+
 ### OpenAI SDK
 
 ```python

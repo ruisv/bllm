@@ -354,6 +354,31 @@ NB_MODULE(_bllm_native, m) {
           "Answer a turn of text + images (paths or HxWx3 uint8) + audio (wav paths or "
           "16 kHz mono float32) + videos ({'frames':[...], 'fps':2.0, 'audio':pcm|path}); "
           "on_text(str) streams. stop=[...] ends the answer on any of those strings.")
+      .def(
+          "append_turn",
+          [](bllm::NativeVlm& vlm, const std::string& text, nb::list images,
+             const std::string& reply) {
+            std::deque<bllm::OwnedImage> ownedImg;
+            std::vector<bllm::ImageRGB> imgs;
+            for (nb::handle h : images) {
+              if (nb::isinstance<nb::str>(h)) {
+                ownedImg.push_back(bllm::loadImageRGB(nb::cast<std::string>(h)));
+                const auto& o = ownedImg.back();
+                imgs.push_back({o.rgb.data(), o.width, o.height});
+              } else {
+                RgbArray a = nb::cast<RgbArray>(h);
+                if (a.shape(2) != 3) throw std::runtime_error("[bllm] image array must be HxWx3 uint8");
+                imgs.push_back({a.data(), (int)a.shape(1), (int)a.shape(0)});
+              }
+            }
+            nb::gil_scoped_release r;
+            vlm.append_turn(text, imgs, reply);
+          },
+          "text"_a, "images"_a = nb::list(), "reply"_a,
+          "Replay a turn (text + images) we already know the reply to — prefill only, "
+          "no decode. For a stateless HTTP server replaying history it did not just "
+          "generate itself: skips the wasted (and, since sampling is stochastic, "
+          "possibly non-reproducing) decode of a reply the caller already has.")
       // Live streaming: push camera frames / mic PCM as they arrive, ask any time.
       .def("stream_begin", &bllm::NativeVlm::stream_begin, "fps"_a = 2.0, "with_audio"_a = true,
            "Open a live media turn. fps<=0 means audio only.")
@@ -404,6 +429,9 @@ NB_MODULE(_bllm_native, m) {
       .def_prop_ro("has_audio", &bllm::NativeVlm::has_audio)
       .def_prop_ro("last_decode_tps", &bllm::NativeVlm::last_decode_tps)
       .def_prop_ro("last_ttft_ms", &bllm::NativeVlm::last_ttft_ms)
+      .def("encode", &bllm::NativeVlm::encode, "text"_a,
+           "Plain tokenizer encode (no ChatML wrapping) — a token count for usage "
+           "accounting, not a way to feed text.")
       .def_prop_ro("name", [](bllm::NativeVlm& v) { return v.config().name; });
 #endif
 }

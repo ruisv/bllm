@@ -143,6 +143,8 @@ vlm = bllm.NativeVlmSession(model_dir)        # or bllm.load(...) with arch="omn
 |---|---|
 | `chat(text, images=(), audios=(), videos=(), max_new=256, on_text=None, stop=None) -> str` | One turn over text + image/audio/video. |
 | `stream_chat(text, images=(), audios=(), videos=(), max_new=256, stop=None) -> Iterator[str]` | Streaming form. |
+| `append_turn(text, images=(), reply="")` | Replay a turn whose reply is **already known** — prefill only, no decode. For a caller that needs to replay conversation history without regenerating it (an HTTP server handed the client's full resent history, most of which it just generated itself — see the image+text section of `docker/USAGE.en.md`). Leaves context exactly where a real `chat()` call would have. |
+| `encode(text) -> list[int]` | Plain tokenizer encode (no ChatML wrapping) — a token count for usage accounting, not a way to feed text. |
 | `set_sampling(...)` / `set_stop(...)` / `set_bpu_priority(...)` / `reset()` | Same as `NativeSession`. |
 
 **Live input** (encode as it arrives):

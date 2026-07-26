@@ -179,6 +179,34 @@ With no `seed`, each request draws a fresh one, so `temperature` actually varies
 reply; with an explicit `seed`, identical requests reproduce byte for byte (OpenAI's
 `seed` semantics).
 
+### Image + text (VLM)
+
+When `BLLM_MODEL` points at a directory carrying a `visual` tower (see the hybrid
+packaging section of `docs/MODELS.en.md`), `/v1/chat/completions` accepts OpenAI's
+`image_url` content part — either an inline base64 data URI or an `http(s)://` link:
+
+```bash
+curl localhost:8866/v1/chat/completions -H 'Content-Type: application/json' -d '{
+  "messages": [{"role": "user", "content": [
+    {"type": "text", "text": "What is in this image?"},
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0K..."}}
+  ]}]
+}'
+```
+
+`/metrics`'s `is_vlm` field says whether the loaded model is an image+text package.
+Pointing a text-only model at `image_url` is a clean 400, not a silently dropped image
+followed by a confident, made-up answer.
+
+A follow-up question about the same image does not re-run the vision tower: the
+engine remembers what it has already fed the live session and only replays the new
+tail. If the history was edited, the image changed, or two unrelated conversations
+interleave on this single-session engine, it replays from scratch instead — the
+answer is always correct, it just misses the savings in that case (an image
+conversation has no ids-based prefix cache the way plain text does; there is no
+snapshot/restore for it, only turn-by-turn replay). Video is not supported (Qwen3.5
+separates frames with timestamp tokens, not Omni's TMRoPE).
+
 ### OpenAI SDK
 
 ```python

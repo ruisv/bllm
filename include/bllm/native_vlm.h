@@ -94,6 +94,29 @@ class NativeVlm {
                                std::to_string(vision_->hidden()) + " vs " +
                                std::to_string(text_->hidden()));
 
+    // A multi-core .hbm (nash-p / S600) MUST be submitted to specific BPU cores —
+    // the runtime rejects HB_UCP_CORE_ANY for the text decoder there (see NativeLlm,
+    // which already does this for the text-only path). The vision/audio towers are
+    // NOT multi-core-compiled — they run fine under the default HB_UCP_CORE_ANY, so
+    // there is no reason to force them onto the decoder's explicit mask too, and
+    // `mediaSched()` (priority only, core_mask left default) avoids doing so.
+    //
+    // KNOWN ISSUE this does NOT fix: S600 image chat() intermittently (~40-50% of
+    // calls, measured on the sandbox, temp=0, fresh process each time) returns
+    // empty/whitespace output instead of a real reply. The isolated vision tower
+    // alone is 100% deterministic (13/13 runs, even forced onto the decoder's full
+    // multi-core mask) and text-only chat is 100% deterministic (8/8) — only the
+    // combined vision+text pipeline is flaky, and it stayed flaky whether or not
+    // vision shared the decoder's core_mask, which rules out core_mask as the
+    // cause (an earlier, smaller test looked like it fixed this; a larger
+    // follow-up re-test showed it did not — that was noise, not a fix). Root cause
+    // unknown; suspect an SDK/hardware-level race switching BPU graphs across
+    // cores. Do not treat S600 VLM chat() as reliable until this is understood.
+    if (cfg_.bpu_cores > 1) {
+      sched_.core_mask = (static_cast<uint64_t>(1) << cfg_.bpu_cores) - 1;
+      text_->set_sched(sched_);
+    }
+
     im_start_ = tk_.token_to_id("<|im_start|>");
     im_end_ = tk_.token_to_id("<|im_end|>");
     // Qwen2.5-Omni spells these <|vision_bos|>/<|vision_eos|>; Qwen3.5 spells the
@@ -149,8 +172,8 @@ class NativeVlm {
   void set_bpu_priority(int priority) {
     sched_.priority = priority;
     text_->set_sched(sched_);
-    vision_->set_sched(sched_);
-    if (audio_) audio_->set_sched(sched_);
+    vision_->set_sched(mediaSched());
+    if (audio_) audio_->set_sched(mediaSched());
   }
 
   void reset() {
@@ -177,6 +200,24 @@ class NativeVlm {
     closeTurn(s);
     feedStream(s);
     return streamDecode(max_new, on_text, stop);
+  }
+
+  // Replay a turn we already know the reply to — prefill only, no decode. For
+  // serving a stateless HTTP API: the client resends the full conversation every
+  // call, and re-generating a reply the caller already has would waste BPU time
+  // and, since sampling is stochastic, might not even reproduce the same text.
+  // Leaves context exactly where `chat()` would have after that reply, so the next
+  // `chat()`/`append_turn()` closes it the same way either call would.
+  void append_turn(const std::string& text, const std::vector<ImageRGB>& images,
+                   const std::string& reply) {
+    if (streaming_) throw std::runtime_error("[bllm] a stream is open; use stream_ask()");
+    Stream s(text_->hidden(), text_->next_pos());
+    openTurn(s);
+    for (const ImageRGB& im : images) appendImage(s, im);
+    appendText(s, tk_.encode(text));
+    closeTurn(s);
+    appendText(s, tk_.encode(reply));
+    feedStream(s);
   }
 
   // ── live streaming: push camera frames / microphone PCM as they arrive ──────
@@ -255,6 +296,9 @@ class NativeVlm {
   bool streaming() const { return streaming_; }
   int context_left() const { return text_->context_left(); }
   int tokens_used() const { return text_->position(); }
+  // Plain tokenizer encode, no ChatML wrapping — for a caller that needs a token
+  // count (usage accounting) rather than actually feeding the text.
+  std::vector<int> encode(const std::string& text) const { return tk_.encode(text); }
   // How many decoder tokens a second of video/audio costs at the current settings.
   double video_tokens_per_second() const { return withVideo_ ? fps_ * vision_->n_token() / 2.0 : 0.0; }
   static constexpr double kAudioTokensPerSecond = 25.0;
@@ -482,7 +526,7 @@ class NativeVlm {
       if (!has_audio())
         throw std::runtime_error("[bllm] model.json has no 'audio' + 'mel_filters' — audio unsupported");
       audio_ = std::make_unique<AudioTower>(cfg_.audio, cfg_.mel_filters);
-      audio_->set_sched(sched_);
+      audio_->set_sched(mediaSched());
       if (audio_->hidden() != text_->hidden())
         throw std::runtime_error("[bllm] audio/text hidden size mismatch");
     }
@@ -523,7 +567,14 @@ class NativeVlm {
   std::unique_ptr<AudioTower> audio_;           // lazy: only built when audio is fed
   NativeSamplingParams sampling_;
   std::vector<std::string> stop_;
-  native_detail::BpuSched sched_;
+  native_detail::BpuSched sched_;  // text/decoder schedule: core_mask set on multi-core boards
+  // vision/audio towers never take an explicit core_mask (see the constructor's
+  // multi-core comment) — only priority follows sched_.
+  native_detail::BpuSched mediaSched() const {
+    native_detail::BpuSched s;
+    s.priority = sched_.priority;
+    return s;
+  }
   bool first_turn_ = true;
   bool video_ok_ = false;         // is this package's video layout the one implemented?
   int im_start_ = -1, im_end_ = -1, vision_bos_ = -1, vision_eos_ = -1;

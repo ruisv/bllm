@@ -516,6 +516,11 @@ if _HAVE_NATIVE:
             """Whether this model directory ships an audio tower + mel filters."""
             return self._vlm.has_audio
 
+        def encode(self, text: str) -> "list[int]":
+            """Plain tokenizer encode, no ChatML wrapping — a token count for usage
+            accounting, not a way to feed text (use chat()/append_turn() for that)."""
+            return self._vlm.encode(text)
+
         def chat(self, text: str, images=(), audios=(), videos=(), max_new: int = 256,
                  on_text: "Optional[Callable[[str], None]]" = None,
                  stop: "Optional[list[str]]" = None) -> str:
@@ -530,6 +535,15 @@ if _HAVE_NATIVE:
             imgs, aus, vids = list(images), list(audios), list(videos)
             s = list(stop) if stop else []
             return _stream(lambda cb: self._vlm.chat(text, imgs, aus, vids, max_new, cb, s))
+
+        def append_turn(self, text: str, images=(), reply: str = "") -> None:
+            """Replay a turn (text + images) whose reply is already known — prefill
+            only, no decode. Serving use: a stateless HTTP client resends the whole
+            conversation every call, so replaying history it already generated
+            itself only needs the media/text fed back into context, not regenerated
+            (regenerating would also risk not reproducing the same text, since
+            sampling is stochastic)."""
+            self._vlm.append_turn(text, list(images), reply)
 
         # ── live capture: push frames / mic PCM as they arrive, ask any time ──
         #

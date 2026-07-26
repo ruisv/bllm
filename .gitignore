@@ -28,6 +28,7 @@ docs/PREFILL_DEBUG.md
 docs/SAMPLING_PLAN.md
 docs/SERVING_PLAN.md
 docs/MODELZOO_PLAN.md
+docs/QWEN35_OPT_PLAN.md
 docs/S600_RESULTS.md
 # any *.local override files
 *.local

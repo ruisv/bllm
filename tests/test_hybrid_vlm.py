@@ -73,3 +73,24 @@ def test_image_changes_the_answer(vlm):
     vlm.reset()
     with_image = vlm.chat("用一个词描述你看到的主要颜色。", images=[IMAGE], max_new=16)
     assert without != with_image
+
+
+@pytest.mark.skipif(not IMAGE, reason="set BLLM_TEST_IMAGE")
+def test_append_turn_matches_chained_chat(vlm):
+    """append_turn() exists so the HTTP server can replay a conversation's earlier
+    turns (whose replies the stateless client already resent) without paying for a
+    second decode. It must leave context bit-identical to having actually chatted
+    that turn -- checked by asking the SAME follow-up question after each path and
+    requiring the SAME answer at temp=0 (append_turn takes no sampling params, so
+    this is the only observable it has)."""
+    vlm.set_sampling(temp=0.0)
+
+    vlm.reset()
+    turn1 = vlm.chat("这张图里有什么？一句话回答。", images=[IMAGE], max_new=48)
+    chained = vlm.chat("图里是什么颜色？一个词回答。", max_new=16)
+
+    vlm.reset()
+    vlm.append_turn("这张图里有什么？一句话回答。", images=[IMAGE], reply=turn1)
+    replayed = vlm.chat("图里是什么颜色？一个词回答。", max_new=16)
+
+    assert replayed == chained

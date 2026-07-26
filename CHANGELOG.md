@@ -16,6 +16,34 @@ All notable changes to BLLM are documented here. The format follows
   `Tokenizer`, the sampling parameters, and the engine layer beneath the
   sessions. Includes a C++ ⇄ Python mapping table; the Python references and both
   READMEs now link to it.
+- **Image+text now served over HTTP.** `/v1/chat/completions` accepts OpenAI's
+  `image_url` content part (inline base64 or an `http(s)://` link) when
+  `BLLM_MODEL` points at a VLM package; `/metrics` exposes `is_vlm` so a client
+  can tell. A multi-turn conversation about the same image does not re-run the
+  vision tower: the engine tracks which `(user, assistant)` turn pairs are
+  already live in the session and replays only new turns via the new
+  `NativeVlm::append_turn` / `NativeVlmSession.append_turn` (prefill only, no
+  decode — the caller already has the reply, so regenerating it would waste BPU
+  time and, sampling being stochastic, might not even reproduce the same text).
+  History that was edited, or two unrelated conversations interleaving on this
+  single-session engine, falls back to a full reset+replay rather than risk
+  splicing the wrong context. Also adds `NativeVlm::encode` /
+  `NativeVlmSession.encode` for usage-accounting token counts.
+
+### Fixed
+- **S600 (`nash-p`) image chat() crashed on the first request.** `NativeVlm`
+  never bound the text decoder to explicit BPU cores the way `NativeLlm`
+  (text-only) already did, so every multi-core `.hbm` rejected the default
+  `HB_UCP_CORE_ANY` with `hbUCPSubmitTask`: "the backend must be specified to
+  specific cores". Fixed — the vision/audio towers are left on the default
+  schedule (they are not multi-core-compiled and forcing them onto the
+  decoder's mask does not help). **Known remaining issue, not yet understood**:
+  with the crash fixed, S600 image `chat()` is intermittently wrong — roughly
+  40-50% of calls return empty output instead of a real reply, temp=0, fresh
+  process each time. The isolated vision tower alone and text-only chat are
+  both 100% deterministic; only the combined pipeline is flaky. Do not treat
+  S600 VLM `chat()` as reliable yet — see the constructor comment in
+  `include/bllm/native_vlm.h`.
 
 ## [0.2.0] — 2026-07-24
 

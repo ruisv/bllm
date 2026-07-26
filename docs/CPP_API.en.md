@@ -291,6 +291,8 @@ struct VideoClip { std::vector<ImageRGB> frames; double fps = 2.0; AudioPCM audi
 | Method | Meaning |
 |---|---|
 | `std::string chat(text, images={}, audios={}, videos={}, max_new=256, on_text={}, stop={})` | One turn; media precedes `text`, as the Qwen chat template does. |
+| `void append_turn(text, images, reply)` | Replay a turn whose reply is **already known** — prefill only (`openTurn`+media+text+`closeTurn`+reply text), no decode loop. Leaves context exactly where a real `chat()` call would have; for a serving layer replaying history it just generated itself and the client resent — see `_serve_vlm` in `docker/serving/engine.py`. |
+| `std::vector<int> encode(text) const` | Plain tokenizer encode (no ChatML wrapping) — a token count for usage accounting. |
 | `int vision_tokens() const` | Tokens per frame-pair / per image. |
 | `int vision_image_size() const` | The square side this tower was compiled for — sample frames at it to avoid resizing twice. |
 | `bool has_audio() const` | Whether this package carries an audio tower. |

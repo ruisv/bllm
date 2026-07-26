@@ -270,6 +270,8 @@ struct VideoClip { std::vector<ImageRGB> frames; double fps = 2.0; AudioPCM audi
 | 方法 | 说明 |
 |---|---|
 | `std::string chat(text, images={}, audios={}, videos={}, max_new=256, on_text={}, stop={})` | 一轮问答；媒体排在 `text` 之前，与 Qwen 的对话模板一致。 |
+| `void append_turn(text, images, reply)` | 回放一轮**已经知道回复**的历史——只做 `openTurn`+媒体+文本+`closeTurn`+回复文本的 prefill，不进解码循环。留给下一轮的上下文与真的 `chat()` 过一遍逐位相同；给服务层重放"客户端刚重发、自己刚生成过"的历史用，见 `docker/serving/engine.py` 的 `_serve_vlm`。 |
+| `std::vector<int> encode(text) const` | 纯 tokenizer 编码（不套 ChatML），只用于统计 token 数。 |
 | `int vision_tokens() const` | 一个 frame-pair / 一张图占多少个 token。 |
 | `int vision_image_size() const` | 这个塔编译时的正方形边长 —— 按它采样可以少缩放一次。 |
 | `bool has_audio() const` | 这个包带不带音频塔。 |

@@ -47,9 +47,47 @@ from serving.engine import Cancelled, Engine, QueueFull
 IM_END = "<|im_end|>"
 
 
+def parse_content(content) -> tuple[str, list[str]]:
+    """A message's ``content`` -> (concatenated text, image_url values).
+
+    OpenAI content is either a plain string or an array of typed parts. An
+    ``image_url`` part's ``url`` is either a ``data:image/...;base64,...`` inline
+    image or an ``http(s)://`` reference — both are handled by ``_load_image_url``
+    at the point they are actually decoded, not here.
+
+    Raises HTTPException(400) on a content part type that is neither ``text`` nor
+    ``image_url`` — silently dropping it would have the model answer confidently
+    about content it never received, which is worse than an error.
+    """
+    if isinstance(content, str) or content is None:
+        return (content or ""), []
+    if not isinstance(content, list):
+        raise HTTPException(status_code=400, detail="message content must be a string or an array")
+    texts: list[str] = []
+    images: list[str] = []
+    for p in content:
+        if not isinstance(p, dict):
+            raise HTTPException(status_code=400, detail="content parts must be objects")
+        kind = p.get("type")
+        if kind == "text":
+            texts.append(p.get("text", ""))
+        elif kind == "image_url":
+            url = (p.get("image_url") or {}).get("url", "")
+            if not isinstance(url, str) or not url:
+                raise HTTPException(status_code=400, detail="image_url.url must be a non-empty string")
+            images.append(url)
+        else:
+            raise HTTPException(status_code=400,
+                                detail=f"unsupported content part type {kind!r}; "
+                                       f"only 'text' and 'image_url' are handled")
+    return "".join(texts), images
+
+
 def render_chatml(messages: list[dict], enable_thinking: bool) -> tuple[str, str]:
     """Render an OpenAI ``messages[]`` array into a ChatML prompt, split into
     ``(history, opener)``. Model-agnostic across the Qwen/DeepSeek ChatML family.
+    Text-only: the caller has already checked no message carries an image_url part
+    (those route through the VLM path instead — see ``_vlm_turns_from``).
 
     The split is what makes the prefix cache work for chat. The opener —
     ``<|im_start|>assistant\n`` plus, when thinking is off, an empty ``<think>``
@@ -58,35 +96,37 @@ def render_chatml(messages: list[dict], enable_thinking: bool) -> tuple[str, str
     ``<|im_start|>assistant\n{reply}<|im_end|>\n``. A snapshot taken past the split
     is therefore never a prefix of the next turn's prompt and can never be reused.
     Only `history` is stable across turns, so only `history` is cacheable.
-
-    Raises HTTPException(400) on non-text content parts — see the note inline.
     """
     parts: list[str] = []
     for m in messages:
         role = m.get("role", "user")
-        content = m.get("content", "")
-        if isinstance(content, list):  # OpenAI array content -> concat text parts
-            # Anything that is not a text part would be dropped here, and the model
-            # would answer confidently about media it never received. That is worse
-            # than an error, so say so. Serving a vision tower is a separate piece of
-            # work (the engine below holds a text session, not a NativeVlm).
-            other = sorted({p.get("type") for p in content
-                            if isinstance(p, dict) and p.get("type") != "text"})
-            if other:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"this endpoint serves text only; unsupported content parts: "
-                           f"{', '.join(str(t) for t in other)}. Image input works through "
-                           f"the bllm.NativeVlmSession API; it is not wired into the "
-                           f"OpenAI server yet.")
-            content = "".join(
-                p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
-            )
-        parts.append(f"<|im_start|>{role}\n{content}{IM_END}\n")
+        text, _ = parse_content(m.get("content", ""))
+        parts.append(f"<|im_start|>{role}\n{text}{IM_END}\n")
     opener = "<|im_start|>assistant\n"
     if not enable_thinking:  # Qwen3.5: suppress the thinking block
         opener += "<think>\n\n</think>\n\n"
     return "".join(parts), opener
+
+
+def _vlm_turns_from(messages: list[dict]) -> list[dict]:
+    """``messages[]`` -> a list of ``{"role", "text", "images"}`` dicts for the VLM
+    serving path (``Engine.submit_vlm``). System messages are dropped: the native
+    VLM session bakes its system prompt from ``model.json`` at load time and has no
+    per-request override (unlike the text path, which renders one from ChatML).
+    The last entry must be a user turn — that is the one which gets answered.
+    """
+    turns = []
+    for m in messages:
+        role = m.get("role", "user")
+        if role == "system":
+            continue
+        text, images = parse_content(m.get("content", ""))
+        if images and role != "user":
+            raise HTTPException(status_code=400, detail=f"image_url is only valid on a user message")
+        turns.append({"role": role, "text": text, "images": images})
+    if not turns or turns[-1]["role"] != "user":
+        raise HTTPException(status_code=400, detail="the last message must be from the user")
+    return turns
 
 
 engine: Engine  # set on startup
@@ -293,19 +333,9 @@ async def chat_completions(request: Request,
     if isinstance(stop, str):
         stop = [stop]
     stop = [s for s in dict.fromkeys(stop) if s != IM_END]
-    enable_thinking = bool(body.get("enable_thinking", False))
-    history, opener = render_chatml(messages, enable_thinking)
-    prompt = history + opener
     created = int(time.time())
     cid = f"chatcmpl-{created}"
 
-    ids = engine.encode(prompt)
-    # How much of `ids` is stable history, and so eligible for caching. Encoding the
-    # two parts separately could in principle tokenize differently at the seam, so
-    # verify it really is a prefix rather than assuming — the seam is a special-token
-    # boundary, but a wrong split would poison the cache, and checking is cheap.
-    hist_ids = engine.encode(history) if history else []
-    cacheable = len(hist_ids) if ids[:len(hist_ids)] == hist_ids else 0
     grammar = _grammar_from(body)
     if grammar and not engine.supports_grammar:
         # Refuse rather than answer unconstrained: the client asked for a guarantee, and
@@ -314,11 +344,34 @@ async def chat_completions(request: Request,
         raise HTTPException(status_code=400,
                             detail="this bllm runtime has no grammar support; "
                                    "install a newer bllm to use response_format/grammar")
-    try:
-        job = engine.submit(prompt, ids, max_new, stop, _sampling_from(body),
-                            cacheable=cacheable, grammar=grammar)
-    except QueueFull as exc:
-        return JSONResponse(status_code=429, content=_error_body(exc, "rate_limit_exceeded"))
+
+    if engine.is_vlm:
+        turns = _vlm_turns_from(messages)
+        try:
+            job = engine.submit_vlm(turns, max_new, stop, _sampling_from(body), grammar=grammar)
+        except QueueFull as exc:
+            return JSONResponse(status_code=429, content=_error_body(exc, "rate_limit_exceeded"))
+    else:
+        if any(parse_content(m.get("content", ""))[1] for m in messages):
+            raise HTTPException(
+                status_code=400,
+                detail="this model has no vision tower; image_url requires a model directory "
+                       "built with a --visual tower (see docs/MODELS.zh.md)")
+        enable_thinking = bool(body.get("enable_thinking", False))
+        history, opener = render_chatml(messages, enable_thinking)
+        prompt = history + opener
+        ids = engine.encode(prompt)
+        # How much of `ids` is stable history, and so eligible for caching. Encoding the
+        # two parts separately could in principle tokenize differently at the seam, so
+        # verify it really is a prefix rather than assuming — the seam is a special-token
+        # boundary, but a wrong split would poison the cache, and checking is cheap.
+        hist_ids = engine.encode(history) if history else []
+        cacheable = len(hist_ids) if ids[:len(hist_ids)] == hist_ids else 0
+        try:
+            job = engine.submit(prompt, ids, max_new, stop, _sampling_from(body),
+                                cacheable=cacheable, grammar=grammar)
+        except QueueFull as exc:
+            return JSONResponse(status_code=429, content=_error_body(exc, "rate_limit_exceeded"))
 
     if bool(body.get("stream", False)):
         return StreamingResponse(_sse(request, cid, created, job),

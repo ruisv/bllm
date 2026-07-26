@@ -150,6 +150,8 @@ vlm = bllm.NativeVlmSession(model_dir)        # 或 bllm.load(...)
 |---|---|
 | `chat(text, images=(), audios=(), videos=(), max_new=256, on_text=None, stop=None) -> str` | 文本 + 图/音/视频一轮问答。 |
 | `stream_chat(text, images=(), audios=(), videos=(), max_new=256, stop=None) -> Iterator[str]` | 流式版本。 |
+| `append_turn(text, images=(), reply="")` | 回放一轮**已经知道回复**的历史——只做 prefill，不解码。给需要"重放对话历史但不重新生成"的调用方用（比如 HTTP 服务端收到客户端重发的完整历史，其中大部分轮次它自己刚生成过，见 `docker/USAGE.zh.md` 图文一节）。留给下一轮的上下文与真的 `chat()` 过一遍完全一样。 |
+| `encode(text) -> list[int]` | 纯 tokenizer 编码（不套 ChatML），只用于统计 token 数，不会真的喂进上下文。 |
 | `set_sampling(...)` / `set_stop(...)` / `set_bpu_priority(...)` / `reset()` | 同 `NativeSession`。 |
 
 **实时输入**（边采集边编码）：

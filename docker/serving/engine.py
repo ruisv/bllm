@@ -30,6 +30,7 @@ import bllm
 
 from .cache import (PrefixCache, auto_budget_bytes, read_mem_available_mb,
                     snapshot_point)
+from .media import image_url_to_tempfile
 
 
 class QueueFull(Exception):
@@ -68,6 +69,25 @@ class _Job:
     error: Optional[BaseException] = None
 
 
+@dataclass
+class _VlmJob:
+    """A VLM request: the OpenAI ``messages[]`` array reduced to role/text/images
+    turns (see ``server.py:_vlm_turns_from``), not pre-rendered ids — there is no
+    ids-based prefix cache for the VLM session (it has no snapshot/restore), so the
+    engine matches history at turn granularity instead. See ``Engine._serve_vlm``.
+    """
+    turns: list       # [{"role","text","images"}, ...]; last is the user turn to answer
+    max_new: int
+    stop: list
+    sampling: dict
+    grammar: str = ""
+    out: "queue.Queue[object]" = field(default_factory=queue.Queue)
+    cancel: threading.Event = field(default_factory=threading.Event)
+    done: threading.Event = field(default_factory=threading.Event)
+    result: Optional[Result] = None
+    error: Optional[BaseException] = None
+
+
 _SENTINEL = object()
 
 # Sampling knobs newer than some released runtimes: droppable if set_sampling rejects
@@ -92,6 +112,14 @@ class Engine:
             self.sess.set_bpu_priority(int(prio))
         self.name = getattr(self.sess, "name", None) or os.path.basename(model.rstrip("/"))
         self.default_max_new = int(os.environ.get("BLLM_MAX_NEW", "1024"))
+
+        # A VLM session (NativeVlmSession) is a distinct object from the text session
+        # (NativeSession) and speaks a different API — chat()/append_turn() on whole
+        # turns, not encode()/feed_ids()/decode_stream() on token ids. `vision_tokens`
+        # only exists on the former, so it doubles as the routing flag; see
+        # `_serve_vlm` for how requests to a VLM-loaded model are actually served.
+        self.is_vlm = hasattr(self.sess, "vision_tokens")
+        self._vlm_committed: list = []  # [(user_turn, assistant_turn), ...] already fed live
 
         # The prefix cache needs runtime primitives that landed after 0.1.4, and the
         # image installs bllm from the conda channel — so the server can easily be
@@ -130,11 +158,15 @@ class Engine:
             if cache_bytes > 0 and self.supports_prefix_cache
             else None
         )
-        if cache_bytes > 0 and not self.supports_prefix_cache:
+        if cache_bytes > 0 and not self.supports_prefix_cache and not self.is_vlm:
             missing = [a for a in self._prefix_ops if not hasattr(self.sess, a)]
             print(f"[bllm-serve] prefix cache disabled: this bllm build lacks "
                   f"{', '.join(missing)} — every turn re-prefills its history. "
                   f"Install a newer bllm to enable it.", flush=True)
+        elif self.is_vlm:
+            print("[bllm-serve] VLM session: the ids-based prefix cache does not apply "
+                  "(no snapshot/restore) — history is instead replayed turn-by-turn via "
+                  "append_turn(), see Engine._serve_vlm.", flush=True)
 
         self.max_queue = int(os.environ.get("BLLM_MAX_QUEUE", "8"))
         self._jobs: "queue.Queue[Optional[_Job]]" = queue.Queue()
@@ -171,6 +203,23 @@ class Engine:
             self._depth += 1
         job = _Job(prompt=prompt, ids=ids, max_new=max_new, stop=stop,
                    sampling=sampling, cacheable=cacheable, grammar=grammar)
+        self._jobs.put(job)
+        self.n_requests += 1
+        return job
+
+    def submit_vlm(self, turns: list, max_new: int, stop: list, sampling: dict,
+                   grammar: str = "") -> _VlmJob:
+        """`turns` is the whole conversation (see `_VlmJob`), not just the new part —
+        the engine itself works out how much of it is already live in the session
+        (`_serve_vlm`) and only replays what changed."""
+        with self._depth_lock:
+            if self._depth >= self.max_queue:
+                raise QueueFull(
+                    f"{self._depth} requests already queued (BLLM_MAX_QUEUE={self.max_queue}); "
+                    "one BPU graph serves one generation at a time"
+                )
+            self._depth += 1
+        job = _VlmJob(turns=turns, max_new=max_new, stop=stop, sampling=sampling, grammar=grammar)
         self._jobs.put(job)
         self.n_requests += 1
         return job
@@ -214,6 +263,7 @@ class Engine:
             "supports_cancel": self.supports_cancel,
             "supports_grammar": self.supports_grammar,
             "context_window": getattr(self.sess, "context_left", None),
+            "is_vlm": self.is_vlm,
         }
         m["cache"] = (self.cache.stats.as_dict(self.cache) if self.cache is not None
                       else {"enabled": False})
@@ -230,7 +280,7 @@ class Engine:
             if job is None:
                 return
             try:
-                job.result = self._serve(job)
+                job.result = self._serve_vlm(job) if isinstance(job, _VlmJob) else self._serve(job)
             except BaseException as exc:  # noqa: BLE001 — handed to the requester
                 job.error = exc
             finally:
@@ -403,6 +453,133 @@ class Engine:
         elif res.n_completion >= job.max_new:
             res.finish_reason = "length"
         return res
+
+    # -- VLM ---------------------------------------------------------------------
+    #
+    # There is no ids-based prefix cache here (NativeVlmSession has no
+    # snapshot/restore — see SERVING_PLAN.md), so the engine keeps its own record
+    # of which (user, assistant) turn pairs are already live in `self.sess`
+    # (`_vlm_committed`) and diffs the incoming conversation against it:
+    #
+    #   * unchanged prefix, request extends it by K turns -> replay only those K
+    #     via `append_turn()` (prefill only, no decode — see native_vlm.h)
+    #   * anything else (first request, history edited, a different conversation
+    #     interleaved on this single-session engine) -> reset() and replay all of it
+    #
+    # This is weaker than the token-exact ids cache: two different conversations
+    # taking turns on one engine will each see the other as "history changed" and
+    # pay a full replay every time. That degrades to "no cache" gracefully, the
+    # same way the ids cache degrades on a miss — it cannot make an answer wrong.
+    def _serve_vlm(self, job: _VlmJob) -> Result:
+        res = Result()
+        if job.cancel.is_set():
+            raise Cancelled("client disconnected before the request ran")
+
+        history, final = job.turns[:-1], job.turns[-1]
+        pairs = self._pair_vlm_history(history)
+
+        self._apply_sampling(job.sampling)
+        self._apply_grammar(job.grammar)
+
+        t0 = time.perf_counter()
+        committed = self._vlm_committed
+        reused = len(pairs) >= len(committed) and pairs[:len(committed)] == committed
+        if not reused:
+            self.sess.reset()
+            committed = self._vlm_committed = []
+
+        try:
+            res.n_cached = self.sess.tokens_used  # whatever is already live, for free
+
+            for user_turn, asst_turn in pairs[len(committed):]:
+                paths = self._materialize_images(user_turn["images"])
+                try:
+                    self.sess.append_turn(user_turn["text"], images=paths, reply=asst_turn["text"])
+                finally:
+                    self._cleanup_images(paths)
+                committed.append((user_turn, asst_turn))
+
+            paths = self._materialize_images(final["images"])
+            first: list[float] = []
+
+            def on_text(piece: str) -> None:
+                if not first:
+                    first.append(time.perf_counter())
+                job.out.put(piece)
+
+            try:
+                res.text = self.sess.chat(final["text"], images=paths, max_new=job.max_new,
+                                          on_text=on_text, stop=job.stop)
+            finally:
+                self._cleanup_images(paths)
+            # This reply is now live in `self.sess` exactly like a replayed turn would
+            # be, so record it as committed too — otherwise the NEXT request (even an
+            # unrelated one that also happens to arrive with empty history, e.g. two
+            # back-to-back single-turn conversations) would see `committed` as still
+            # empty, wrongly "match" a from-scratch conversation, and silently answer
+            # against this turn's leftover context instead of resetting.
+            committed.append((final, {"role": "assistant", "text": res.text, "images": []}))
+        except BaseException:
+            # A partial feed (an image failed mid-replay, a cancel landed mid-decode)
+            # can leave `self.sess` holding rows `_vlm_committed` does not know about.
+            # There is no restore() to fall back to for a VLM session (unlike the
+            # ids-based cache's snapshot/drop), so the only safe recovery is to force
+            # the NEXT request to reset() and replay from scratch rather than trust a
+            # `committed` prefix the live session may no longer actually match.
+            self._vlm_committed = []
+            raise
+
+        res.n_completion = len(self.sess.encode(res.text)) if res.text else 0
+        # tokens_used is the WHOLE conversation so far including this reply — OpenAI's
+        # prompt_tokens means "the context this reply was drawn from", so subtract the
+        # reply back out rather than trying to total up media/text tokens ourselves.
+        res.n_prompt = max(self.sess.tokens_used - res.n_completion, 0)
+        res.ttft_ms = round((first[0] - t0) * 1e3, 1) if first else 0.0
+        res.decode_tps = round(float(getattr(self.sess, "last_decode_tps", 0.0) or 0.0), 2)
+        if res.n_completion >= job.max_new:
+            res.finish_reason = "length"
+        return res
+
+    @staticmethod
+    def _pair_vlm_history(history: list) -> list:
+        """`history` (job.turns minus the final unanswered user turn) as [(user,
+        assistant), ...] pairs — the unit `_vlm_committed` tracks and diffs against.
+        `server.py:_vlm_turns_from` already enforces strict user/assistant
+        alternation with no system turns, so a well-formed history is even length;
+        this only re-checks it because `Engine` must not trust a malformed job into
+        corrupting `self.sess` (a raise here drops the request, not the session)."""
+        if len(history) % 2 != 0:
+            raise ValueError("conversation history must alternate user/assistant turns")
+        pairs = []
+        for i in range(0, len(history), 2):
+            u, a = history[i], history[i + 1]
+            if u["role"] != "user" or a["role"] != "assistant":
+                raise ValueError("conversation history must alternate user/assistant turns")
+            pairs.append((u, a))
+        return pairs
+
+    @staticmethod
+    def _materialize_images(urls: list) -> list:
+        """image_url values -> temp file paths NativeVlmSession can load. Caller
+        must `_cleanup_images` them once the chat()/append_turn() call is done —
+        cleaned up eagerly rather than left for the OS temp dir to accumulate,
+        since a busy server can serve thousands of images a day."""
+        paths = []
+        try:
+            for u in urls:
+                paths.append(image_url_to_tempfile(u))
+        except BaseException:
+            Engine._cleanup_images(paths)
+            raise
+        return paths
+
+    @staticmethod
+    def _cleanup_images(paths: list) -> None:
+        for p in paths:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
     def _feed_and_cache(self, ids: list[int], delta: list[int], covered: int,
                         cacheable: int = -1) -> None:
