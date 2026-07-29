@@ -31,8 +31,8 @@ BLLM is the large-model sibling of [**bcdl**](https://github.com/ruisv/bcdl) (RD
 BPU computer vision) — the two share one BPU and can be scheduled against each other.
 
 <p align="center">
-  <img src="docs/demo.gif" width="760" alt="Qwen3.5-0.8B hybrid SSM streaming chat on the RDK S100P BPU"><br>
-  <em>Qwen3.5-0.8B (hybrid SSM) streaming natively on the RDK S100P BPU</em>
+  <img src="docs/demo.gif" width="760" alt="Qwen3.5-2B VLM image+text chat streaming on the RDK S100P BPU, with multi-turn context memory"><br>
+  <em>Qwen3.5-2B VLM (image+text, hybrid SSM + self-built vision tower) streaming natively on the RDK S100P BPU — the second turn recalls the image without it being re-attached</em>
 </p>
 
 **Jump to:**
