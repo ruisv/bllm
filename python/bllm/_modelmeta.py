@@ -128,6 +128,48 @@ def _cache_key(hbm_path: Path, tokenizer_dir: Path) -> str:
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
+def text_only_dir_for(vlm_dir: "str | Path", *,
+                      cache_root: "str | Path | None" = None) -> Path:
+    """Return a text-only view of a VLM package: same model.json with `visual` (and any
+    audio tower) dropped, so `load()` routes to NativeSession instead of NativeVlmSession —
+    the vision/audio tower is never instantiated, saving its BPU/ION footprint for a caller
+    that only wants text. All other files (model.hbm, model_prefill.hbm, tokenizer.json,
+    embed_tokens.bin) are symlinked, nothing is copied. This is `bllm.load(path, vision=False)`."""
+    vlm_dir = Path(vlm_dir)
+    manifest = vlm_dir / "model.json"
+    if not manifest.is_file():
+        raise FileNotFoundError(f"no model.json in {vlm_dir}")
+    cfg = json.loads(manifest.read_text(encoding="utf-8"))
+    if cfg.get("arch") != "omni" and not (cfg.get("visual") or cfg.get("audio")):
+        return vlm_dir   # already text-only, nothing to strip
+
+    try:
+        mtime = int(manifest.stat().st_mtime)
+    except OSError:
+        mtime = 0
+    key = hashlib.sha1(f"{vlm_dir.resolve()}::{mtime}::textonly".encode()).hexdigest()[:16]
+    root = Path(cache_root) if cache_root else Path(
+        os.environ.get("BLLM_CACHE", Path.home() / ".cache" / "bllm")) / "native"
+    out = root / key
+    out.mkdir(parents=True, exist_ok=True)
+
+    cfg.pop("visual", None)
+    cfg.pop("audio", None)
+    cfg.pop("mel_filters", None)
+    if cfg.get("arch") == "omni":
+        # NativeLlm hard-rejects arch="omni" outright (it's defined as "multimodal, load
+        # via NativeVlm"), even with visual/audio absent — an omni package's text tower is
+        # a plain dense decoder underneath, so that's what a stripped copy actually is.
+        cfg["arch"] = "dense"
+    for field in ("hbm", "hbm_prefill", "tokenizer", "embed"):
+        rel = cfg.get(field)
+        if rel:
+            _link(vlm_dir / rel, out / rel)
+    (out / "model.json").write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",
+                                    encoding="utf-8")
+    return out
+
+
 def native_dir_for(hbm_path: "str | Path", tokenizer_dir: "str | Path", *,
                    name: "str | None" = None, system: str = "You are a helpful assistant.",
                    eos: "list[int] | None" = None,

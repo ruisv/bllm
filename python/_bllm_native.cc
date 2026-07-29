@@ -422,6 +422,11 @@ NB_MODULE(_bllm_native, m) {
            "logit_bias"_a = std::unordered_map<int, float>{})
       .def("set_stop", &bllm::NativeVlm::set_stop, "stop"_a,
            "Persistent stop strings for every following turn (a per-call stop=[...] overrides).")
+      .def("set_thinking", &bllm::NativeVlm::set_thinking, "enabled"_a,
+           "Qwen3.5 reasoning: enabled=False prefills an empty <think></think> so the model "
+           "answers directly (faster, fewer tokens). enabled=True (default) reasons and shows "
+           "the <think>...</think>. Same mechanism as NativeLlm.set_thinking.")
+      .def_prop_ro("thinking", &bllm::NativeVlm::thinking)
       .def("set_bpu_priority", &bllm::NativeVlm::set_bpu_priority, "priority"_a,
            "BPU queue priority 0..255 for the text + vision + audio graphs.")
       .def_prop_ro("vision_tokens", &bllm::NativeVlm::vision_tokens)

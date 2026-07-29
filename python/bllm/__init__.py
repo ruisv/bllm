@@ -506,6 +506,17 @@ if _HAVE_NATIVE:
             self._vlm.set_stop(list(stop))
             return self
 
+        def set_thinking(self, enabled: bool) -> "NativeVlmSession":
+            """Qwen3.5 reasoning toggle, same mechanism as NativeSession.set_thinking.
+            enabled=False prefills an empty <think></think> so the model answers DIRECTLY
+            (faster, fewer tokens). enabled=True (default) reasons and shows the block."""
+            self._vlm.set_thinking(bool(enabled))
+            return self
+
+        @property
+        def thinking(self) -> bool:
+            return self._vlm.thinking
+
         def set_bpu_priority(self, priority: int) -> "NativeVlmSession":
             """BPU queue priority 0..255 for the text + vision + audio graphs."""
             self._vlm.set_bpu_priority(priority)
@@ -616,7 +627,7 @@ def _read_manifest(path: str) -> "Optional[dict]":
     return None
 
 
-def load(path: str, *, backend: str = "auto", **kwargs):
+def load(path: str, *, backend: str = "auto", vision: bool = True, **kwargs):
     """Load a model and return a native session.
 
     Routing:
@@ -629,6 +640,13 @@ def load(path: str, *, backend: str = "auto", **kwargs):
         s = bllm.load("qwen3.5-0.8b")      # -> NativeSession (hybrid SSM)
         s = bllm.load("Qwen2.5_1.5B.hbm", tokenizer_dir="Qwen2.5_1.5B_config/")  # -> dense
         s.chat("你好")
+
+    `vision=False` on a VLM/omni package forces a text-only NativeSession instead:
+    the vision/audio tower is never instantiated (not just skipped per-call — its
+    weights never touch BPU/ION), for a caller that only wants text and wants to spend
+    that memory budget elsewhere. Per-call, `NativeVlmSession.chat(images=[...])` already
+    skips the vision tower's compute whenever you don't pass images — `vision=False` is
+    for when you don't want the tower LOADED at all, not just unused on a given call.
 
     The libxlm backend was removed; `backend="libxlm"` is a hard error.
     """
@@ -644,6 +662,9 @@ def load(path: str, *, backend: str = "auto", **kwargs):
         # "omni" package is a dense text tower with vision+audio, a Qwen3.5 VLM
         # package is a hybrid one with vision. Route on the vision tower's presence.
         if arch == "omni" or manifest.get("visual"):
+            if not vision:
+                from ._modelmeta import text_only_dir_for
+                return NativeSession(str(text_only_dir_for(path)), **kwargs)
             return NativeVlmSession(path, **kwargs)
         if arch == "embed":
             raise ValueError("arch='embed' is an encoder, not a chat session; use the "

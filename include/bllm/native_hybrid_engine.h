@@ -398,11 +398,13 @@ class NativeHybridEngine {
       cs[i] = cs[i + half] = c; sn[i] = sn[i + half] = s;
     }
     fixedMem_[1].clean(); fixedMem_[2].clean();
-    // causal mask [nHead, CL]: valid = last min(P+1,CL) slots
+    // causal mask [1, CL]: valid = last min(P+1,CL) slots. Head-independent (the
+    // causal window doesn't vary by head), so the graph carries one row and
+    // broadcasts it over nHead_ internally — one write instead of nHead_ copies.
     float* mask = reinterpret_cast<float*>(fixedMem_[3].p());
     int valid = P_ + 1; if (valid > CL_) valid = CL_;
     const int lo = CL_ - valid;
-    for (int j = 0; j < CL_; ++j) { float m = (j >= lo) ? 0.0f : -1e9f; for (int hh = 0; hh < nHead_; ++hh) mask[hh * CL_ + j] = m; }
+    for (int j = 0; j < CL_; ++j) mask[j] = (j >= lo) ? 0.0f : -1e9f;
     fixedMem_[3].clean();
     // bind ping-pong caches: cur -> inputs, next -> outputs
     std::vector<Mem>& cur = phase_ ? bufB_ : bufA_;
@@ -546,7 +548,7 @@ class NativeHybridEngine {
     if (N_ < 2 || dim(pin_[0].properties, xs.numDimensions - 1) != H_) { ph_ = nullptr; return; }
     for (int c = 0; c < nCache_; ++c)
       if (pinBytes_[kFixedIn + c] != inBytes_[kFixedIn + c]) { ph_ = nullptr; return; }
-    { const auto& ms = pin_[3].properties.validShape;   // mask [nHead, N, CL]
+    { const auto& ms = pin_[3].properties.validShape;   // mask [1, N, CL] (broadcast over heads)
       if (ms.numDimensions != 3 || ms.dimensionSize[0] != nHead_ ||
           ms.dimensionSize[1] != N_ || ms.dimensionSize[2] != CL_) { ph_ = nullptr; return; } }
 
@@ -605,24 +607,24 @@ class NativeHybridEngine {
     }
     pFixedMem_[1].clean(); pFixedMem_[2].clean();
 
-    // mask[nHead, N, CL] — TWO conditions, not one (see CHUNKED_PREFILL.md):
+    // mask[1, N, CL] — TWO conditions, not one (see CHUNKED_PREFILL.md):
     //   * the slot holds a real token: the window is right-aligned, so with
     //     T = P_ + N_ tokens after this chunk, index i is occupied iff
     //     i >= CL_ - min(T, CL_);
     //   * causality within the chunk: new token j sits at CL_ - N_ + j, so query j
     //     must not see i > CL_ - N_ + j.
     // Writing only the causal half lets an early chunk attend to zeroed slots.
+    // Head-independent (the window doesn't vary by head), so the graph carries one
+    // head-row and broadcasts it internally — one write instead of nHead_ copies.
     auto* maskBase = reinterpret_cast<uint8_t*>(pFixedMem_[3].p());
-    const auto& mp = pin_[3].properties;                 // [nHead, N, CL]
+    const auto& mp = pin_[3].properties;                 // [1, N, CL]
     const int T = P_ + N_;
     const int lo = CL_ - (T < CL_ ? T : CL_);
-    for (int hh = 0; hh < nHead_; ++hh)
-      for (int j = 0; j < N_; ++j) {
-        const int hi = CL_ - N_ + j;                     // last index query j may see
-        auto* row = reinterpret_cast<float*>(maskBase + (size_t)hh * mp.stride[0] +
-                                             (size_t)j * mp.stride[1]);
-        for (int i = 0; i < CL_; ++i) row[i] = (i >= lo && i <= hi) ? 0.0f : -1e9f;
-      }
+    for (int j = 0; j < N_; ++j) {
+      const int hi = CL_ - N_ + j;                       // last index query j may see
+      auto* row = reinterpret_cast<float*>(maskBase + (size_t)j * mp.stride[1]);
+      for (int i = 0; i < CL_; ++i) row[i] = (i >= lo && i <= hi) ? 0.0f : -1e9f;
+    }
     pFixedMem_[3].clean();
 
     std::vector<Mem>& cur = phase_ ? bufB_ : bufA_;

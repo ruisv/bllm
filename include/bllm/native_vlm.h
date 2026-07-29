@@ -168,6 +168,12 @@ class NativeVlm {
   // NativeLlm::set_stop.
   void set_stop(std::vector<std::string> stops) { stop_ = std::move(stops); }
 
+  // Thinking control (Qwen3.5 reasoning models) — same mechanism as NativeLlm::set_thinking:
+  // `enabled=false` prefills a closed empty `<think></think>` after the assistant marker so the
+  // model answers directly, no reasoning. See NativeLlm::set_thinking for the full note.
+  void set_thinking(bool enabled) { thinking_ = enabled; }
+  bool thinking() const { return thinking_; }
+
   // BPU queue priority for every graph this session owns (text + vision + audio).
   void set_bpu_priority(int priority) {
     sched_.priority = priority;
@@ -360,6 +366,7 @@ class NativeVlm {
     appendText(s, tk_.encode("\n"));
     appendText(s, {im_start_});
     appendText(s, tk_.encode("assistant\n"));
+    if (!thinking_) appendText(s, tk_.encode("<think>\n\n</think>\n\n"));   // enable_thinking=False
   }
   void feedStream(Stream& s) {
     if (s.n) text_->feed_embeds(s.rows.data(), s.n, s.pos.data());
@@ -576,6 +583,7 @@ class NativeVlm {
     return s;
   }
   bool first_turn_ = true;
+  bool thinking_ = true;                          // Qwen3.5 reasoning: prefill empty <think> when false
   bool video_ok_ = false;         // is this package's video layout the one implemented?
   int im_start_ = -1, im_end_ = -1, vision_bos_ = -1, vision_eos_ = -1;
   int audio_bos_ = -1, audio_eos_ = -1;
