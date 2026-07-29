@@ -31,7 +31,7 @@ conda install -c https://mirrors.ruis.ai/conda -c conda-forge bllm
 
 <p align="center">
   <img src="docs/demo.gif" width="760" alt="Qwen3.5-2B VLM 图文对话在 RDK S100P BPU 上流式生成，含多轮上下文记忆"><br>
-  <em>Qwen3.5-2B VLM（图文，混合 SSM + 自建视觉塔）在 RDK S100P BPU 上原生流式对话，第二轮不重新给图也能记住上下文</em>
+  <em>Qwen3.5-2B VLM（图文，混合 SSM + 自建视觉塔，ctx512）在 RDK S100P BPU 上原生流式对话，中英双语，第二轮不重新给图也能记住上下文</em>
 </p>
 
 **导航：**
