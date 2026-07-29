@@ -156,6 +156,13 @@ sha256sum -c qwen3.5-4b-ctx512-int8-s100.tar.gz.sha256   # integrity check
 tar xzf qwen3.5-4b-ctx512-int8-s100.tar.gz
 ```
 
+Qwen3.5 image+text (VLM, S100P, ctx4k/ctx512) is also published on Hugging Face
+with a full acceptance record on the model card:
+[ruisv/bllm-qwen3.5-2b](https://huggingface.co/ruisv/bllm-qwen3.5-2b) ·
+[ruisv/bllm-qwen3.5-4b](https://huggingface.co/ruisv/bllm-qwen3.5-4b). Conversion
+methodology, acceptance protocol, and every rejected build are in
+[bllm-model-zoo](https://github.com/ruisv/bllm-model-zoo).
+
 Already have an officially released `.hbm`? Assemble it into a model directory with
 `bllm-make-model-dir` — see [Making a model directory](#making-a-model-directory).
 
@@ -288,6 +295,10 @@ bllm-make-model-dir hybrid ~/models/qwen3.5-0.8b-vlm448-ctx2k \
 vlm = bllm.load("~/models/qwen3.5-0.8b-vlm448-ctx4096-int8-s100p")
 print(vlm.chat("Describe this image in one sentence.", images=["bears.jpg"]))
 # -> Two brown bears walk across a dusty, arid landscape.
+
+vlm.set_thinking(False)                       # answer directly, skip the <think>...</think> block
+m = bllm.load("~/models/qwen3.5-0.8b-vlm448-ctx4096-int8-s100p", vision=False)
+print(m.chat("Tell me about yourself"))       # forces a text-only session — the vision tower's weights are never loaded
 ```
 
 Measured on S100P (0.8B, with the chunked prefill graph):

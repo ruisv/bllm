@@ -278,6 +278,7 @@ struct VideoClip { std::vector<ImageRGB> frames; double fps = 2.0; AudioPCM audi
 | `double last_ttft_ms() const` | 上一轮首字延迟，**含媒体编码**。 |
 | `double last_decode_tps() const` · `int context_left() const` · `int tokens_used() const` | 同 `NativeLlm`。 |
 | `set_sampling(...)` / `set_stop(...)` / `set_bpu_priority(...)` / `reset()` | 与 `NativeLlm` 同义；`set_bpu_priority` 会同时作用于文本、视觉、音频三个塔。 |
+| `void set_thinking(bool)` · `bool thinking() const` | 同 `NativeLlm::set_thinking`：`false` 时在 assistant 标记后预填一个闭合的空 `<think></think>`，模型直接给答案，不做推理。默认 `true`。 |
 
 构造时会检查视觉塔与文本塔的 hidden 尺寸是否一致 —— 不一致会抛异常，因为那是
 一次**静默的垃圾拼接**。

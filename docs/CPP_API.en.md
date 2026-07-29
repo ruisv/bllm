@@ -299,6 +299,7 @@ struct VideoClip { std::vector<ImageRGB> frames; double fps = 2.0; AudioPCM audi
 | `double last_ttft_ms() const` | Last turn's first-token latency, **including the media encode**. |
 | `double last_decode_tps() const` · `int context_left() const` · `int tokens_used() const` | As on `NativeLlm`. |
 | `set_sampling(...)` / `set_stop(...)` / `set_bpu_priority(...)` / `reset()` | Same meaning as on `NativeLlm`; `set_bpu_priority` covers the text, vision and audio graphs alike. |
+| `void set_thinking(bool)` · `bool thinking() const` | Same as `NativeLlm::set_thinking`: `false` prefills a closed empty `<think></think>` after the assistant marker so the model answers directly, no reasoning. Default `true`. |
 
 Construction checks that the vision and text hidden sizes agree, and throws if
 they do not — a mismatch there is a silent garbage splice.

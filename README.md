@@ -143,6 +143,11 @@ sha256sum -c qwen3.5-4b-ctx512-int8-s100.tar.gz.sha256   # 完整性校验
 tar xzf qwen3.5-4b-ctx512-int8-s100.tar.gz
 ```
 
+Qwen3.5 图文（VLM，S100P，ctx4k/ctx512 两档)也发布在 Hugging Face,带完整验收数据的
+model card：[ruisv/bllm-qwen3.5-2b](https://huggingface.co/ruisv/bllm-qwen3.5-2b) ·
+[ruisv/bllm-qwen3.5-4b](https://huggingface.co/ruisv/bllm-qwen3.5-4b)。转换方法论、
+验收协议、被拒绝的构建版本见 [bllm-model-zoo](https://github.com/ruisv/bllm-model-zoo)。
+
 已经有官方发布的 `.hbm`？用 `bllm-make-model-dir` 拼成模型目录即可，见
 [制作模型目录](#制作模型目录)。
 
@@ -266,6 +271,10 @@ bllm-make-model-dir hybrid ~/models/qwen3.5-0.8b-vlm448-ctx2k \
 vlm = bllm.load("~/models/qwen3.5-0.8b-vlm448-ctx4096-int8-s100p")
 print(vlm.chat("Describe this image in one sentence.", images=["bears.jpg"]))
 # -> Two brown bears walk across a dusty, arid landscape.
+
+vlm.set_thinking(False)                       # 直接给答案，跳过 <think>...</think> 推理过程
+m = bllm.load("~/models/qwen3.5-0.8b-vlm448-ctx4096-int8-s100p", vision=False)
+print(m.chat("介绍一下你自己"))                 # 强制走纯文本会话，视觉塔权重完全不加载
 ```
 
 S100P 实测（0.8B，含分块 prefill 图）：
