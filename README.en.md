@@ -403,12 +403,21 @@ Measured on the board (int8 weights; decode throughput and first-token latency):
 |---|---|---|---|
 | Qwen3.5-0.8B (hybrid SSM) | S100P | 2048 | **22.5 tok/s** |
 | Qwen3.5-0.8B (hybrid SSM) | S100P | 4096 | **19.5 tok/s** |
-| Qwen3.5-2B (hybrid SSM) | S100P | 4096 | **13.7 tok/s** |
+| Qwen3.5-2B (hybrid SSM, VLM) | S100P | 512 | **15.29 tok/s** |
+| Qwen3.5-2B (hybrid SSM, VLM) | S100P | 4096 | **13.20 tok/s** |
+| Qwen3.5-4B (hybrid SSM, VLM) | S100P | 512 | **7.54 tok/s** |
+| Qwen3.5-4B (hybrid SSM, VLM) | S100P | 4096 | **6.14 tok/s** |
 | Qwen2.5-1.5B (dense) | S100P | 1024 | **~24 tok/s** |
 | Qwen3.5-0.8B (hybrid SSM) | S600 (single core) | — | **42.7 tok/s** |
 | Qwen3.5-4B (hybrid SSM) | S600 (4 cores) | — | **27 tok/s** |
 
-First token: image+text VLM (0.8B) **1.23 s** (320px) / **2.30 s** (448px). With a
+The 2B/4B rows are measured against this release's GQA batched-matmul + mask-dedup
+rewrite (4B is nearly 2x faster than the pre-rewrite 3.29 tok/s — mostly DMA saved
+by dropping the old `expand_win` broadcast).
+
+First token (including image encode, measured on S100P): Qwen3.5-0.8B VLM **1.23 s**
+(320px) / **2.30 s** (448px); Qwen3.5-2B VLM **1.51 s** (ctx512) / **1.65 s**
+(ctx4096); Qwen3.5-4B VLM **2.93 s** (ctx512) / **3.29 s** (ctx4096). With a
 server-side prefix-cache hit, hybrid goes **31.6 s → 1.3 s** and dense TTFT
 **274 → 141 ms**.
 

@@ -369,12 +369,20 @@ llm.set_bpu_priority(0)      # 最低，让视觉抢占 BPU 队列
 |---|---|---|---|
 | Qwen3.5-0.8B（混合 SSM） | S100P | 2048 | **22.5 tok/s** |
 | Qwen3.5-0.8B（混合 SSM） | S100P | 4096 | **19.5 tok/s** |
-| Qwen3.5-2B（混合 SSM） | S100P | 4096 | **13.7 tok/s** |
+| Qwen3.5-2B（混合 SSM，VLM） | S100P | 512 | **15.29 tok/s** |
+| Qwen3.5-2B（混合 SSM，VLM） | S100P | 4096 | **13.20 tok/s** |
+| Qwen3.5-4B（混合 SSM，VLM） | S100P | 512 | **7.54 tok/s** |
+| Qwen3.5-4B（混合 SSM，VLM） | S100P | 4096 | **6.14 tok/s** |
 | Qwen2.5-1.5B（稠密） | S100P | 1024 | **约 24 tok/s** |
 | Qwen3.5-0.8B（混合 SSM） | S600（单核） | — | **42.7 tok/s** |
 | Qwen3.5-4B（混合 SSM） | S600（4 核并行） | — | **27 tok/s** |
 
-首字延迟：图文 VLM（0.8B）**1.23 s**（320px）/ **2.30 s**（448px）；
+2B/4B 一行是本轮 GQA batched matmul + mask 去重重写后的实测（4B 相比重写前的
+3.29 tok/s 提升近 2 倍——省下的主要是 `expand_win` 广播冗余的 DMA）。
+
+首字延迟（含图像编码，S100P 实测）：Qwen3.5-0.8B VLM **1.23 s**（320px）/
+**2.30 s**（448px）；Qwen3.5-2B VLM **1.51 s**（ctx512）/ **1.65 s**（ctx4096）；
+Qwen3.5-4B VLM **2.93 s**（ctx512）/ **3.29 s**（ctx4096）。
 服务端命中对话前缀缓存后 hybrid **31.6 s → 1.3 s**、dense TTFT **274 → 141 ms**。
 
 ## 支持的模型
