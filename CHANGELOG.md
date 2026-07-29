@@ -6,7 +6,19 @@ All notable changes to BLLM are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-07-29
+
 ### Added
+- **VLM thinking toggle.** `NativeVlmSession.set_thinking(False)` / `.thinking`,
+  mirroring the text-only `NativeSession` — the VLM session had no way to force
+  a direct answer, so a reasoning-heavy reply could exhaust a caller's token
+  budget before ever reaching the answer.
+- **`bllm.load(path, vision=False)`.** Forces a VLM/omni package through
+  `NativeSession` instead of `NativeVlmSession`, so the vision/audio tower's
+  weights never touch BPU/ION at all — for a caller that only wants text and
+  wants that memory budget back. `chat(images=[...])` already skipped the
+  tower's *compute* per call when no images were passed; this is for skipping
+  the *load*, not just a given call.
 - **C++ API reference, in both languages.** `docs/CPP_API.zh.md` and
   `docs/CPP_API.en.md` document the surface that previously existed only as
   headers: `NativeLlm` (generation, sampling, grammars, stop strings, thinking,
@@ -29,6 +41,13 @@ All notable changes to BLLM are documented here. The format follows
   single-session engine, falls back to a full reset+replay rather than risk
   splicing the wrong context. Also adds `NativeVlm::encode` /
   `NativeVlmSession.encode` for usage-accounting token counts.
+
+### Changed
+- **Causal mask deduplication in the hybrid decode/prefill graphs.** The mask
+  is head-independent (the causal window doesn't vary by attention head), so
+  the fixed mask buffer now carries one row and the graph broadcasts it
+  internally, instead of the host writing `nHead_` identical copies every
+  step/chunk.
 
 ### Fixed
 - **S600 (`nash-p`) image chat() crashed on the first request.** `NativeVlm`
