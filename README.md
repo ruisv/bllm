@@ -134,19 +134,19 @@ sudo /usr/hobot/bin/hb_switch_ion.sh balanced && sudo reboot   # ≤3B；7B 用 
 ### 2. 拿一个模型（一分钟）
 
 最快的一条：**下载我们编译好、可直接 `bllm.load()` 的模型包**（文件名已标注
-上下文长度 / 目标板子 / 量化位宽）：
+上下文长度 / 目标板子 / 量化位宽）。Qwen3.5 图文（VLM，S100P，ctx4k/ctx512 两档）发布在
+Hugging Face，附带完整验收数据的 model card：
 
-**📦 [Google Drive — 模型下载](https://drive.google.com/drive/folders/1tR3MtP0iriptqpeHOSzdpRMT_ckdqDQ8)**
+**📦 [ruisv/bllm-qwen3.5-2b](https://huggingface.co/ruisv/bllm-qwen3.5-2b) ·
+[ruisv/bllm-qwen3.5-4b](https://huggingface.co/ruisv/bllm-qwen3.5-4b)**
 
 ```bash
 sha256sum -c qwen3.5-4b-ctx512-int8-s100.tar.gz.sha256   # 完整性校验
 tar xzf qwen3.5-4b-ctx512-int8-s100.tar.gz
 ```
 
-Qwen3.5 图文（VLM，S100P，ctx4k/ctx512 两档)也发布在 Hugging Face,带完整验收数据的
-model card：[ruisv/bllm-qwen3.5-2b](https://huggingface.co/ruisv/bllm-qwen3.5-2b) ·
-[ruisv/bllm-qwen3.5-4b](https://huggingface.co/ruisv/bllm-qwen3.5-4b)。转换方法论、
-验收协议、被拒绝的构建版本见 [bllm-model-zoo](https://github.com/ruisv/bllm-model-zoo)。
+转换方法论、验收协议、被拒绝的构建版本见
+[bllm-model-zoo](https://github.com/ruisv/bllm-model-zoo)。
 
 已经有官方发布的 `.hbm`？用 `bllm-make-model-dir` 拼成模型目录即可，见
 [制作模型目录](#制作模型目录)。
@@ -467,10 +467,10 @@ Python 里 `import bllm` 在有无扩展时都能导入；`bllm.available_backen
 欢迎加入 **BPU 技术交流群**，一起讨论 RDK / BPU 端侧部署与本项目的使用（与
 [bcdl](https://github.com/ruisv/bcdl) 共用同一社区群）。
 
-<img src="docs/assets/bllm-group-qr.jpg" alt="BPU 技术交流群二维码" width="240">
+<img src="https://ruisv.oss-cn-beijing.aliyuncs.com/public/rdk/images/bllm-qrcode.jpg" alt="BPU 技术交流群二维码" width="240">
 
-> 微信群二维码有有效期，若已过期请在 [Issues](../../issues) 留言，我们会更新；
-> 也欢迎直接在 [Issues](../../issues) 交流。
+> 微信群二维码有有效期，上面这张会在同一链接上原地更新；若扫码仍失效，
+> 请在 [Issues](../../issues) 留言，也欢迎直接在 Issues 交流。
 
 ## 参与贡献
 

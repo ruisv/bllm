@@ -147,20 +147,19 @@ Performance mode does not survive a reboot; set it once per boot (see
 ### 2. Get a model (one minute)
 
 Fastest route: **download a ready-to-`bllm.load()` package** — the file names
-already encode context length / target board / quantization width:
+already encode context length / target board / quantization width. Qwen3.5
+image+text (VLM, S100P, ctx4k/ctx512) is published on Hugging Face with a full
+acceptance record on the model card:
 
-**📦 [Google Drive — model downloads](https://drive.google.com/drive/folders/1tR3MtP0iriptqpeHOSzdpRMT_ckdqDQ8)**
+**📦 [ruisv/bllm-qwen3.5-2b](https://huggingface.co/ruisv/bllm-qwen3.5-2b) ·
+[ruisv/bllm-qwen3.5-4b](https://huggingface.co/ruisv/bllm-qwen3.5-4b)**
 
 ```bash
 sha256sum -c qwen3.5-4b-ctx512-int8-s100.tar.gz.sha256   # integrity check
 tar xzf qwen3.5-4b-ctx512-int8-s100.tar.gz
 ```
 
-Qwen3.5 image+text (VLM, S100P, ctx4k/ctx512) is also published on Hugging Face
-with a full acceptance record on the model card:
-[ruisv/bllm-qwen3.5-2b](https://huggingface.co/ruisv/bllm-qwen3.5-2b) ·
-[ruisv/bllm-qwen3.5-4b](https://huggingface.co/ruisv/bllm-qwen3.5-4b). Conversion
-methodology, acceptance protocol, and every rejected build are in
+Conversion methodology, acceptance protocol, and every rejected build are in
 [bllm-model-zoo](https://github.com/ruisv/bllm-model-zoo).
 
 Already have an officially released `.hbm`? Assemble it into a model directory with
@@ -515,10 +514,10 @@ In Python, `import bllm` works whether or not the extension is built;
 Join the **BPU tech chat group** to discuss RDK / BPU on-device deployment and this project
 (shared community group with [bcdl](https://github.com/ruisv/bcdl)).
 
-<img src="docs/assets/bllm-group-qr.jpg" alt="BPU tech chat group QR" width="240">
+<img src="https://ruisv.oss-cn-beijing.aliyuncs.com/public/rdk/images/bllm-qrcode.jpg" alt="BPU tech chat group QR" width="240">
 
-> WeChat group QR codes expire — if it has, please open an [Issue](../../issues) and we'll
-> refresh it; you're also welcome to just discuss in [Issues](../../issues).
+> WeChat group QR codes expire; the image above is refreshed in place at the same link. If
+> scanning still fails, open an [Issue](../../issues) — you're also welcome to just discuss there.
 
 ## Contributing
 
