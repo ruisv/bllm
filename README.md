@@ -137,7 +137,8 @@ sudo /usr/hobot/bin/hb_switch_ion.sh balanced && sudo reboot   # ≤3B；7B 用 
 上下文长度 / 目标板子 / 量化位宽）。Qwen3.5 图文（VLM，S100P，ctx4k/ctx512 两档）发布在
 Hugging Face，附带完整验收数据的 model card：
 
-**📦 [ruisv/bllm-qwen3.5-2b](https://huggingface.co/ruisv/bllm-qwen3.5-2b) ·
+**📦 [ruisv/bllm-qwen3.5-0.8b](https://huggingface.co/ruisv/bllm-qwen3.5-0.8b) ·
+[ruisv/bllm-qwen3.5-2b](https://huggingface.co/ruisv/bllm-qwen3.5-2b) ·
 [ruisv/bllm-qwen3.5-4b](https://huggingface.co/ruisv/bllm-qwen3.5-4b)**
 
 ```bash

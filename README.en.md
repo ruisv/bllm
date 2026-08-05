@@ -151,7 +151,8 @@ already encode context length / target board / quantization width. Qwen3.5
 image+text (VLM, S100P, ctx4k/ctx512) is published on Hugging Face with a full
 acceptance record on the model card:
 
-**📦 [ruisv/bllm-qwen3.5-2b](https://huggingface.co/ruisv/bllm-qwen3.5-2b) ·
+**📦 [ruisv/bllm-qwen3.5-0.8b](https://huggingface.co/ruisv/bllm-qwen3.5-0.8b) ·
+[ruisv/bllm-qwen3.5-2b](https://huggingface.co/ruisv/bllm-qwen3.5-2b) ·
 [ruisv/bllm-qwen3.5-4b](https://huggingface.co/ruisv/bllm-qwen3.5-4b)**
 
 ```bash
