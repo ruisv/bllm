@@ -552,7 +552,10 @@ class NativeVlm {
       gen.push_back(id);
       full = tk_.decode(gen);
       const auto sc = matcher.scan(full);
-      const size_t show = sc.cut != std::string::npos ? sc.cut : sc.safe;
+      // A stop-string `cut` is already on a character boundary (it is the start of a
+      // literal that matched); `safe` is not, so trim it back rather than handing the
+      // client half a character — see utf8SafeEnd.
+      const size_t show = sc.cut != std::string::npos ? sc.cut : utf8SafeEnd(full, sc.safe);
       if (on_text && show > emitted) on_text(full.substr(emitted, show - emitted));
       emitted = std::max(emitted, show);
       cut = sc.cut;

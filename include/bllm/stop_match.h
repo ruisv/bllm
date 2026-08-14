@@ -12,12 +12,60 @@
 //
 // Holding back that prefix is what stops a half-formed stop string ("\n\nUse") from leaking
 // to the stream before it either completes ("\n\nUser:") or is ruled out ("\n\nUsage").
+//
+// `utf8SafeEnd` guards the OTHER way a byte offset can be wrong: splitting a character.
 #pragma once
 
 #include <string>
 #include <vector>
 
 namespace bllm {
+
+// Largest offset <= `end` that does not cut a UTF-8 sequence in half.
+//
+// A streaming delta is a BYTE slice of the accumulated text, but the offsets that produce
+// it (StopMatcher's `safe`, or simply "everything decoded so far") know nothing about
+// character boundaries. Byte-level BPE routinely emits a token carrying the first byte or
+// two of a multi-byte character — every CJK character is three bytes and is frequently
+// split — so a slice ending there hands the client half a character, and the NEXT slice
+// begins with a continuation byte. A consumer that decodes each delta on its own then
+// fails on the second one, at position 0, with "invalid start byte". Holding the partial
+// tail back until the rest of its bytes arrive costs one token of latency and makes every
+// delta independently decodable.
+inline size_t utf8SafeEnd(const std::string& s, size_t end) {
+  if (end > s.size()) end = s.size();
+  size_t i = end;
+  while (i > 0 && (static_cast<unsigned char>(s[i - 1]) & 0xC0) == 0x80) --i;  // continuations
+  if (i == 0) return end;                       // no lead byte in range: leave it alone
+  const unsigned char lead = static_cast<unsigned char>(s[i - 1]);
+  size_t need = 1;
+  if ((lead & 0x80) == 0x00) need = 1;
+  else if ((lead & 0xE0) == 0xC0) need = 2;
+  else if ((lead & 0xF0) == 0xE0) need = 3;
+  else if ((lead & 0xF8) == 0xF0) need = 4;
+  else return end;                              // malformed lead: not ours to repair
+  // The character starts at i-1 and needs `need` bytes. Emit it only once they are all here.
+  size_t out = (i - 1) + need <= end ? end : i - 1;
+
+  // Also hold back a trailing U+FFFD. A byte-level BPE decoder does not hand back
+  // raw fragments — decoding a prefix that ends mid-character yields REPLACEMENT
+  // CHARACTER instead, which is perfectly well-formed UTF-8 and would sail past the
+  // check above. It is three bytes where the real character is often four:
+  //
+  //   tokens [9008]           -> "\uFFFD"   (3 bytes)   <- emitted, offset now 3
+  //   tokens [9008, 236]      -> "\uFFFD"   (3 bytes)
+  //   tokens [9008, 236, 231] -> "🎉"        (4 bytes)   <- slice from 3 is its LAST byte
+  //
+  // so emitting the placeholder desynchronises every later offset and the next delta
+  // starts on a continuation byte. Holding it costs one token and is self-correcting:
+  // whatever it becomes is emitted whole, and a genuine U+FFFD still reaches the client
+  // on the end-of-stream flush.
+  while (out >= 3 && static_cast<unsigned char>(s[out - 3]) == 0xEF &&
+         static_cast<unsigned char>(s[out - 2]) == 0xBF &&
+         static_cast<unsigned char>(s[out - 1]) == 0xBD)
+    out -= 3;
+  return out;
+}
 
 class StopMatcher {
  public:
