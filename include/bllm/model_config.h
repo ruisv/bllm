@@ -32,6 +32,24 @@ struct VisionCfg {
   float std[3]  = {0.26862954f, 0.26130258f, 0.27577711f};
 };
 
+// π0.5 (openpi VLA). Three graphs rather than one, and a handful of constants
+// that the .hbm cannot reveal: how many camera slots the prefix was compiled
+// for, how many prompt slots, the flow-matching horizon and step count, and the
+// dataset's action quantiles. `embed_prescaled` records that the shipped table
+// already carries `embed_prefix`'s `sqrt(hidden)` — the runtime refuses a table
+// that does not, because a prompt 45x too small is a policy that cannot read its
+// own instruction and every cosine still looks perfect.
+struct Pi05Cfg {
+  std::string expert;                            // resolved path to the action-expert .hbm
+  std::string cond_table;                        // resolved path to cond_table.f32
+  int cameras = 2, prompt_len = 32;
+  int horizon = 10, steps = 10;
+  int vocab = 257152;
+  int action_dim_real = 7;                       // dims the dataset actually uses
+  bool embed_prescaled = false;
+  std::vector<float> action_q01, action_q99;     // quantile unnormalisation
+};
+
 struct ModelConfig {
   std::string dir;                               // model directory (paths below resolve against it)
   std::string name;
@@ -58,11 +76,14 @@ struct ModelConfig {
   int bpu_cores = 1;                             // BPU cores the .hbm was compiled for (nash-p multi-core);
                                                  // >1 requires binding to specific cores at submit time
   double rope_theta = 1e7;                       // rope base
+  double rope_theta_pi05 = 1e4;                  // PaliGemma/expert rope base
   ChatConfig chat;
+  Pi05Cfg pi05;
 
   bool is_hybrid() const { return arch == "hybrid"; }
   bool is_omni() const { return arch == "omni"; }
   bool is_embed() const { return arch == "embed"; }
+  bool is_pi05() const { return arch == "pi05"; }
   // Multimodality is a property of the PACKAGE, not of the decoder family: "omni"
   // is a dense text tower with vision+audio, Qwen3.5 is a hybrid one with vision.
   // Anything carrying a vision tower can answer about images.

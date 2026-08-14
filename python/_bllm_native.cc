@@ -5,6 +5,7 @@
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/function.h>
+#include <nanobind/stl/optional.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/unordered_map.h>
 #include <nanobind/stl/vector.h>
@@ -17,6 +18,7 @@
 #include "bllm/image_io.h"     // stb-backed decode, for image paths
 #include "bllm/native_llm.h"   // unified string-in/out session (needs the C++ tokenizer)
 #include "bllm/native_vlm.h"   // multimodal session (Qwen2.5-Omni)
+#include "bllm/native_pi05_policy.h"  // pi0.5 VLA policy (openpi)
 #endif
 
 namespace nb = nanobind;
@@ -438,5 +440,57 @@ NB_MODULE(_bllm_native, m) {
            "Plain tokenizer encode (no ChatML wrapping) — a token count for usage "
            "accounting, not a way to feed text.")
       .def_prop_ro("name", [](bllm::NativeVlm& v) { return v.config().name; });
+#endif
+
+#ifdef BLLM_HAVE_TOKENIZERS
+  // ── pi0.5 (openpi VLA) ─────────────────────────────────────────────────────
+  // A policy, not a chat session: images and a sentence in, an action chunk out.
+  // Images arrive as interleaved RGB8 `uint8[h, w, 3]`, which is what a camera
+  // pipeline hands you; actions come back as `float32[horizon, action_dim]` in
+  // the dataset's own units, already unnormalised.
+  nb::class_<bllm::Pi05Policy>(m, "Pi05Policy")
+      .def("__init__",
+           [](bllm::Pi05Policy* self, const std::string& dir) {
+             auto cfg = bllm::loadModelConfig(dir);
+             if (!cfg.is_pi05())
+               throw std::runtime_error("[pi05] " + dir + " is arch=" + cfg.arch);
+             new (self) bllm::Pi05Policy(cfg);
+           },
+           "model_dir"_a, "Load a pi05 model package.")
+      .def("act",
+           [](bllm::Pi05Policy& p,
+              nb::ndarray<const uint8_t, nb::ndim<3>, nb::c_contig> image,
+              nb::ndarray<const uint8_t, nb::ndim<3>, nb::c_contig> wrist,
+              const std::string& prompt,
+              std::optional<nb::ndarray<const float, nb::c_contig>> noise) {
+             if (image.shape(2) != 3 || wrist.shape(2) != 3)
+               throw std::runtime_error("[pi05] images must be interleaved RGB8 [h, w, 3]");
+             bllm::Pi05Observation obs;
+             obs.image = image.data();
+             obs.image_h = (int)image.shape(0);
+             obs.image_w = (int)image.shape(1);
+             obs.wrist_image = wrist.data();
+             obs.wrist_h = (int)wrist.shape(0);
+             obs.wrist_w = (int)wrist.shape(1);
+             obs.prompt = prompt;
+             std::vector<float> a;
+             {
+               nb::gil_scoped_release nogil;
+               a = p.act(obs, noise ? noise->data() : nullptr);
+             }
+             const size_t H = (size_t)p.horizon(), A = (size_t)p.actionDim();
+             float* out = new float[H * A];
+             std::copy(a.begin(), a.end(), out);
+             nb::capsule owner(out, [](void* q) noexcept { delete[] (float*)q; });
+             return nb::ndarray<nb::numpy, float>(out, {H, A}, owner);
+           },
+           "image"_a, "wrist_image"_a, "prompt"_a, "noise"_a = nb::none(),
+           "One observation -> [horizon, action_dim] actions. `noise` pins the "
+           "flow-matching latent: pi0.5 integrates from a Gaussian, so without it "
+           "two runs of the same policy differ by more than a port defect does.")
+      .def("seed", &bllm::Pi05Policy::seed, "seed"_a,
+           "Seed the latent RNG used when `act(noise=None)`.")
+      .def_prop_ro("horizon", &bllm::Pi05Policy::horizon)
+      .def_prop_ro("action_dim", &bllm::Pi05Policy::actionDim);
 #endif
 }

@@ -155,10 +155,19 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="bllm-make-model-dir",
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("arch", choices=["dense", "hybrid", "omni"])
+    ap.add_argument("arch", choices=["dense", "hybrid", "omni", "pi05"])
     ap.add_argument("out_dir")
-    ap.add_argument("--hbm", required=True, help="text .hbm (prefill+decode)")
+    ap.add_argument("--hbm", required=True,
+                    help="text .hbm (prefill+decode); for pi05, the PaliGemma prefill")
     ap.add_argument("--tokenizer", required=True, help="tokenizer.json")
+    # --- pi05 (openpi VLA) ---------------------------------------------------
+    ap.add_argument("--expert", help="pi05: action-expert .hbm")
+    ap.add_argument("--cond-table", help="pi05: cond_table.f32")
+    ap.add_argument("--norm-stats", help="pi05: norm_stats.json from export_pi05_package.py")
+    ap.add_argument("--cameras", type=int, default=2, help="pi05: camera slots in the prefix")
+    ap.add_argument("--prompt-len", type=int, default=32, help="pi05: prompt slots in the prefix")
+    ap.add_argument("--horizon", type=int, default=10, help="pi05: action chunk length")
+    ap.add_argument("--steps", type=int, default=10, help="pi05: denoising steps")
     ap.add_argument("--embed", help="host embedding table (required: hybrid, omni)")
     ap.add_argument("--visual", help="vision tower .hbm (omni, or a hybrid VLM like Qwen3.5)")
     ap.add_argument("--vision-patch", type=int, help="vision patch size (14 omni, 16 Qwen3.5)")
@@ -187,6 +196,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--copy", action="store_true", help="copy payload instead of symlinking")
     args = ap.parse_args(argv)
 
+    if args.arch == "pi05":
+        # Each of these is separately fatal at load, so fail here where the
+        # message can name the flag rather than the manifest field.
+        for flag, val in (("--visual (SigLIP tower .hbm)", args.visual),
+                          ("--expert (action expert .hbm)", args.expert),
+                          ("--embed (embedding table, pre-scaled)", args.embed),
+                          ("--cond-table (cond_table.f32)", args.cond_table),
+                          ("--norm-stats (norm_stats.json)", args.norm_stats)):
+            if not val:
+                ap.error(f"pi05 needs {flag} — all of these come out of "
+                         f"host_toolchain/convert/pi05/export_pi05_package.py")
     if args.arch in ("hybrid", "omni") and not args.embed:
         hint = f"  For the official Omni release it is {OMNI_SOURCES['--embed']}." \
             if args.arch == "omni" else ""
@@ -219,6 +239,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.eos:
         eos, eos_src = args.eos, "--eos"
+    elif args.arch == "pi05":
+        # A policy emits a fixed-length action chunk; there is nothing to stop on,
+        # and the PaliGemma tokenizer declares no chat markers to guess from.
+        eos, eos_src = [], "n/a (policy)"
     else:
         eos, eos_src = resolve_eos(tokenizer_src, specials, vocab, has_added)
 
@@ -246,14 +270,47 @@ def main(argv: list[str] | None = None) -> int:
                        "system": args.system}
         if PHI_SYSTEM in specials:
             cfg["chat"]["r_system"] = specials[PHI_SYSTEM]
+    elif args.arch == "pi05":
+        cfg["chat"] = {"format": "none"}          # a policy has no chat template
     else:
         cfg["chat"] = {"format": "none"}
         print(f"[warn] {tokenizer_src.name} has no ChatML markers — chat.format=none "
               "(raw completion only)", file=sys.stderr)
 
-    if args.arch in ("hybrid", "omni"):
+    if args.arch in ("hybrid", "omni", "pi05"):
         cfg["embed"] = "embed_tokens.bin"
         payload["embed_tokens.bin"] = Path(args.embed)
+    if args.arch == "pi05":
+        stats = json.loads(Path(args.norm_stats).read_text())
+        if not stats.get("quantile"):
+            raise SystemExit("[pi05] norm_stats.json is not quantile-normalised; π0.5 is")
+        cfg["visual"] = "visual.hbm"
+        cfg["chat"] = {"format": "none"}      # a policy has no chat template
+        cfg["pi05"] = {
+            "expert": "expert.hbm",
+            "cond_table": "cond_table.f32",
+            "cameras": args.cameras,
+            "prompt_len": args.prompt_len,
+            "horizon": args.horizon,
+            "steps": args.steps,
+            # Row count of the embedding table, not the BPE map: `vocab` here is
+            # the {token: id} dict, and PaliGemma's declared specials (<seg*>,
+            # <loc*>) run past the BPE entries.
+            "vocab": max([*vocab.values(), *specials.values()], default=0) + 1,
+            "action_dim_real": stats["action_dim_real"],
+            "action_q01": stats["action_q01"],
+            "action_q99": stats["action_q99"],
+            # The runtime refuses a table without this. `embed_prefix` scales the
+            # tied row by sqrt(hidden) outside `embed_language_tokens`, and a
+            # package that ships the raw row makes the prompt 45x too small —
+            # invisible to any cosine taken against a golden built the same way,
+            # and worth 24 points of LIBERO success rate.
+            "embed_prescaled": True,
+            "rope_theta": 1e4,
+        }
+        payload["visual.hbm"] = Path(args.visual)
+        payload["expert.hbm"] = Path(args.expert)
+        payload["cond_table.f32"] = Path(args.cond_table)
     if args.arch == "hybrid":
         cfg["graph"] = args.graph or "qwen35"
         cfg["rope_theta"] = args.rope_theta or 1e7
@@ -296,8 +353,13 @@ def main(argv: list[str] | None = None) -> int:
                                     encoding="utf-8")
     print(f"[ok] {out}/model.json   (eos from {eos_src})")
     print(json.dumps(cfg, indent=2, ensure_ascii=False))
-    print(f"\nload it:  bllm.NativeVlmSession(\"{out}\")" if cfg.get("visual")
-          else f"\nload it:  bllm.NativeSession(\"{out}\")")
+    if cfg["arch"] == "pi05":
+        print(f"\nload it:  bllm.load_policy(\"{out}\")"
+              f"\n     or:  bllm_pi05_policy --model {out} --image a.jpg --wrist b.jpg "
+              f"--prompt \"...\"")
+    else:
+        print(f"\nload it:  bllm.NativeVlmSession(\"{out}\")" if cfg.get("visual")
+              else f"\nload it:  bllm.NativeSession(\"{out}\")")
     return 0
 
 

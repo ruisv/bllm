@@ -187,8 +187,25 @@ REPL：`bllm_chat_native --model <dir>`（见 [`examples/chat_native.cc`](exampl
 | **图文（VLM）** | `vlm.chat("描述这张图", images=["a.jpg"])` | [`vlm_native.py`](examples/vlm_native.py) · [`qwen35_native.cc`](examples/qwen35_native.cc) |
 | **文 / 图 / 音 / 视频** | Qwen2.5-Omni，路径或原始数组（相机/麦克风零拷贝） | [`vlm_native.cc`](examples/vlm_native.cc) |
 | **文本嵌入** | `NativeEmbedder`（Qwen3-VL-Embedding；C++ API，暂无 Python 绑定） | [`embed_native.cc`](examples/embed_native.cc) |
+| **具身策略（VLA）** | `bllm.load_policy(...).act(图, 腕部图, "指令")` → 动作块 | [π0.5 文档](docs/PI05.md) · [`pi05_policy.cc`](examples/pi05_policy.cc) |
 | **服务化** | OpenAI 兼容 HTTP + Docker | [`docker/README.md`](docker/README.md) |
 | **与视觉共享 BPU** | `llm.set_bpu_priority(0)` | [与视觉流水线共享 BPU](#与视觉流水线共享-bpu) |
+
+### 具身策略：π0.5 跑在 BPU 上
+
+<div align="center">
+  <img src="docs/pi05_libero_grid.gif" width="760" alt="π0.5 在 RDK S100P BPU 上完成 libero_spatial 全部十个任务的回放"><br>
+  <sub>libero_spatial 板上 <b>99/100</b>，与 x86 参考持平（99/100）；<b>1016 ms/动作块</b>，全程在 BPU</sub>
+</div>
+
+两帧相机图 + 一句英文指令 → 10×7 末端 delta 动作块。三张图（4.57 GB）同时常驻，
+**进程 RSS 仅 16 MB**（权重在 BPU/ION）、**推理时只占 6 核里约 1.3 核**——CPU 留给
+感知与控制。模型包自带 tokenizer / embedding 表 / 动作分位数，运行时不依赖 openpi。
+
+三个 suite 板上成绩：`libero_spatial` **99/100**（x86 参考 99/100）、`libero_goal`
+97/100、`libero_object` 95/100。其中 spatial 那一行是**用模型包本身**（`bllm.load_policy()`
+直连 openpi harness、不经它的任何 transform）打的分——也就是你装上以后会走的同一条路径。
+另两个 suite 的回放与板上实测数据见 [π0.5 文档](docs/PI05.md)。
 
 ## 制作模型目录
 

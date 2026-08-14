@@ -74,7 +74,47 @@ ModelConfig loadModelConfig(const std::string& dir) {
     c.chat.r_end = ch.value("r_end", -1);
     c.chat.system = ch.value("system", c.chat.system);
   }
+  if (j.contains("pi05")) {
+    const auto& p = j.at("pi05");
+    c.pi05.expert = resolve(dir, p.value("expert", ""));
+    c.pi05.cond_table = resolve(dir, p.value("cond_table", "cond_table.f32"));
+    c.pi05.cameras = p.value("cameras", c.pi05.cameras);
+    c.pi05.prompt_len = p.value("prompt_len", c.pi05.prompt_len);
+    c.pi05.horizon = p.value("horizon", c.pi05.horizon);
+    c.pi05.steps = p.value("steps", c.pi05.steps);
+    c.pi05.vocab = p.value("vocab", c.pi05.vocab);
+    c.pi05.action_dim_real = p.value("action_dim_real", c.pi05.action_dim_real);
+    c.pi05.embed_prescaled = p.value("embed_prescaled", false);
+    if (p.contains("action_q01")) c.pi05.action_q01 = p.at("action_q01").get<std::vector<float>>();
+    if (p.contains("action_q99")) c.pi05.action_q99 = p.at("action_q99").get<std::vector<float>>();
+    c.rope_theta_pi05 = p.value("rope_theta", c.rope_theta_pi05);
+  }
+
   if (c.hbm.empty()) throw std::runtime_error("[bllm] model.json missing 'hbm'");
+  if (c.is_pi05()) {
+    // `hbm` is the PaliGemma prefill, `visual` the SigLIP tower, `pi05.expert`
+    // the action expert. Each of the three is separately fatal if missing, and
+    // so are the pieces that make the prompt path correct: without the table the
+    // policy has no instruction, and without the quantiles its actions come out
+    // in normalised units that look plausible and drive the arm nowhere.
+    if (c.visual.empty())
+      throw std::runtime_error("[bllm] pi05 model.json missing 'visual' (SigLIP tower .hbm)");
+    if (c.pi05.expert.empty())
+      throw std::runtime_error("[bllm] pi05 model.json missing 'pi05.expert' (action expert .hbm)");
+    if (c.embed.empty())
+      throw std::runtime_error("[bllm] pi05 model.json missing 'embed' (host embed table)");
+    if (!c.pi05.embed_prescaled)
+      throw std::runtime_error(
+          "[bllm] pi05 model.json must set pi05.embed_prescaled — `embed_prefix` scales "
+          "the tied row by sqrt(hidden), and a table without it makes the prompt 45x too "
+          "small, which no cosine against a golden built the same way can see. Repackage "
+          "with export_pi05_package.py.");
+    if ((int)c.pi05.action_q01.size() != c.pi05.action_dim_real ||
+        c.pi05.action_q01.size() != c.pi05.action_q99.size())
+      throw std::runtime_error("[bllm] pi05 model.json needs action_q01/action_q99 of "
+                               "length action_dim_real");
+    return c;   // pi05 carries no mrope/chat requirements
+  }
   if (c.is_embed() && c.chat.format == "chatml" && c.chat.system.empty())
     throw std::runtime_error("[bllm] embed model.json needs chat.system (the instruction)");
   if ((c.is_hybrid() || c.is_omni()) && c.embed.empty())
