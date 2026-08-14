@@ -54,6 +54,16 @@ inline void check(int32_t e, const char* what) {
 constexpr int64_t kAlign = 32;
 inline int64_t alignUp(int64_t v, int64_t a) { return (v + (a - 1)) & ~(a - 1); }
 
+// Graphs from the OpenExplorer pi0 pipeline carry fp16 at every boundary. The
+// board is aarch64, where `__fp16` is a storage-and-arithmetic type the compiler
+// converts in one instruction; nothing else in this header needs a software
+// half, so there is no fallback path to keep correct.
+#if defined(__aarch64__) || defined(__ARM_FP16_FORMAT_IEEE)
+using half_t = __fp16;
+#else
+#error "native_engine: fp16 tensor I/O needs __fp16 (aarch64); this header is board-only"
+#endif
+
 inline size_t elemSize(int t) {
   switch (t) {
     case HB_DNN_TENSOR_TYPE_S8: case HB_DNN_TENSOR_TYPE_U8: case HB_DNN_TENSOR_TYPE_BOOL8: return 1;
@@ -165,6 +175,113 @@ struct Graph {
   // Bytes to advance index `dim` by one. Dtype- and padding-agnostic, unlike a hand
   // computed stride.
   int64_t outStride(int i, int dim) const { return out[i].properties.stride[dim]; }
+  int64_t inStride(int i, int dim) const { return in[i].properties.stride[dim]; }
+  // Rows are padded up to kAlign, so a dense [rows, cols] buffer is only safe to
+  // memcpy when cols*sizeof(float) already lands on that boundary. It usually
+  // does (Qwen2.5-Omni's 1176-float patch row is 4704 bytes), which is exactly
+  // why writing dense and hoping goes unnoticed until a tower whose row is not —
+  // InternViT's 588 floats are 2352 bytes, 16 short of the next multiple of 32,
+  // and every row after the first lands askew with no error anywhere.
+  // Byte pitch between consecutive dense rows of `cols` elements, for a tensor of
+  // any rank. Callers flatten trailing dimensions freely — a [512, 8, 128] cache
+  // is naturally written as 512 rows of 1024, and a [1, N, W] mask as N rows of
+  // W — so the padded axis is whichever one has exactly `cols` elements below it,
+  // not a fixed dimension index.
+  static int64_t rowPitch(const hbDNNTensorShape& s, const int64_t* stride, int64_t cols) {
+    int64_t below = 1;
+    for (int d = s.numDimensions - 1; d >= 0; --d) {
+      if (below == cols) return stride[d];
+      below *= s.dimensionSize[d];
+    }
+    return cols * (int64_t)sizeof(float);   // the whole tensor is one row
+  }
+
+  void writeRowsF32(int i, const float* src, int64_t rows, int64_t cols) {
+    const int64_t pitch = rowPitch(inShape(i), in[i].properties.stride, cols);
+    auto* dst = (uint8_t*)inPtr(i);
+    if (pitch == cols * (int64_t)sizeof(float)) {
+      std::memcpy(dst, src, (size_t)rows * cols * sizeof(float));
+    } else {
+      for (int64_t r = 0; r < rows; ++r)
+        std::memcpy(dst + r * pitch, src + r * cols, (size_t)cols * sizeof(float));
+    }
+    inClean(i);
+  }
+  // `writeRowsF32` is a raw copy and assumes the graph takes float32, which our
+  // own graphs do. Graphs built by the OpenExplorer pi0 pipeline are **fp16 in
+  // and out**, with int64 position ids, so feeding them needs conversion. These
+  // two speak f32 to the caller and whatever the tensor declares to the board.
+  void writeRowsF32As(int i, const float* src, int64_t rows, int64_t cols) {
+    const int64_t pitch = rowPitch(inShape(i), in[i].properties.stride, cols);
+    auto* dst = (uint8_t*)inPtr(i);
+    const int type = inType(i);
+    for (int64_t r = 0; r < rows; ++r) {
+      const float* s = src + r * cols;
+      uint8_t* d = dst + r * pitch;
+      switch (type) {
+        case HB_DNN_TENSOR_TYPE_F32:
+          std::memcpy(d, s, (size_t)cols * sizeof(float));
+          break;
+        case HB_DNN_TENSOR_TYPE_F16: {
+          auto* p = (native_detail::half_t*)d;
+          for (int64_t k = 0; k < cols; ++k) p[k] = (native_detail::half_t)s[k];
+          break;
+        }
+        case HB_DNN_TENSOR_TYPE_S64: {
+          auto* p = (int64_t*)d;
+          for (int64_t k = 0; k < cols; ++k) p[k] = (int64_t)std::llround(s[k]);
+          break;
+        }
+        case HB_DNN_TENSOR_TYPE_S32: {
+          auto* p = (int32_t*)d;
+          for (int64_t k = 0; k < cols; ++k) p[k] = (int32_t)std::lround(s[k]);
+          break;
+        }
+        default:
+          throw std::runtime_error("[native] writeRowsF32As: unsupported input type " +
+                                   std::to_string(type));
+      }
+    }
+    inClean(i);
+  }
+
+  void readRowsF32As(int i, float* dst, int64_t rows, int64_t cols) const {
+    const int64_t pitch = rowPitch(outShape(i), out[i].properties.stride, cols);
+    const auto* base = (const uint8_t*)out[i].sysMem.virAddr;
+    const int type = out[i].properties.tensorType;
+    const float scale = scaleOf(out[i].properties);
+    for (int64_t r = 0; r < rows; ++r) {
+      const uint8_t* s = base + r * pitch;
+      float* d = dst + r * cols;
+      switch (type) {
+        case HB_DNN_TENSOR_TYPE_F32:
+          std::memcpy(d, s, (size_t)cols * sizeof(float));
+          break;
+        case HB_DNN_TENSOR_TYPE_F16: {
+          const auto* p = (const native_detail::half_t*)s;
+          for (int64_t k = 0; k < cols; ++k) d[k] = (float)p[k];
+          break;
+        }
+        case HB_DNN_TENSOR_TYPE_S16: {
+          const auto* p = (const int16_t*)s;
+          for (int64_t k = 0; k < cols; ++k) d[k] = p[k] * scale;
+          break;
+        }
+        case HB_DNN_TENSOR_TYPE_S8: {
+          const auto* p = (const int8_t*)s;
+          for (int64_t k = 0; k < cols; ++k) d[k] = p[k] * scale;
+          break;
+        }
+        default:
+          throw std::runtime_error("[native] readRowsF32As: unsupported output type " +
+                                   std::to_string(type));
+      }
+    }
+  }
+
+  int64_t outRowPitch(int i, int64_t cols) const {
+    return rowPitch(outShape(i), out[i].properties.stride, cols);
+  }
   static float scaleOf(const hbDNNTensorProperties& p) {
     const auto& s = p.scale;
     return (s.scaleData && s.scaleLen > 0) ? s.scaleData[0] : 1.0f;
