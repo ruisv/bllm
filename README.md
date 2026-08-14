@@ -207,6 +207,9 @@ REPL：`bllm_chat_native --model <dir>`（见 [`examples/chat_native.cc`](exampl
 直连 openpi harness、不经它的任何 transform）打的分——也就是你装上以后会走的同一条路径。
 另两个 suite 的回放与板上实测数据见 [π0.5 文档](docs/PI05.md)。
 
+**📦 [ruisv/bllm-pi05-libero-224-s100p](https://huggingface.co/ruisv/bllm-pi05-libero-224-s100p)** —
+下载即可 `bllm.load_policy()`（5.3 GB，三张 `.hbm` + embedding 表 + tokenizer + 清单）。
+
 ## 制作模型目录
 
 一个模型是一个**目录**（`.hbm` + `tokenizer.json` + `model.json` 清单）。下载的官方模型
