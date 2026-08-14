@@ -6,6 +6,40 @@ All notable changes to BLLM are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-14
+
+### Added
+- **π0.5 (openpi) as a first-class model package.** Two camera frames and an
+  English instruction in, a chunk of end-effector deltas out, at ~1 s per chunk
+  with all three graphs (4.6 GB) resident on the board:
+
+      policy = bllm.load_policy("pi05-libero-224-s100p")
+      actions = policy.act(scene_rgb, wrist_rgb, "pick up the black bowl ...")
+
+  On `libero_spatial` the package scores **99/100** through openpi's own
+  evaluation harness, matching the x86 reference's 99/100; `libero_goal` 97/100
+  and `libero_object` 95/100. The package carries its own tokenizer, embedding
+  table, action quantiles and flow-matching conditioning, so nothing at run time
+  needs openpi or its 14 GB checkpoint. New: `arch: "pi05"` manifests built by
+  `bllm-make-model-dir pi05`, `bllm.load_policy()`, the `bllm_pi05_policy` CLI,
+  `bllm::Pi05Policy` in C++, and `docs/PI05.md`. Weights are published at
+  [ruisv/bllm-pi05-libero-224-s100p](https://huggingface.co/ruisv/bllm-pi05-libero-224-s100p).
+
+### Fixed
+- **A streaming reply could abort mid-sentence** with `'utf-8' codec can't
+  decode byte 0x8a in position 0: invalid start byte`. Byte-level BPE spreads a
+  multi-byte character over several tokens, and decoding a partial prefix yields
+  U+FFFD — three bytes where the finished character is often four. The
+  placeholder is itself well-formed UTF-8, so it was emitted, leaving the stream
+  offset inside a four-byte character; the next delta then began on a
+  continuation byte and failed to decode on its own. Any reply mixing emoji with
+  text could hit it, which made it look intermittent. Emit offsets are now
+  trimmed back off both incomplete sequences and a trailing U+FFFD, so every
+  delta is independently decodable — at the cost of one token of latency on the
+  character being assembled, and self-correcting (a genuine U+FFFD still arrives
+  on the end-of-stream flush). Affects both `NativeSession` and
+  `NativeVlmSession`.
+
 ## [0.3.0] — 2026-07-29
 
 ### Added
