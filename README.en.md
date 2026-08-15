@@ -37,6 +37,7 @@ BPU computer vision) — the two share one BPU and can be scheduled against each
 
 **Jump to:**
 [Why BLLM](#why-bllm) ·
+[Embodied policies (VLA)](#embodied-policies-π05-on-the-bpu) ·
 [Relation to the official runtime](#relation-to-the-official-runtime) ·
 [Architecture](#architecture) ·
 [Quick start](#quick-start) ·
@@ -78,6 +79,46 @@ default.
 - **✅ Coexists with vision** — on a single BPU core, lowering the LLM's priority
   takes a co-resident detector's p99 from 41 ms down to **2.95 ms** — not "run both
   and watch them starve each other".
+- **✅ Not just chat: embodied policies run on the BPU too** — π0.5, a
+  vision-language-action model, loads in one line and scores **99/100** on
+  `libero_spatial` on-board, matching the x86 reference (next section).
+  **The official runtime does not cover this class of model.**
+
+## Embodied policies: π0.5 on the BPU
+
+On-device LLMs are not only about chat. BLLM runs a whole **vision-language-action
+(VLA)** model — π0.5 — on the BPU. This is a class of workload the official LLM
+runtime does not cover, and it is what takes a board from "answers questions" to
+"moves an arm".
+
+<div align="center">
+  <img src="docs/pi05_libero_grid.gif" width="760" alt="π0.5 replaying all ten libero_spatial tasks on an RDK S100P BPU"><br>
+  <sub>libero_spatial <b>99/100</b> on-board, matching the x86 reference (99/100); <b>1016 ms per action chunk</b>, entirely on the BPU</sub>
+</div>
+
+```python
+import bllm
+
+policy = bllm.load_policy("~/models/pi05-libero-224-s100p")
+actions = policy.act(scene_rgb, wrist_rgb, "pick up the black bowl")  # 10×7 chunk
+```
+
+Two camera frames plus one English instruction produce a 10×7 chunk of end-effector
+deltas. All three graphs (4.57 GB) stay resident while the **process RSS is only
+16 MB** (weights live in BPU/ION) and inference occupies about **1.3 of the 6 cores**,
+leaving the CPU for perception and control. The model package carries its own
+tokenizer, embedding table and action quantiles — openpi is not a runtime dependency.
+
+On-board scores across three suites: `libero_spatial` **99/100** (x86 reference
+99/100), `libero_goal` 97/100, `libero_object` 95/100. The spatial row was scored
+**by the model package itself** — `bllm.load_policy()` driving the openpi harness
+directly, through none of its transforms — i.e. the exact path you get after
+installing. Replays and measurements for the other two suites are in the
+[π0.5 doc](docs/PI05.md).
+
+**📦 [ruisv/bllm-pi05-libero-224-s100p](https://huggingface.co/ruisv/bllm-pi05-libero-224-s100p)** —
+download and `bllm.load_policy()` (5.3 GB: three `.hbm` files + embedding table +
+tokenizer + manifest).
 
 ## Relation to the official runtime
 
@@ -95,6 +136,7 @@ it happily consumes officially released `.hbm` files. The table below compares
 | Generation control | basic sampling | full sampling + `logit_bias` + `logprobs` + GBNF grammar constraints |
 | Serving | build it yourself | OpenAI-compatible HTTP + Docker + prefix cache + `/metrics` |
 | Coexisting with vision | handle it yourself | BPU priority / time-slice control alongside [bcdl](https://github.com/ruisv/bcdl) |
+| Embodied policies (VLA) | not covered | π0.5 loads in one line and returns action chunks ([above](#embodied-policies-π05-on-the-bpu)) |
 
 In one line: **the official runtime proved the BPU can run LLMs; BLLM turns that
 into a product in minutes.**
@@ -201,6 +243,7 @@ REPL: `bllm_chat_native --model <dir>` (see [`examples/chat_native.cc`](examples
 | **Image + text (VLM)** | `vlm.chat("describe this", images=["a.jpg"])` | [`vlm_native.py`](examples/vlm_native.py) · [`qwen35_native.cc`](examples/qwen35_native.cc) |
 | **Text / image / audio / video** | Qwen2.5-Omni, file paths or raw arrays (zero-copy camera/mic) | [`vlm_native.cc`](examples/vlm_native.cc) |
 | **Text embeddings** | `NativeEmbedder` (Qwen3-VL-Embedding; C++ API, no Python binding yet) | [`embed_native.cc`](examples/embed_native.cc) |
+| **Embodied policy (VLA)** | `bllm.load_policy(...).act(scene, wrist, "instruction")` → action chunk | [above](#embodied-policies-π05-on-the-bpu) · [π0.5 doc](docs/PI05.md) · [`pi05_policy.cc`](examples/pi05_policy.cc) |
 | **Serving** | OpenAI-compatible HTTP + Docker | [`docker/README.md`](docker/README.md) |
 | **Sharing the BPU** | `llm.set_bpu_priority(0)` | [Sharing the BPU](#sharing-the-bpu-with-a-vision-pipeline) |
 

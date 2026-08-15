@@ -36,6 +36,7 @@ conda install -c https://mirrors.ruis.ai/conda -c conda-forge bllm
 
 **导航：**
 [为什么用](#为什么用-bllm) ·
+[具身策略（VLA）](#具身策略π05-跑在-bpu-上) ·
 [与官方运行时的关系](#与官方运行时的关系) ·
 [架构](#架构) ·
 [快速上手](#快速上手) ·
@@ -69,6 +70,38 @@ BLLM 把这些做成默认行为。
   （**BLLM 原生独有**），另有 GLM-Edge、Phi-4-mini。
 - **✅ 能和视觉共存** —— 单 BPU 核上把 LLM 优先级压低，同驻检测器的 p99 从 41 ms
   降到 **2.95 ms**，不是"各跑各的然后互相拖死"。
+- **✅ 不止于对话：具身策略也在 BPU 上** —— π0.5 视觉-语言-动作模型一行加载，
+  板上 libero_spatial **99/100**、与 x86 参考持平（下一节）。**官方运行时不覆盖这一类。**
+
+## 具身策略：π0.5 跑在 BPU 上
+
+端侧大模型不只是聊天。BLLM 把 π0.5 这类**视觉-语言-动作（VLA）模型**整条搬到了
+BPU 上——这是官方大模型运行时不提供的一类能力，也是把板子从"能问答"推到
+"能动手"的关键一步。
+
+<div align="center">
+  <img src="docs/pi05_libero_grid.gif" width="760" alt="π0.5 在 RDK S100P BPU 上完成 libero_spatial 全部十个任务的回放"><br>
+  <sub>libero_spatial 板上 <b>99/100</b>，与 x86 参考持平（99/100）；<b>1016 ms/动作块</b>，全程在 BPU</sub>
+</div>
+
+```python
+import bllm
+
+policy = bllm.load_policy("~/models/pi05-libero-224-s100p")
+actions = policy.act(scene_rgb, wrist_rgb, "pick up the black bowl")  # 10×7 动作块
+```
+
+两帧相机图 + 一句英文指令 → 10×7 末端 delta 动作块。三张图（4.57 GB）同时常驻，
+**进程 RSS 仅 16 MB**（权重在 BPU/ION）、**推理时只占 6 核里约 1.3 核**——CPU 留给
+感知与控制。模型包自带 tokenizer / embedding 表 / 动作分位数，运行时不依赖 openpi。
+
+三个 suite 板上成绩：`libero_spatial` **99/100**（x86 参考 99/100）、`libero_goal`
+97/100、`libero_object` 95/100。其中 spatial 那一行是**用模型包本身**（`bllm.load_policy()`
+直连 openpi harness、不经它的任何 transform）打的分——也就是你装上以后会走的同一条路径。
+另两个 suite 的回放与板上实测数据见 [π0.5 文档](docs/PI05.md)。
+
+**📦 [ruisv/bllm-pi05-libero-224-s100p](https://huggingface.co/ruisv/bllm-pi05-libero-224-s100p)** —
+下载即可 `bllm.load_policy()`（5.3 GB，三张 `.hbm` + embedding 表 + tokenizer + 清单）。
 
 ## 与官方运行时的关系
 
@@ -85,6 +118,7 @@ BLLM 的算力同样来自 D-Robotics 官方 BPU 运行时（`hbDNN` / `hbUCP`�
 | 生成控制 | 基础采样 | 全套采样 + `logit_bias` + `logprobs` + GBNF 语法约束 |
 | 服务化 | 自行搭建 | OpenAI 兼容 HTTP + Docker + 前缀缓存 + `/metrics` |
 | 与视觉共存 | 自行处理 | BPU 优先级 / 时间片控制，与 [bcdl](https://github.com/ruisv/bcdl) 协同 |
+| 具身策略（VLA） | 不覆盖 | π0.5 一行加载并出动作块（[上一节](#具身策略π05-跑在-bpu-上)） |
 
 一句话：**官方运行时证明了 BPU 能跑大模型；BLLM 让你几分钟内把它做成产品。**
 
@@ -187,28 +221,9 @@ REPL：`bllm_chat_native --model <dir>`（见 [`examples/chat_native.cc`](exampl
 | **图文（VLM）** | `vlm.chat("描述这张图", images=["a.jpg"])` | [`vlm_native.py`](examples/vlm_native.py) · [`qwen35_native.cc`](examples/qwen35_native.cc) |
 | **文 / 图 / 音 / 视频** | Qwen2.5-Omni，路径或原始数组（相机/麦克风零拷贝） | [`vlm_native.cc`](examples/vlm_native.cc) |
 | **文本嵌入** | `NativeEmbedder`（Qwen3-VL-Embedding；C++ API，暂无 Python 绑定） | [`embed_native.cc`](examples/embed_native.cc) |
-| **具身策略（VLA）** | `bllm.load_policy(...).act(图, 腕部图, "指令")` → 动作块 | [π0.5 文档](docs/PI05.md) · [`pi05_policy.cc`](examples/pi05_policy.cc) |
+| **具身策略（VLA）** | `bllm.load_policy(...).act(图, 腕部图, "指令")` → 动作块 | [上文](#具身策略π05-跑在-bpu-上) · [π0.5 文档](docs/PI05.md) · [`pi05_policy.cc`](examples/pi05_policy.cc) |
 | **服务化** | OpenAI 兼容 HTTP + Docker | [`docker/README.md`](docker/README.md) |
 | **与视觉共享 BPU** | `llm.set_bpu_priority(0)` | [与视觉流水线共享 BPU](#与视觉流水线共享-bpu) |
-
-### 具身策略：π0.5 跑在 BPU 上
-
-<div align="center">
-  <img src="docs/pi05_libero_grid.gif" width="760" alt="π0.5 在 RDK S100P BPU 上完成 libero_spatial 全部十个任务的回放"><br>
-  <sub>libero_spatial 板上 <b>99/100</b>，与 x86 参考持平（99/100）；<b>1016 ms/动作块</b>，全程在 BPU</sub>
-</div>
-
-两帧相机图 + 一句英文指令 → 10×7 末端 delta 动作块。三张图（4.57 GB）同时常驻，
-**进程 RSS 仅 16 MB**（权重在 BPU/ION）、**推理时只占 6 核里约 1.3 核**——CPU 留给
-感知与控制。模型包自带 tokenizer / embedding 表 / 动作分位数，运行时不依赖 openpi。
-
-三个 suite 板上成绩：`libero_spatial` **99/100**（x86 参考 99/100）、`libero_goal`
-97/100、`libero_object` 95/100。其中 spatial 那一行是**用模型包本身**（`bllm.load_policy()`
-直连 openpi harness、不经它的任何 transform）打的分——也就是你装上以后会走的同一条路径。
-另两个 suite 的回放与板上实测数据见 [π0.5 文档](docs/PI05.md)。
-
-**📦 [ruisv/bllm-pi05-libero-224-s100p](https://huggingface.co/ruisv/bllm-pi05-libero-224-s100p)** —
-下载即可 `bllm.load_policy()`（5.3 GB，三张 `.hbm` + embedding 表 + tokenizer + 清单）。
 
 ## 制作模型目录
 
