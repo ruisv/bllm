@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(bllm LANGUAGES CXX VERSION 0.4.0)
+project(bllm LANGUAGES CXX VERSION 0.4.1)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

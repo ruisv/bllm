@@ -25,7 +25,7 @@ from typing import Callable, Iterator, Optional
 
 # The native engine + unified NativeSession need only the hobot runtime + the C++
 # tokenizer. The extension is absent on a dev host, so import it tolerantly.
-__version__ = "0.4.0"   # keep in sync with CMakeLists.txt project(... VERSION ...)
+__version__ = "0.4.1"   # keep in sync with CMakeLists.txt project(... VERSION ...)
 try:
     from ._bllm_native import (  # noqa: F401
         NativeEngine,

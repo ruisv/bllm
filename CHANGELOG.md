@@ -6,6 +6,57 @@ All notable changes to BLLM are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-08-19
+
+### Fixed
+- **A rank-3 vision tower read hundreds of megabytes past its output buffer.**
+  `VisionTower` derived `n_token`/`hidden` from the last two dimensions — so a
+  `[1, n_token, hidden]` graph was explicitly supported — but took its row pitch
+  from the stride of dimension 0, which for that rank is the size of the whole
+  tensor. The dense fast path therefore missed and each row was read one whole
+  tensor apart. Now uses the rank-aware `outRowPitch`, as every other reader in
+  the runtime already did.
+- **Output tensor strides are resolved at load, like input strides.** The runtime
+  reports `-1` for "dense, compute it yourself"; only the inputs were being
+  expanded, so any reader trusting an output stride got a negative pitch and read
+  *before* the buffer.
+- **A failed model load leaked the entire `.hbm` mapping.** The packed handle was
+  released in an explicit destructor, which never runs when the constructor throws
+  — and constructors here keep validating after loading (graph shapes, tensor
+  types, a KV window that can `bad_alloc`). Every load that failed leaked
+  gigabytes, in the Python binding and `bllm-serve` alike. `Pi05Stack` never
+  released its handles at all. All owners now hold an RAII `PackedHbm`, which also
+  orders the release after the buffers it backs.
+- **`bllm_vision_probe` silently ignored an unknown `--patch-order`** and used the
+  merged layout. Both layouts yield a correctly shaped tensor differing only in
+  its numbers, so a typo presented as a quantization fault in the one tool meant
+  to tell those two apart. Unknown values are now rejected.
+- Three headers used `std::memset`/`std::memcpy` while relying on `<cstring>`
+  arriving transitively.
+
+### Changed
+- **The hbDNN/hbUCP graph layer moved to `bllm/native_graph.h` +
+  `src/native_graph.cc`.** It is a thin, stable wrapper over the vendor runtime
+  with nothing worth inlining, and was being recompiled into every translation
+  unit. The model classes above it stay header-only, so the CLI, the Python module
+  and `bllm-serve` keep sharing one implementation with no ABI to maintain. Build
+  time is unchanged; the gain is one definition per behaviour and a narrower
+  include graph — the vision and audio towers, π0.5 and the hybrid engine no
+  longer pull in the whole autoregressive engine and sampler just to get a
+  `Graph`. `native_engine.h` drops from 963 to 617 lines.
+
+### Added
+- **Being-H0.5 replayed as four ordinary shared-KV passes.** The checkpoint looks
+  like two entangled transformers, but at inference its understanding and
+  generation streams occupy disjoint, contiguous position ranges under a plain
+  causal mask, so a chunk decomposes into four single-stream calls into two
+  compiled graphs over one KV window per layer — verified exact in fp32 against
+  the packed reference. `bllm::BeingHStack` drives the window, mask and cache
+  upload memoization; `bllm::BeingHHost` is the flow-matching action head, kept in
+  fp32 on the CPU because it is a continuous velocity regression with no softmax
+  to hide error. On S100P a 15-action chunk takes 798 ms with two cameras
+  (MPG off), final chunk cosine 0.994892 against the reference.
+
 ## [0.4.0] — 2026-08-14
 
 ### Added
@@ -447,7 +498,8 @@ driving compiled `.hbm` graphs natively on the BPU (hbDNN / hbUCP), no extra LLM
 - **Packaging** — conda packages (`bllm`, `libbllm`, `tokenizers-cpp`) for linux-aarch64;
   `find_package(bllm)` for C++ consumers.
 
-[Unreleased]: https://github.com/ruisv/bllm/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/ruisv/bllm/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/ruisv/bllm/compare/v0.4.0...v0.4.1
 [0.1.2]: https://github.com/ruisv/bllm/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/ruisv/bllm/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ruisv/bllm/releases/tag/v0.1.0
