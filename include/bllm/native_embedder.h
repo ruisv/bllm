@@ -23,10 +23,11 @@
 #pragma once
 
 #include "bllm/model_config.h"
-#include "bllm/native_engine.h"
+#include "bllm/native_graph.h"
 #include "bllm/tokenizer.h"
 
 #include <cmath>
+#include <cstring>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -40,8 +41,7 @@ class NativeEmbedder {
   explicit NativeEmbedder(ModelConfig cfg)
       : cfg_(std::move(cfg)), tk_(Tokenizer::fromFile(cfg_.tokenizer)) {
     if (!cfg_.is_embed()) throw std::runtime_error("[bllm] NativeEmbedder needs arch=\"embed\"");
-    const char* files[] = {cfg_.hbm.c_str()};
-    BLLM_NATIVE_CK(hbDNNInitializeFromFiles(&packed_, files, 1));
+    packed_.load({cfg_.hbm});
     g_.init(packed_, cfg_.graph.empty() ? "prefill" : cfg_.graph.c_str());
 
     nLayers_ = (g_.outCount() - 1) / 2;
@@ -70,7 +70,6 @@ class NativeEmbedder {
     zeroCaches();
     writeMaskAndPositions();
   }
-  ~NativeEmbedder() { if (packed_) hbDNNRelease(packed_); }
   NativeEmbedder(const NativeEmbedder&) = delete;
   NativeEmbedder& operator=(const NativeEmbedder&) = delete;
 
@@ -155,7 +154,7 @@ class NativeEmbedder {
 
   ModelConfig cfg_;
   Tokenizer tk_;
-  hbDNNPackedHandle_t packed_ = nullptr;
+  native_detail::PackedHbm packed_;
   native_detail::Graph g_;
   int nLayers_ = 0, seq_ = 0, cacheLen_ = 0, hidden_ = 0;
   int64_t rowBytes_ = 0;

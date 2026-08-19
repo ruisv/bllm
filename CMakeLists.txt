@@ -29,9 +29,12 @@ find_package(Hobot QUIET)       # hbDNN / hbUCP / HBRT4
 find_package(Tokenizers QUIET)  # HuggingFace `tokenizers` (Rust) via tokenizers-cpp
 
 # ── native backend ───────────────────────────────────────────────────────────
-# The engines are header-only, but `model.json` parsing is not, so this is a real
-# compiled target. Downstream links ONE thing and gets the include dirs, the hobot
-# runtime, the tokenizer and the fp16 ISA flag.
+# The model classes (NativeEngine, VisionTower, BeingHStack, …) are header-only so
+# the CLI, the Python module and bllm-serve share one implementation with no ABI to
+# keep. Two things underneath them are not: `model.json` parsing, and the hbDNN/hbUCP
+# graph layer (`native_graph.h`), which is a thin stable wrapper with nothing worth
+# inlining and was being recompiled into every translation unit. Downstream links ONE
+# thing and gets the include dirs, the hobot runtime, the tokenizer and the fp16 flag.
 set(BLLM_HAVE_NATIVE OFF)
 set(BLLM_HAVE_TOKENIZERS OFF)
 if(Hobot_FOUND)
@@ -39,7 +42,7 @@ if(Hobot_FOUND)
   if(NOT NLOHMANN_JSON_INCLUDE_DIR)
     message(STATUS "BLLM: nlohmann/json.hpp not found — native backend skipped")
   else()
-    add_library(bllm_native src/model_config.cc)
+    add_library(bllm_native src/model_config.cc src/native_graph.cc)
     target_include_directories(bllm_native PUBLIC
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
       $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)

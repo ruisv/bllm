@@ -15,7 +15,7 @@
 // build time.
 #pragma once
 
-#include "bllm/native_engine.h"
+#include "bllm/native_graph.h"
 
 #include <stdexcept>
 #include <string>
@@ -43,9 +43,9 @@ class Pi05Stack {
   Pi05Stack(const char* vit_hbm, const char* prefill_hbm, const char* expert_hbm,
             const Pi05Shape& s)
       : shape_(s) {
-    open(vit_, vit_hbm, "pi05_siglip");
-    open(prefill_, prefill_hbm, "pi05_paligemma");
-    open(expert_, expert_hbm, "pi05_expert");
+    open(pVit_, vit_, vit_hbm, "pi05_siglip");
+    open(pPrefill_, prefill_, prefill_hbm, "pi05_paligemma");
+    open(pExpert_, expert_, expert_hbm, "pi05_expert");
     if (expert_.inCount() != kExpertKvBase + 2 * shape_.layers)
       throw std::runtime_error("[pi05] expert wants " + std::to_string(expert_.inCount()) +
                                " inputs, expected " + std::to_string(kExpertKvBase) + " + 2*" +
@@ -124,14 +124,17 @@ class Pi05Stack {
   // x_t, cond, bias, rope_cos, rope_sin, then 2*layers KV
   static constexpr int kExpertKvBase = 5;
 
-  void open(native_detail::Graph& g, const char* path, const char* name) {
-    hbDNNPackedHandle_t packed = nullptr;
-    const char* files[] = {path};
-    BLLM_NATIVE_CK(hbDNNInitializeFromFiles(&packed, files, 1));
-    g.init(packed, name);
+  // The handle has to outlive the graph — hbDNNRelease invalidates the model
+  // handles it produced — and it has to be released eventually, which a local
+  // never did.
+  void open(native_detail::PackedHbm& p, native_detail::Graph& g, const char* path,
+            const char* name) {
+    p.load({path});
+    g.init(p, name);
   }
 
   Pi05Shape shape_;
+  native_detail::PackedHbm pVit_, pPrefill_, pExpert_;
   native_detail::Graph vit_, prefill_, expert_;
   std::vector<float> prefix_;
 };

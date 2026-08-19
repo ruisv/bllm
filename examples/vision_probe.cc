@@ -34,7 +34,9 @@ int main(int argc, char** argv) {
     std::fprintf(stderr,
                  "usage: %s --visual <tower.hbm> [--graph visual]\n"
                  "          [--patch-size 16] [--merge 2] [--temporal 2]\n"
-                 "          [--mean M] [--std S]            (single value, all channels)\n"
+                 "          [--patch-order merged|rowmajor]  (default merged)\n"
+                 "          [--mean M] [--std S]   one value for all channels, or three\n"
+                 "                                 comma-separated for R,G,B\n"
                  "          (--patches <f32 file> | --image <file>) [--out <f32 file>]\n"
                  "          [--repeat N]\n", argv[0]);
     return 2;
@@ -43,10 +45,28 @@ int main(int argc, char** argv) {
   spec.patch = std::atoi(argOf(argc, argv, "--patch-size", "16"));
   spec.merge = std::atoi(argOf(argc, argv, "--merge", "2"));
   spec.temporal = std::atoi(argOf(argc, argv, "--temporal", "2"));
-  if (const char* m = argOf(argc, argv, "--mean"))
-    for (float& v : spec.mean) v = (float)std::atof(m);
-  if (const char* s = argOf(argc, argv, "--std"))
-    for (float& v : spec.std) v = (float)std::atof(s);
+  if (const char* o = argOf(argc, argv, "--patch-order")) {
+    // Silently falling back to Merged would defeat the point: both layouts give
+    // a correctly shaped tensor and only the numbers differ, so a typo here
+    // reads as a quantization problem in the one tool meant to tell them apart.
+    if (std::strcmp(o, "rowmajor") == 0) spec.order = bllm::PatchOrder::RowMajor;
+    else if (std::strcmp(o, "merged") == 0) spec.order = bllm::PatchOrder::Merged;
+    else {
+      std::fprintf(stderr, "unknown --patch-order '%s' (want merged|rowmajor)\n", o);
+      return 2;
+    }
+  }
+  // one value applies to all channels; three comma-separated set them per channel
+  auto triple = [](const char* s, float* dst) {
+    for (int i = 0; i < 3; ++i) {
+      dst[i] = (float)std::atof(s);
+      const char* c = std::strchr(s, ',');
+      if (!c) { for (int j = i + 1; j < 3; ++j) dst[j] = dst[i]; return; }
+      s = c + 1;
+    }
+  };
+  if (const char* m = argOf(argc, argv, "--mean")) triple(m, spec.mean);
+  if (const char* s = argOf(argc, argv, "--std")) triple(s, spec.std);
 
   try {
     bllm::VisionTower tower(visual, argOf(argc, argv, "--graph", "visual"), spec);

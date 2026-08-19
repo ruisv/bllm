@@ -19,11 +19,12 @@
 //     which pads features with 0.0 — not the log floor a zero-PCM tail would give).
 #pragma once
 
-#include "bllm/native_engine.h"  // native_detail::Graph
+#include "bllm/native_graph.h"  // native_detail::Graph
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <stdexcept>
 #include <string>
@@ -142,8 +143,7 @@ class AudioTower {
   AudioTower(const std::string& hbm, const std::string& mel_filters,
              const char* graph = "audio_tower")
       : mel_(mel_filters, spec_) {
-    const char* files[] = {hbm.c_str()};
-    BLLM_NATIVE_CK(hbDNNInitializeFromFiles(&packed_, files, 1));
+    packed_.load({hbm});
     g_.init(packed_, graph);
     const auto& is = g_.inShape(0);
     const auto& os = g_.outShape(0);
@@ -155,7 +155,6 @@ class AudioTower {
     if (nMel_ != spec_.n_mel)
       throw std::runtime_error("[audio] graph mel bins != 128");
   }
-  ~AudioTower() { if (packed_) hbDNNRelease(packed_); }
   AudioTower(const AudioTower&) = delete;
   AudioTower& operator=(const AudioTower&) = delete;
 
@@ -211,7 +210,7 @@ class AudioTower {
     g_.infer();
   }
 
-  hbDNNPackedHandle_t packed_ = nullptr;
+  native_detail::PackedHbm packed_;
   native_detail::Graph g_;
   AudioSpec spec_;
   audio_detail::LogMel mel_;

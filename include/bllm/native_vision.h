@@ -13,7 +13,7 @@
 // row the layout is (channel, frame, py, px) — matching the HF transpose.
 #pragma once
 
-#include "bllm/native_engine.h"  // native_detail::Graph
+#include "bllm/native_graph.h"  // native_detail::Graph
 
 #include <cmath>
 #include <cstdint>
@@ -77,12 +77,20 @@ inline Coeffs makeCoeffs(int inLen, int outLen) {
 //   Qwen3.5               : patch 16, mean = std = 0.5
 // Getting them wrong produces a graph-shaped tensor full of wrong numbers, which
 // no shape check would catch — so model.json carries them (see ModelConfig::vision).
+// Which order the graph expects its patch rows in. Qwen2VL-family towers want the
+// 2x2 merge block contiguous because the merger fuses adjacent rows; InternViT
+// (Being-H0.5) wants plain raster order because its pixel-shuffle happens inside
+// the graph, on the token grid. Same patch content, different row permutation —
+// and feeding the wrong one produces a correctly shaped tensor of wrong numbers.
+enum class PatchOrder { Merged, RowMajor };
+
 struct VisionSpec {
   int image_size = 448;   // square side the graph was compiled for
   int patch = 14;
   int merge = 2;
   int temporal = 2;
   int channels = 3;
+  PatchOrder order = PatchOrder::Merged;
   float mean[3] = {0.48145466f, 0.4578275f, 0.40821073f};
   float std[3]  = {0.26862954f, 0.26130258f, 0.27577711f};
 
@@ -137,22 +145,27 @@ inline void patchify(const std::vector<float>* const* frames, const VisionSpec& 
   const int S = spec.image_size, C = spec.channels, P = spec.patch;
   const int M = spec.merge, T = spec.temporal, GB = spec.llm_grid();
   const int RL = spec.row_len();
+  const int G = spec.grid();
+  auto emit = [&](float* row, int gy, int gx) {
+    int k = 0;
+    for (int c = 0; c < C; ++c)
+      for (int t = 0; t < T; ++t)
+        for (int py = 0; py < P; ++py)
+          for (int px = 0; px < P; ++px)
+            row[k++] = (*frames[t])[((size_t)c * S + gy * P + py) * S + gx * P + px];
+  };
+
+  if (spec.order == PatchOrder::RowMajor) {
+    for (int gy = 0, r = 0; gy < G; ++gy)
+      for (int gx = 0; gx < G; ++gx, ++r) emit(out + (size_t)r * RL, gy, gx);
+    return;
+  }
   int r = 0;
   for (int bh = 0; bh < GB; ++bh)
     for (int bw = 0; bw < GB; ++bw)
       for (int mh = 0; mh < M; ++mh)
-        for (int mw = 0; mw < M; ++mw, ++r) {
-          float* row = out + (size_t)r * RL;
-          int k = 0;
-          for (int c = 0; c < C; ++c)
-            for (int t = 0; t < T; ++t)
-              for (int py = 0; py < P; ++py)
-                for (int px = 0; px < P; ++px) {
-                  const int Y = (bh * M + mh) * P + py;
-                  const int X = (bw * M + mw) * P + px;
-                  row[k++] = (*frames[t])[((size_t)c * S + Y) * S + X];
-                }
-        }
+        for (int mw = 0; mw < M; ++mw, ++r)
+          emit(out + (size_t)r * RL, bh * M + mh, bw * M + mw);
 }
 
 // The vision encoder graph. encode()/encode_pair() return a pointer to
@@ -165,8 +178,7 @@ class VisionTower {
   explicit VisionTower(const std::string& hbm, const char* graph = "visual",
                        const VisionSpec& spec = {})
       : spec_(spec) {
-    const char* files[] = {hbm.c_str()};
-    BLLM_NATIVE_CK(hbDNNInitializeFromFiles(&packed_, files, 1));
+    packed_.load({hbm});
     g_.init(packed_, graph);
     const auto& is = g_.inShape(0);
     const auto& os = g_.outShape(0);
@@ -203,7 +215,6 @@ class VisionTower {
                                " (derived " + std::to_string(spec_.image_size) + "px, expected " +
                                std::to_string(spec_.n_token()) + " tokens)");
   }
-  ~VisionTower() { if (packed_) hbDNNRelease(packed_); }
   VisionTower(const VisionTower&) = delete;
   VisionTower& operator=(const VisionTower&) = delete;
 
@@ -220,43 +231,58 @@ class VisionTower {
   // Bypasses our resize/normalize/patchify entirely — the seam that lets a board
   // test tell a quantization problem apart from a preprocessing one.
   const float* encode_patches(const float* patches) {
-    std::memcpy(g_.inPtr(0), patches, (size_t)nPatch_ * rowLen_ * sizeof(float));
-    g_.inClean(0);
+    g_.writeRowsF32(0, patches, nPatch_, rowLen_);
     g_.infer();
     return rows();
   }
 
   // Two consecutive video frames (same size) -> one temporal grid step of tokens.
   const float* encode_pair(const uint8_t* rgb0, const uint8_t* rgb1, int w, int h) {
+    // Patchify densely, then hand it to writeRowsF32: the graph's rows may be
+    // padded up to kAlign and writing straight into inPtr assumes they are not.
+    patches_.resize((size_t)nPatch_ * rowLen_);
     preprocessToPlanar(rgb0, w, h, spec_, chw0_);
     if (rgb1 == rgb0) {
       const std::vector<float>* planes[2] = {&chw0_, &chw0_};
-      patchify(planes, spec_, (float*)g_.inPtr(0));
+      patchify(planes, spec_, patches_.data());
     } else {
       preprocessToPlanar(rgb1, w, h, spec_, chw1_);
       const std::vector<float>* planes[2] = {&chw0_, &chw1_};
-      patchify(planes, spec_, (float*)g_.inPtr(0));
+      patchify(planes, spec_, patches_.data());
     }
-    g_.inClean(0);
-    g_.infer();
-    return rows();
+    return encode_patches(patches_.data());
   }
 
  private:
   // The graph's rows as floats, dequantizing if the tower emits scaled int16.
   const float* rows() {
-    if (outType_ == HB_DNN_TENSOR_TYPE_F32) return (const float*)g_.outPtr(0);
-    const int16_t* q = (const int16_t*)g_.outPtr(0);
+    // Rank-aware: the row axis is numDimensions-2 (a [1, n_token, hidden] tower
+    // is normal), so dimension 0's stride is the whole tensor, not a row.
+    const int64_t pitch = g_.outRowPitch(0, hidden_);
+    const auto* base = (const uint8_t*)g_.outPtr(0);
     const size_t n = (size_t)nToken_ * hidden_;
+    // Only hand back the raw pointer when the rows really are contiguous; a
+    // hidden size whose byte length misses kAlign is padded, and reading it as
+    // dense silently shifts every row but the first.
+    if (outType_ == HB_DNN_TENSOR_TYPE_F32 && pitch == (int64_t)hidden_ * 4)
+      return (const float*)base;
     deq_.resize(n);
-    for (size_t i = 0; i < n; ++i) deq_[i] = (float)q[i] * outScale_;
+    for (int i = 0; i < nToken_; ++i) {
+      if (outType_ == HB_DNN_TENSOR_TYPE_F32) {
+        std::memcpy(deq_.data() + (size_t)i * hidden_, base + (int64_t)i * pitch,
+                    (size_t)hidden_ * sizeof(float));
+      } else {
+        const int16_t* q = (const int16_t*)(base + (int64_t)i * pitch);
+        for (int k = 0; k < hidden_; ++k) deq_[(size_t)i * hidden_ + k] = (float)q[k] * outScale_;
+      }
+    }
     return deq_.data();
   }
 
-  hbDNNPackedHandle_t packed_ = nullptr;
+  native_detail::PackedHbm packed_;
   native_detail::Graph g_;
   VisionSpec spec_;
-  std::vector<float> chw0_, chw1_, deq_;
+  std::vector<float> chw0_, chw1_, deq_, patches_;
   int nPatch_ = 0, rowLen_ = 0, nToken_ = 0, hidden_ = 0;
   int outType_ = 0;
   float outScale_ = 1.0f;

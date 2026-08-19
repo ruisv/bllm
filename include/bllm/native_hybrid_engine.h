@@ -18,13 +18,14 @@
 //
 #pragma once
 
-#include "bllm/native_engine.h"   // native_detail::{Mem, check, elemSize, alignUp, kAlign}
+#include "bllm/native_graph.h"    // native_detail::{Mem, check, elemSize, alignUp, kAlign}
 #include "bllm/native_sampler.h"  // bllm::Sampler (temperature/top-k/top-p/rep-pen)
 
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -58,9 +59,9 @@ class NativeHybridEngine {
                      const std::string& model_name = "qwen35", double rope_theta = 1e7,
                      const std::string& hbm_prefill = "")
       : theta_(rope_theta), decodeName_(model_name) {
-    std::vector<const char*> files{hbm.c_str()};
-    if (!hbm_prefill.empty()) files.push_back(hbm_prefill.c_str());
-    BLLM_NATIVE_CK(hbDNNInitializeFromFiles(&packed_, files.data(), (int32_t)files.size()));
+    std::vector<std::string> files{hbm};
+    if (!hbm_prefill.empty()) files.push_back(hbm_prefill);
+    packed_.load(files);
     BLLM_NATIVE_CK(hbDNNGetModelHandle(&h_, packed_, model_name.c_str()));
     int ic = 0, oc = 0;
     BLLM_NATIVE_CK(hbDNNGetInputCount(&ic, h_));
@@ -138,7 +139,6 @@ class NativeHybridEngine {
     attachPrefill(model_name + "_prefill");
     reset();
   }
-  ~NativeHybridEngine() { if (packed_) hbDNNRelease(packed_); }
   NativeHybridEngine(const NativeHybridEngine&) = delete;
   NativeHybridEngine& operator=(const NativeHybridEngine&) = delete;
 
@@ -672,7 +672,7 @@ class NativeHybridEngine {
     return nd > 0 ? (uint64_t)(p.stride[0] * p.validShape.dimensionSize[0]) : 0;
   }
 
-  hbDNNPackedHandle_t packed_ = nullptr;
+  native_detail::PackedHbm packed_;
   hbDNNHandle_t h_ = nullptr;
   std::vector<hbDNNTensor> in_, out_;
   std::vector<uint64_t> inBytes_;
