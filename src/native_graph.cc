@@ -33,7 +33,19 @@ void PackedHbm::load(const std::vector<std::string>& files) {
 
 // ---- Mem -------------------------------------------------------------------
 
-void Mem::alloc(uint64_t sz) { BLLM_NATIVE_CK(hbUCPMallocCached(&m, sz, 0)); }
+void Mem::alloc(uint64_t sz) {
+  BLLM_NATIVE_CK(hbUCPMallocCached(&m, sz, 0));
+  // hbUCPMallocCached hands back whatever the previous tenant left in that ION —
+  // freed memory really does come back dirty, at the same physical address. Any
+  // graph input that is only partly written therefore reads the board's history,
+  // making output depend on what else has run: a heisenbug that reproduces only
+  // until you look at it. Zeroing here does not make a partial write correct, but
+  // it makes it *deterministic*, which is the difference between a bug you can
+  // bisect and one you cannot. It costs one pass over buffers that are allocated
+  // once at load; the large caches were already being memset by their owners.
+  std::memset(m.virAddr, 0, sz);
+  clean();
+}
 void Mem::clean() const { if (m.virAddr) BLLM_NATIVE_CK(hbUCPMemFlush(&m, HB_SYS_MEM_CACHE_CLEAN)); }
 void Mem::inval() const { if (m.virAddr) BLLM_NATIVE_CK(hbUCPMemFlush(&m, HB_SYS_MEM_CACHE_INVALIDATE)); }
 

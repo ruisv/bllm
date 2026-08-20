@@ -18,6 +18,7 @@
 //
 #pragma once
 
+#include "bllm/attn_mask.h"       // maskRow / replicateHeadPlanes
 #include "bllm/native_graph.h"    // native_detail::{Mem, check, elemSize, alignUp, kAlign}
 #include "bllm/native_sampler.h"  // bllm::Sampler (temperature/top-k/top-p/rep-pen)
 
@@ -398,13 +399,17 @@ class NativeHybridEngine {
       cs[i] = cs[i + half] = c; sn[i] = sn[i + half] = s;
     }
     fixedMem_[1].clean(); fixedMem_[2].clean();
-    // causal mask [1, CL]: valid = last min(P+1,CL) slots. Head-independent (the
-    // causal window doesn't vary by head), so the graph carries one row and
-    // broadcasts it over nHead_ internally — one write instead of nHead_ copies.
-    float* mask = reinterpret_cast<float*>(fixedMem_[3].p());
+    // causal mask [nHead_, CL]: valid = last min(P+1,CL) slots. The window does not
+    // vary by head — but the graph does NOT broadcast one row over nHead_, it reads
+    // every row. Writing only the first left nHead_-1 rows holding whatever the
+    // previous tenant of that ION had (hbUCPMallocCached does not zero), so the
+    // model's output silently depended on what else the board had been running:
+    // clean memory read as an all-zero mask (no causal masking on 7 of 8 heads),
+    // dirty memory read as garbage. Same row to every head.
+    auto* maskBase = reinterpret_cast<uint8_t*>(fixedMem_[3].p());
     int valid = P_ + 1; if (valid > CL_) valid = CL_;
-    const int lo = CL_ - valid;
-    for (int j = 0; j < CL_; ++j) mask[j] = (j >= lo) ? 0.0f : -1e9f;
+    maskRow(reinterpret_cast<float*>(maskBase), CL_, CL_ - valid, CL_ - 1);
+    replicateHeadPlanes(maskBase, nHead_, in_[3].properties.stride[0], 1, 0, CL_);
     fixedMem_[3].clean();
     // bind ping-pong caches: cur -> inputs, next -> outputs
     std::vector<Mem>& cur = phase_ ? bufB_ : bufA_;
@@ -614,17 +619,22 @@ class NativeHybridEngine {
     //   * causality within the chunk: new token j sits at CL_ - N_ + j, so query j
     //     must not see i > CL_ - N_ + j.
     // Writing only the causal half lets an early chunk attend to zeroed slots.
-    // Head-independent (the window doesn't vary by head), so the graph carries one
-    // head-row and broadcasts it internally — one write instead of nHead_ copies.
+    // The window doesn't vary by head, but the tensor is [nHead_, N, CL] and the
+    // graph reads every head plane rather than broadcasting one — see the decode
+    // mask above for what leaving the rest unwritten costs. Fill head 0's plane,
+    // then copy it to the others.
+    //
+    // NOTE: unverified on hardware. No model available here carries the optional
+    // `_prefill` graph, so this path never executes on any .hbm we have; the fix
+    // is by inspection, symmetric with the decode mask it mirrors.
     auto* maskBase = reinterpret_cast<uint8_t*>(pFixedMem_[3].p());
-    const auto& mp = pin_[3].properties;                 // [1, N, CL]
+    const auto& mp = pin_[3].properties;                 // [nHead_, N, CL]
     const int T = P_ + N_;
     const int lo = CL_ - (T < CL_ ? T : CL_);
-    for (int j = 0; j < N_; ++j) {
-      const int hi = CL_ - N_ + j;                       // last index query j may see
-      auto* row = reinterpret_cast<float*>(maskBase + (size_t)j * mp.stride[1]);
-      for (int i = 0; i < CL_; ++i) row[i] = (i >= lo && i <= hi) ? 0.0f : -1e9f;
-    }
+    for (int j = 0; j < N_; ++j)
+      maskRow(reinterpret_cast<float*>(maskBase + (size_t)j * mp.stride[1]), CL_,
+              lo, CL_ - N_ + j /* last index query j may see */);
+    replicateHeadPlanes(maskBase, nHead_, mp.stride[0], N_, mp.stride[1], CL_);
     pFixedMem_[3].clean();
 
     std::vector<Mem>& cur = phase_ ? bufB_ : bufA_;
