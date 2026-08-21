@@ -6,6 +6,38 @@ All notable changes to BLLM are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-08-20
+
+### Fixed
+- **The attention mask was written for one head only, so generation depended on
+  what else the board had been running.** The decode mask tensor is
+  `[n_heads, cache_len]` and the graph reads every head row; the code wrote the
+  first and assumed the graph broadcast it. On the shipped Qwen3.5-0.8B that left
+  7 of 8 rows holding whatever `hbUCPMallocCached` returned — and freed BPU memory
+  comes back dirty, at the same physical address. Clean memory therefore read as
+  an all-zero mask (no causal masking at all on those heads); memory dirtied by an
+  unrelated workload read as garbage and the model degenerated into repetition.
+  The same binary and the same greedy prompt could answer correctly or ramble for
+  400 bytes depending on history, which is what made it look like flakiness rather
+  than a bug. Affects every `arch: "hybrid"` model — the whole Qwen3.5 family.
+  On the board suite this moves 4 failed / 151 passed to 1 failed / 157 passed,
+  and output is now bit-identical across a 2 GB memory poison in three patterns.
+  The chunked-prefill mask had the same defect and is fixed identically, though it
+  cannot be verified here: no available model carries the optional `_prefill`
+  graph, so that path never executes.
+
+### Changed
+- **BPU allocations are zeroed.** This does not make a partial write correct, but
+  it makes one deterministic — the difference between a bug that can be bisected
+  and one that reproduces only until you look at it. It costs a single pass over
+  buffers allocated once at load; the large caches were already being zeroed by
+  their owners. Decode throughput is unchanged (17.3 tok/s measured before and
+  after).
+- Mask construction moved to `bllm/attn_mask.h` as two named functions, so it has
+  a test seam at all — previously the logic was unreachable from a test without
+  exposing engine internals. `tests/test_attn_mask.cc` covers it and needs no
+  board.
+
 ## [0.4.1] — 2026-08-19
 
 ### Fixed
@@ -498,7 +530,8 @@ driving compiled `.hbm` graphs natively on the BPU (hbDNN / hbUCP), no extra LLM
 - **Packaging** — conda packages (`bllm`, `libbllm`, `tokenizers-cpp`) for linux-aarch64;
   `find_package(bllm)` for C++ consumers.
 
-[Unreleased]: https://github.com/ruisv/bllm/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/ruisv/bllm/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/ruisv/bllm/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/ruisv/bllm/compare/v0.4.0...v0.4.1
 [0.1.2]: https://github.com/ruisv/bllm/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/ruisv/bllm/compare/v0.1.0...v0.1.1
