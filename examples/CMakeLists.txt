@@ -56,6 +56,22 @@ if(BLLM_HAVE_NATIVE AND BLLM_HAVE_TOKENIZERS)
   add_executable(bllm_pi05_probe pi05_probe.cc)
   target_link_libraries(bllm_pi05_probe PRIVATE bllm::native)
 
+  # SmolVLA end to end (bllm::SmolVlaStack): SmolVLM tower -> SmolLM2 prefix ->
+  # the interleaved-expert flow loop, scored against the host golden.
+  add_executable(bllm_smolvla_probe smolvla_probe.cc)
+  target_link_libraries(bllm_smolvla_probe PRIVATE bllm::native)
+
+  # The SmolVLA package held resident behind a socket, so a simulator can score
+  # the packaged path without paying model load per inference.
+  add_executable(bllm_smolvla_server smolvla_server.cc)
+  target_link_libraries(bllm_smolvla_server PRIVATE bllm::native)
+  target_include_directories(bllm_smolvla_server PRIVATE "${CMAKE_SOURCE_DIR}/vendor/stb")
+
+  # SmolVLA from a package: images + state + sentence in, actions out.
+  add_executable(bllm_smolvla_policy smolvla_policy.cc)
+  target_link_libraries(bllm_smolvla_policy PRIVATE bllm::native)
+  target_include_directories(bllm_smolvla_policy PRIVATE "${CMAKE_SOURCE_DIR}/vendor/stb")
+
   # The same stack held resident behind a socket, so a simulator can score the
   # policy without paying 9 s of model load per inference.
   add_executable(bllm_pi05_server pi05_server.cc)

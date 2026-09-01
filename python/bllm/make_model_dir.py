@@ -155,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="bllm-make-model-dir",
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("arch", choices=["dense", "hybrid", "omni", "pi05"])
+    ap.add_argument("arch", choices=["dense", "hybrid", "omni", "pi05", "smolvla"])
     ap.add_argument("out_dir")
     ap.add_argument("--hbm", required=True,
                     help="text .hbm (prefill+decode); for pi05, the PaliGemma prefill")
@@ -167,7 +167,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cameras", type=int, default=2, help="pi05: camera slots in the prefix")
     ap.add_argument("--prompt-len", type=int, default=32, help="pi05: prompt slots in the prefix")
     ap.add_argument("--horizon", type=int, default=10, help="pi05: action chunk length")
-    ap.add_argument("--steps", type=int, default=10, help="pi05: denoising steps")
+    ap.add_argument("--steps", type=int, default=10, help="pi05/smolvla: denoising steps")
+    # --- smolvla (LeRobot VLA) ----------------------------------------------
+    ap.add_argument("--state-proj", help="smolvla: state_proj.f32")
     ap.add_argument("--embed", help="host embedding table (required: hybrid, omni)")
     ap.add_argument("--visual", help="vision tower .hbm (omni, or a hybrid VLM like Qwen3.5)")
     ap.add_argument("--vision-patch", type=int, help="vision patch size (14 omni, 16 Qwen3.5)")
@@ -207,6 +209,16 @@ def main(argv: list[str] | None = None) -> int:
             if not val:
                 ap.error(f"pi05 needs {flag} — all of these come out of "
                          f"host_toolchain/convert/pi05/export_pi05_package.py")
+    if args.arch == "smolvla":
+        for flag, val in (("--visual (SmolVLM vision tower .hbm)", args.visual),
+                          ("--expert (action expert .hbm)", args.expert),
+                          ("--embed (embedding table, pre-scaled)", args.embed),
+                          ("--cond-table (cond_table.f32)", args.cond_table),
+                          ("--state-proj (state_proj.f32)", args.state_proj),
+                          ("--norm-stats (norm_stats.json)", args.norm_stats)):
+            if not val:
+                ap.error(f"smolvla needs {flag} — all of these come out of "
+                         f"host_toolchain/convert/smolvla/export_smolvla_package.py")
     if args.arch in ("hybrid", "omni") and not args.embed:
         hint = f"  For the official Omni release it is {OMNI_SOURCES['--embed']}." \
             if args.arch == "omni" else ""
@@ -239,9 +251,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.eos:
         eos, eos_src = args.eos, "--eos"
-    elif args.arch == "pi05":
-        # A policy emits a fixed-length action chunk; there is nothing to stop on,
-        # and the PaliGemma tokenizer declares no chat markers to guess from.
+    elif args.arch in ("pi05", "smolvla"):
+        # A policy emits a fixed-length action chunk; there is nothing to stop on.
         eos, eos_src = [], "n/a (policy)"
     else:
         eos, eos_src = resolve_eos(tokenizer_src, specials, vocab, has_added)
@@ -277,9 +288,45 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[warn] {tokenizer_src.name} has no ChatML markers — chat.format=none "
               "(raw completion only)", file=sys.stderr)
 
-    if args.arch in ("hybrid", "omni", "pi05"):
+    if args.arch in ("hybrid", "omni", "pi05", "smolvla"):
         cfg["embed"] = "embed_tokens.bin"
         payload["embed_tokens.bin"] = Path(args.embed)
+    if args.arch == "smolvla":
+        stats = json.loads(Path(args.norm_stats).read_text())
+        if stats.get("quantile"):
+            raise SystemExit("[smolvla] norm_stats.json is quantile-normalised; SmolVLA's "
+                             "normalization_mapping is MEAN_STD, and the two are not "
+                             "interchangeable")
+        for k in ("state_mean", "state_std", "action_mean", "action_std"):
+            if k not in stats:
+                raise SystemExit(f"[smolvla] norm_stats.json is missing {k}")
+        cfg["visual"] = "visual.hbm"
+        cfg["chat"] = {"format": "none"}      # a policy has no chat template
+        cfg["smolvla"] = {
+            "expert": "expert.hbm",
+            "cond_table": "cond_table.f32",
+            "state_proj": "state_proj.f32",
+            "cameras": args.cameras,
+            "prompt_len": args.prompt_len,
+            "horizon": args.horizon,
+            "steps": args.steps,
+            "vocab": max([*vocab.values(), *specials.values()], default=0) + 1,
+            "state_dim_real": stats["state_dim_real"],
+            "action_dim_real": stats["action_dim_real"],
+            "state_mean": stats["state_mean"], "state_std": stats["state_std"],
+            "action_mean": stats["action_mean"], "action_std": stats["action_std"],
+            # `apply_rope`'s hardcoded default. The checkpoint's config.json says
+            # 100000, and using that value costs cosine 0.686 — measured.
+            "rope_theta": 1e4,
+            # `embed_prefix` scales the tied row by sqrt(hidden) OUTSIDE the table
+            # lookup; the exported table already carries it, and the runtime
+            # refuses one that does not say so.
+            "embed_prescaled": True,
+        }
+        payload["visual.hbm"] = Path(args.visual)
+        payload["expert.hbm"] = Path(args.expert)
+        payload["cond_table.f32"] = Path(args.cond_table)
+        payload["state_proj.f32"] = Path(args.state_proj)
     if args.arch == "pi05":
         stats = json.loads(Path(args.norm_stats).read_text())
         if not stats.get("quantile"):
@@ -353,9 +400,11 @@ def main(argv: list[str] | None = None) -> int:
                                     encoding="utf-8")
     print(f"[ok] {out}/model.json   (eos from {eos_src})")
     print(json.dumps(cfg, indent=2, ensure_ascii=False))
-    if cfg["arch"] == "pi05":
+    if cfg["arch"] in ("pi05", "smolvla"):
+        exe = "bllm_pi05_policy" if cfg["arch"] == "pi05" else "bllm_smolvla_policy"
+        extra = "" if cfg["arch"] == "pi05" else " --state s.f32"
         print(f"\nload it:  bllm.load_policy(\"{out}\")"
-              f"\n     or:  bllm_pi05_policy --model {out} --image a.jpg --wrist b.jpg "
+              f"\n     or:  {exe} --model {out} --image a.jpg --wrist b.jpg{extra} "
               f"--prompt \"...\"")
     else:
         print(f"\nload it:  bllm.NativeVlmSession(\"{out}\")" if cfg.get("visual")

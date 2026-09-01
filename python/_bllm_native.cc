@@ -19,6 +19,7 @@
 #include "bllm/native_llm.h"   // unified string-in/out session (needs the C++ tokenizer)
 #include "bllm/native_vlm.h"   // multimodal session (Qwen2.5-Omni)
 #include "bllm/native_pi05_policy.h"  // pi0.5 VLA policy (openpi)
+#include "bllm/native_smolvla_policy.h"  // SmolVLA policy (LeRobot)
 #endif
 
 namespace nb = nanobind;
@@ -492,5 +493,63 @@ NB_MODULE(_bllm_native, m) {
            "Seed the latent RNG used when `act(noise=None)`.")
       .def_prop_ro("horizon", &bllm::Pi05Policy::horizon)
       .def_prop_ro("action_dim", &bllm::Pi05Policy::actionDim);
+
+  // SmolVLA (LeRobot). Same shape of API as Pi05Policy, with one difference that
+  // is not cosmetic: SmolVLA reads proprioception. `embed_prefix` projects the
+  // state into a prefix token, so `state` is part of the observation rather than
+  // accepted-and-ignored the way pi05_libero's is.
+  nb::class_<bllm::SmolVlaPolicy>(m, "SmolVlaPolicy")
+      .def("__init__",
+           [](bllm::SmolVlaPolicy* self, const std::string& dir) {
+             auto cfg = bllm::loadModelConfig(dir);
+             if (!cfg.is_smolvla())
+               throw std::runtime_error("[smolvla] " + dir + " is arch=" + cfg.arch);
+             new (self) bllm::SmolVlaPolicy(cfg);
+           },
+           "model_dir"_a, "Load a smolvla model package.")
+      .def("act",
+           [](bllm::SmolVlaPolicy& p,
+              nb::ndarray<const uint8_t, nb::ndim<3>, nb::c_contig> image,
+              nb::ndarray<const uint8_t, nb::ndim<3>, nb::c_contig> wrist,
+              const std::string& prompt,
+              std::optional<nb::ndarray<const float, nb::c_contig>> state,
+              std::optional<nb::ndarray<const float, nb::c_contig>> noise) {
+             if (image.shape(2) != 3 || wrist.shape(2) != 3)
+               throw std::runtime_error("[smolvla] images must be interleaved RGB8 [h, w, 3]");
+             if (state && (int)state->size() != p.stateDim())
+               throw std::runtime_error("[smolvla] state must be " +
+                                        std::to_string(p.stateDim()) + " values");
+             bllm::SmolVlaObservation obs;
+             obs.image = image.data();
+             obs.image_h = (int)image.shape(0);
+             obs.image_w = (int)image.shape(1);
+             obs.wrist_image = wrist.data();
+             obs.wrist_h = (int)wrist.shape(0);
+             obs.wrist_w = (int)wrist.shape(1);
+             obs.state = state ? state->data() : nullptr;
+             obs.prompt = prompt;
+             std::vector<float> a;
+             {
+               nb::gil_scoped_release nogil;
+               a = p.act(obs, noise ? noise->data() : nullptr);
+             }
+             const size_t H = (size_t)p.horizon(), A = (size_t)p.actionDim();
+             float* out = new float[H * A];
+             std::copy(a.begin(), a.end(), out);
+             nb::capsule owner(out, [](void* q) noexcept { delete[] (float*)q; });
+             return nb::ndarray<nb::numpy, float>(out, {H, A}, owner);
+           },
+           "image"_a, "wrist_image"_a, "prompt"_a, "state"_a = nb::none(),
+           "noise"_a = nb::none(),
+           "One observation -> [horizon, action_dim] actions in the dataset's own "
+           "units. `state` is the robot's proprioception (the package says how many "
+           "values); `noise` pins the flow-matching latent, without which two runs "
+           "of the same policy differ by position max|d| ~0.4 — more than this port "
+           "differs from the GPU reference.")
+      .def("seed", &bllm::SmolVlaPolicy::seed, "seed"_a,
+           "Seed the latent RNG used when `act(noise=None)`.")
+      .def_prop_ro("horizon", &bllm::SmolVlaPolicy::horizon)
+      .def_prop_ro("action_dim", &bllm::SmolVlaPolicy::actionDim)
+      .def_prop_ro("state_dim", &bllm::SmolVlaPolicy::stateDim);
 #endif
 }

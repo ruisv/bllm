@@ -115,7 +115,9 @@ struct Mem {
 // when it actually yields (23.9 -> 17.1 tok/s under a CV saturating the core).
 //
 // `core_mask` picks BPU cores (HB_UCP_BPU_CORE_0, …). S100/S100P expose exactly ONE
-// BPU core, so it is a no-op there; it matters on multi-core parts (nash-p / J6P).
+// BPU core, so it is a no-op there; it matters on multi-core parts (nash-p / J6P),
+// where `Graph::init` sets it from the model's own compiled core count — a
+// multi-core hbm is *rejected* under HB_UCP_CORE_ANY rather than falling back.
 struct BpuSched {
   int priority = HB_UCP_PRIORITY_LOWEST;   // yield the queue to latency-critical work
   uint64_t core_mask = HB_UCP_CORE_ANY;

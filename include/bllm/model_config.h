@@ -50,6 +50,26 @@ struct Pi05Cfg {
   std::vector<float> action_q01, action_q99;     // quantile unnormalisation
 };
 
+// SmolVLA (LeRobot VLA). Three graphs like π0.5's, and the same class of
+// constants the .hbm cannot reveal — plus two it does not share: the state is a
+// real prefix token here (π0.5's LIBERO config has none), so `state_proj` ships
+// with the package; and normalisation is **MEAN_STD**, not quantiles. Using one
+// where the other belongs is silent and wrong.
+struct SmolVlaCfg {
+  std::string expert;                            // resolved path to the action-expert .hbm
+  std::string cond_table;                        // resolved path to cond_table.f32
+  std::string state_proj;                        // resolved path to state_proj.f32
+  int cameras = 2, prompt_len = 48;
+  int horizon = 50, steps = 10;
+  int vocab = 49280;
+  int state_dim_real = 8;                        // dims the dataset actually uses
+  int action_dim_real = 7;
+  bool embed_prescaled = false;
+  double rope_theta = 1e4;                       // `apply_rope`'s hardcoded default,
+                                                 // NOT config.json's rope_theta
+  std::vector<float> state_mean, state_std, action_mean, action_std;
+};
+
 struct ModelConfig {
   std::string dir;                               // model directory (paths below resolve against it)
   std::string name;
@@ -79,11 +99,13 @@ struct ModelConfig {
   double rope_theta_pi05 = 1e4;                  // PaliGemma/expert rope base
   ChatConfig chat;
   Pi05Cfg pi05;
+  SmolVlaCfg smolvla;
 
   bool is_hybrid() const { return arch == "hybrid"; }
   bool is_omni() const { return arch == "omni"; }
   bool is_embed() const { return arch == "embed"; }
   bool is_pi05() const { return arch == "pi05"; }
+  bool is_smolvla() const { return arch == "smolvla"; }
   // Multimodality is a property of the PACKAGE, not of the decoder family: "omni"
   // is a dense text tower with vision+audio, Qwen3.5 is a hybrid one with vision.
   // Anything carrying a vision tower can answer about images.

@@ -91,6 +91,56 @@ ModelConfig loadModelConfig(const std::string& dir) {
   }
 
   if (c.hbm.empty()) throw std::runtime_error("[bllm] model.json missing 'hbm'");
+  if (j.contains("smolvla")) {
+    const auto& p = j.at("smolvla");
+    c.smolvla.expert = resolve(dir, p.value("expert", ""));
+    c.smolvla.cond_table = resolve(dir, p.value("cond_table", "cond_table.f32"));
+    c.smolvla.state_proj = resolve(dir, p.value("state_proj", "state_proj.f32"));
+    c.smolvla.cameras = p.value("cameras", c.smolvla.cameras);
+    c.smolvla.prompt_len = p.value("prompt_len", c.smolvla.prompt_len);
+    c.smolvla.horizon = p.value("horizon", c.smolvla.horizon);
+    c.smolvla.steps = p.value("steps", c.smolvla.steps);
+    c.smolvla.vocab = p.value("vocab", c.smolvla.vocab);
+    c.smolvla.state_dim_real = p.value("state_dim_real", c.smolvla.state_dim_real);
+    c.smolvla.action_dim_real = p.value("action_dim_real", c.smolvla.action_dim_real);
+    c.smolvla.embed_prescaled = p.value("embed_prescaled", false);
+    c.smolvla.rope_theta = p.value("rope_theta", c.smolvla.rope_theta);
+    for (const char* k : {"state_mean", "state_std", "action_mean", "action_std"}) {
+      if (!p.contains(k)) continue;
+      auto v = p.at(k).get<std::vector<float>>();
+      if (std::string(k) == "state_mean") c.smolvla.state_mean = v;
+      else if (std::string(k) == "state_std") c.smolvla.state_std = v;
+      else if (std::string(k) == "action_mean") c.smolvla.action_mean = v;
+      else c.smolvla.action_std = v;
+    }
+  }
+
+  if (c.is_smolvla()) {
+    // `hbm` is the SmolLM2 prefix pass, `visual` the SmolVLM tower,
+    // `smolvla.expert` the interleaved action expert.
+    if (c.visual.empty())
+      throw std::runtime_error("[bllm] smolvla model.json missing 'visual' (vision tower .hbm)");
+    if (c.smolvla.expert.empty())
+      throw std::runtime_error("[bllm] smolvla model.json missing 'smolvla.expert'");
+    if (c.embed.empty())
+      throw std::runtime_error("[bllm] smolvla model.json missing 'embed' (host embed table)");
+    if (!c.smolvla.embed_prescaled)
+      throw std::runtime_error(
+          "[bllm] smolvla model.json must set smolvla.embed_prescaled — `embed_prefix` "
+          "scales the tied row by sqrt(hidden) outside the table lookup, and a package "
+          "that ships the raw row makes the prompt 31x too small while every cosine "
+          "still looks perfect. Repackage with export_smolvla_package.py.");
+    if ((int)c.smolvla.action_mean.size() != c.smolvla.action_dim_real ||
+        c.smolvla.action_mean.size() != c.smolvla.action_std.size())
+      throw std::runtime_error("[bllm] smolvla model.json needs action_mean/action_std of "
+                               "length action_dim_real");
+    if ((int)c.smolvla.state_mean.size() != c.smolvla.state_dim_real ||
+        c.smolvla.state_mean.size() != c.smolvla.state_std.size())
+      throw std::runtime_error("[bllm] smolvla model.json needs state_mean/state_std of "
+                               "length state_dim_real");
+    return c;   // smolvla carries no mrope/chat requirements
+  }
+
   if (c.is_pi05()) {
     // `hbm` is the PaliGemma prefill, `visual` the SigLIP tower, `pi05.expert`
     // the action expert. Each of the three is separately fatal if missing, and

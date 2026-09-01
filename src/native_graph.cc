@@ -2,6 +2,8 @@
 // layer, and only this layer, is compiled.
 #include "bllm/native_graph.h"
 
+#include <cstdlib>
+
 #include <cstring>
 
 namespace bllm {
@@ -90,6 +92,29 @@ void resolveStrides(hbDNNTensorProperties& p) {
 
 void Graph::init(hbDNNPackedHandle_t packed, const char* name) {
   BLLM_NATIVE_CK(hbDNNGetModelHandle(&h, packed, name));
+
+  // A graph compiled for several BPU cores REFUSES to run under
+  // HB_UCP_CORE_ANY: "when infer multi-core model task, the backend must be
+  // specified to specific cores". The model knows its own core count, so bind
+  // here rather than making every caller carry it — one hbm compiled at
+  // core_num=4 and one at 1 then behave identically from the outside, which is
+  // what the manifest's `bpu_cores` was documenting rather than enforcing.
+  int cores = 1;
+  if (hbDNNGetCompileBpuCoreNum(&cores, h) == 0 && cores > 1) {
+    uint64_t mask = 0;
+    for (int i = 0; i < cores && i < 4; ++i) mask |= (1ULL << i);   // HB_UCP_BPU_CORE_i
+    // BLLM_BPU_CORES=2,3 pins which cores rather than which how many, for a box
+    // where core 0 is busy or where the multi-core temp memspace is only
+    // configured on some of them.
+    if (const char* env = std::getenv("BLLM_BPU_CORES")) {
+      uint64_t m = 0;
+      for (const char* p2 = env; *p2; ++p2)
+        if (*p2 >= '0' && *p2 <= '3') m |= (1ULL << (*p2 - '0'));
+      if (m) mask = m;
+    }
+    sched.core_mask = mask;
+  }
+
   int ic = 0, oc = 0;
   BLLM_NATIVE_CK(hbDNNGetInputCount(&ic, h));
   BLLM_NATIVE_CK(hbDNNGetOutputCount(&oc, h));

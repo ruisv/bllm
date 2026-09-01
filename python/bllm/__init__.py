@@ -661,14 +661,17 @@ def load(path: str, *, backend: str = "auto", vision: bool = True, **kwargs):
         # Multimodality is a property of the package, not of the decoder family: an
         # "omni" package is a dense text tower with vision+audio, a Qwen3.5 VLM
         # package is a hybrid one with vision. Route on the vision tower's presence.
+        # Policies are routed FIRST: they carry a `visual` tower too, so the
+        # multimodal branch below would happily build a chat session out of one
+        # and fail somewhere much less informative.
+        if arch in ("pi05", "smolvla"):
+            raise ValueError(f"arch={arch!r} is a robot policy, not a chat session — "
+                             "use bllm.load_policy(path)")
         if arch == "omni" or manifest.get("visual"):
             if not vision:
                 from ._modelmeta import text_only_dir_for
                 return NativeSession(str(text_only_dir_for(path)), **kwargs)
             return NativeVlmSession(path, **kwargs)
-        if arch == "pi05":
-            raise ValueError("arch='pi05' is a robot policy, not a chat session — "
-                             "use bllm.load_policy(path)")
         if arch == "embed":
             raise ValueError("arch='embed' is an encoder, not a chat session; use the "
                              "NativeEmbedder C++ API (no Python binding yet)")
@@ -694,7 +697,7 @@ def load(path: str, *, backend: str = "auto", vision: bool = True, **kwargs):
 
 
 def load_policy(path: str):
-    """Load a π0.5 (openpi VLA) package and return a policy.
+    """Load a VLA package (π0.5 or SmolVLA) and return a policy.
 
     A policy is not a chat session: it takes an observation and returns an action
     chunk, so it gets its own entry point rather than a mode of ``load``.
@@ -708,17 +711,30 @@ def load_policy(path: str):
     Images are interleaved RGB8 ``uint8[h, w, 3]`` at any resolution — the policy
     resizes with aspect-preserving padding. Pass ``noise=`` (``float32[horizon,
     action_dim]``) to pin the flow-matching latent when you need two runs to be
-    comparable; π0.5 integrates from a Gaussian, so an unpinned pair differs by
-    more than most implementation defects do.
+    comparable; both are flow models integrated from a Gaussian, so an unpinned
+    pair differs by more than most implementation defects do.
+
+    SmolVLA additionally takes ``state=`` — it projects proprioception into a
+    prefix token, so leaving it out is a different observation, not a missing
+    convenience::
+
+        p = bllm.load_policy("smolvla-libero-512-s100p")
+        actions = p.act(scene_rgb, wrist_rgb, "put the bowl on the plate",
+                        state=eef_pose)          # float32[p.state_dim]
     """
     if not _HAVE_NATIVE:
         raise RuntimeError("this install has no native backend built (dev host?).")
     manifest = _read_manifest(path)
     if manifest is None:
-        raise ValueError(f"{path} has no model.json — a π0.5 package is built with "
-                         "`bllm-make-model-dir pi05 ...`")
-    if manifest.get("arch") != "pi05":
-        raise ValueError(f"{path} is arch={manifest.get('arch','dense')!r}, not 'pi05'")
+        raise ValueError(f"{path} has no model.json — a VLA package is built with "
+                         "`bllm-make-model-dir pi05 ...` or `... smolvla ...`")
+    arch = manifest.get("arch", "dense")
+    if arch not in ("pi05", "smolvla"):
+        raise ValueError(f"{path} is arch={arch!r}; load_policy handles 'pi05' and "
+                         "'smolvla'")
+    if arch == "smolvla":
+        from ._bllm_native import SmolVlaPolicy
+        return SmolVlaPolicy(str(path))
     from ._bllm_native import Pi05Policy
     return Pi05Policy(path)
 
