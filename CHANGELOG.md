@@ -6,6 +6,53 @@ All notable changes to BLLM are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-09-01
+
+### Added
+- **SmolVLA as a first-class arch (`arch: "smolvla"`), on both S100P and S600.**
+  LeRobot's vision-language-action policy as three graphs — the SmolVLM vision
+  tower, the first 16 SmolLM2 layers as a prefix pass, and the interleaved action
+  expert — packaged so nothing at run time needs lerobot or the checkpoint.
+  `bllm.load_policy(dir).act(scene, wrist, prompt, state=...)` returns a 50 × 7
+  action chunk in **741 ms** on S100P and **285 ms** on S600.
+
+  The expert is the structurally new piece: even layers self-attend over
+  `[prefix KV; their own KV]` with a causal action block at absolute RoPE
+  positions, odd layers cross-attend the prefix at 0-based positions against K/V
+  the prefix graph already projected through the expert's own k/v. Writing either
+  the reasonable way costs cosine 0.32 and 0.58 respectively. The timestep never
+  reaches the BPU — `action_time_mlp_in` is linear in its concatenation, so the
+  per-step term is a constant table.
+
+  Unlike `pi05_libero`, SmolVLA **reads proprioception**: the state is projected
+  into a prefix token, so omitting it is a different observation (2.0 in action
+  space, a full gripper unit).
+
+  On `libero_spatial`, scored through the same harness with only the side
+  computing the chunk changed: **70/100** (S100P), **71/100** (S600), against
+  **73/100** for the same checkpoint on an RTX 4090. Indistinguishable at n = 100,
+  and the per-task profile matches — the tasks the boards fail are the tasks the
+  reference fails.
+
+- `bllm_smolvla_policy`, `bllm_smolvla_probe` and `bllm_smolvla_server`, and the
+  `smolvla` mode of `bllm-make-model-dir`.
+- **`BLLM_BPU_CORES`** pins which BPU cores a multi-core graph runs on.
+
+### Fixed
+- **`bllm.load()` routed a policy package into the chat-VLM branch.** That branch
+  tests for a vision tower and a policy package has one, so the user got an error
+  from deep inside a chat session rather than "this is a policy, use
+  `load_policy`". Policies are now routed first.
+- **`load_policy()` rejected everything that was not `pi05`** — the entry point
+  every model card advertises — so a new policy arch could not be loaded through
+  the documented API at all.
+- **Multi-core `.hbm` could not be submitted.** A graph compiled for several BPU
+  cores is *rejected* under `HB_UCP_CORE_ANY` ("the backend must be specified to
+  specific cores") rather than falling back, so every caller would have had to
+  know its core count. `Graph::init` now reads it from the model
+  (`hbDNNGetCompileBpuCoreNum`) and binds accordingly; a single-core and a
+  multi-core artifact behave identically from the outside.
+
 ## [0.4.2] — 2026-08-20
 
 ### Fixed
@@ -530,7 +577,8 @@ driving compiled `.hbm` graphs natively on the BPU (hbDNN / hbUCP), no extra LLM
 - **Packaging** — conda packages (`bllm`, `libbllm`, `tokenizers-cpp`) for linux-aarch64;
   `find_package(bllm)` for C++ consumers.
 
-[Unreleased]: https://github.com/ruisv/bllm/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/ruisv/bllm/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/ruisv/bllm/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/ruisv/bllm/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/ruisv/bllm/compare/v0.4.0...v0.4.1
 [0.1.2]: https://github.com/ruisv/bllm/compare/v0.1.1...v0.1.2

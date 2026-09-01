@@ -70,8 +70,8 @@ BLLM 把这些做成默认行为。
   （**BLLM 原生独有**），另有 GLM-Edge、Phi-4-mini。
 - **✅ 能和视觉共存** —— 单 BPU 核上把 LLM 优先级压低，同驻检测器的 p99 从 41 ms
   降到 **2.95 ms**，不是"各跑各的然后互相拖死"。
-- **✅ 不止于对话：具身策略也在 BPU 上** —— π0.5 视觉-语言-动作模型一行加载，
-  板上 libero_spatial **99/100**、与 x86 参考持平（下一节）。**官方运行时不覆盖这一类。**
+- **✅ 不止于对话：具身策略也在 BPU 上** —— π0.5 与 SmolVLA 两个视觉-语言-动作模型
+  一行加载，板上成绩与 x86 参考持平（下一节）。**官方运行时不覆盖这一类。**
 
 ## 具身策略：π0.5 跑在 BPU 上
 
@@ -103,6 +103,35 @@ actions = policy.act(scene_rgb, wrist_rgb, "pick up the black bowl")  # 10×7 �
 **📦 [ruisv/bllm-pi05-libero-224-s100p](https://huggingface.co/ruisv/bllm-pi05-libero-224-s100p)** —
 下载即可 `bllm.load_policy()`（5.3 GB，三张 `.hbm` + embedding 表 + tokenizer + 清单）。
 
+### SmolVLA —— 同一套 API，S100P 和 S600 都跑
+
+[LeRobot](https://github.com/huggingface/lerobot) 的 SmolVLA 是第二个搬上来的 VLA，
+也是**第一个同时给两块板出货**的模型。它比 π0.5 小得多，一个动作块给 **50 步**动作。
+
+```python
+policy = bllm.load_policy("~/models/smolvla-libero-512-s100p")   # 或 ...-s600
+actions = policy.act(scene_rgb, wrist_rgb, "pick up the black bowl",
+                     state=eef_state)                            # 50×7 动作块
+```
+
+| libero_spatial | S100P | S600 | 参考（RTX 4090） |
+|---|---:|---:|---:|
+| 成功率 | **70/100** | **71/100** | 73/100 |
+| 每动作块 | 741 ms | **285 ms** | 500 ms |
+| 三图常驻 | 1.43 GB | 0.43 GB | — |
+
+三者用**同一套 harness**打分（同环境、同初始状态、同种子、同协议，只换算 chunk 的
+那一侧）。n=100 时二项标准误 4.6 个百分点，三者不可区分；而且**逐任务分布一致**
+——板子失手的任务正是参考失手的任务。**70% 是这个 checkpoint 的成绩，不是移植损失。**
+
+与 π0.5 的一个实质差别：**SmolVLA 真读本体感**，`state` 会被投影成 prefix token，
+不传等于换了个观测（实测差 2.0，整整一格夹爪）。
+
+**📦 [ruisv/bllm-smolvla-libero-512](https://huggingface.co/ruisv/bllm-smolvla-libero-512)** —
+一个仓两块板（`s100p/` 与 `s600/`）。转换管线完整开源在
+[bllm-model-zoo](https://github.com/ruisv/bllm-model-zoo/tree/main/models/smolvla-libero/convert)，
+Hub 上约 100 个 SmolVLA 微调架构相同，换个 `--ckpt` 就能转自己的。
+
 ## 与官方运行时的关系
 
 BLLM 的算力同样来自 D-Robotics 官方 BPU 运行时（`hbDNN` / `hbUCP`），也同样
@@ -118,7 +147,7 @@ BLLM 的算力同样来自 D-Robotics 官方 BPU 运行时（`hbDNN` / `hbUCP`�
 | 生成控制 | 基础采样 | 全套采样 + `logit_bias` + `logprobs` + GBNF 语法约束 |
 | 服务化 | 自行搭建 | OpenAI 兼容 HTTP + Docker + 前缀缓存 + `/metrics` |
 | 与视觉共存 | 自行处理 | BPU 优先级 / 时间片控制，与 [bcdl](https://github.com/ruisv/bcdl) 协同 |
-| 具身策略（VLA） | 不覆盖 | π0.5 一行加载并出动作块（[上一节](#具身策略π05-跑在-bpu-上)） |
+| 具身策略（VLA） | 不覆盖 | π0.5 与 SmolVLA 一行加载并出动作块（[上一节](#具身策略π05-跑在-bpu-上)） |
 
 一句话：**官方运行时证明了 BPU 能跑大模型；BLLM 让你几分钟内把它做成产品。**
 
@@ -221,7 +250,7 @@ REPL：`bllm_chat_native --model <dir>`（见 [`examples/chat_native.cc`](exampl
 | **图文（VLM）** | `vlm.chat("描述这张图", images=["a.jpg"])` | [`vlm_native.py`](examples/vlm_native.py) · [`qwen35_native.cc`](examples/qwen35_native.cc) |
 | **文 / 图 / 音 / 视频** | Qwen2.5-Omni，路径或原始数组（相机/麦克风零拷贝） | [`vlm_native.cc`](examples/vlm_native.cc) |
 | **文本嵌入** | `NativeEmbedder`（Qwen3-VL-Embedding；C++ API，暂无 Python 绑定） | [`embed_native.cc`](examples/embed_native.cc) |
-| **具身策略（VLA）** | `bllm.load_policy(...).act(图, 腕部图, "指令")` → 动作块 | [上文](#具身策略π05-跑在-bpu-上) · [π0.5 文档](docs/PI05.md) · [`pi05_policy.cc`](examples/pi05_policy.cc) |
+| **具身策略（VLA）** | `bllm.load_policy(...).act(图, 腕部图, "指令")` → 动作块 | [上文](#具身策略π05-跑在-bpu-上) · [π0.5 文档](docs/PI05.md) · [`pi05_policy.cc`](examples/pi05_policy.cc) · [`smolvla_policy.cc`](examples/smolvla_policy.cc) |
 | **服务化** | OpenAI 兼容 HTTP + Docker | [`docker/README.md`](docker/README.md) |
 | **与视觉共享 BPU** | `llm.set_bpu_priority(0)` | [与视觉流水线共享 BPU](#与视觉流水线共享-bpu) |
 

@@ -79,9 +79,9 @@ default.
 - **✅ Coexists with vision** — on a single BPU core, lowering the LLM's priority
   takes a co-resident detector's p99 from 41 ms down to **2.95 ms** — not "run both
   and watch them starve each other".
-- **✅ Not just chat: embodied policies run on the BPU too** — π0.5, a
-  vision-language-action model, loads in one line and scores **99/100** on
-  `libero_spatial` on-board, matching the x86 reference (next section).
+- **✅ Not just chat: embodied policies run on the BPU too** — π0.5 and SmolVLA,
+  two vision-language-action models, load in one line and match their x86
+  references on `libero_spatial` (next section).
   **The official runtime does not cover this class of model.**
 
 ## Embodied policies: π0.5 on the BPU
@@ -120,6 +120,40 @@ installing. Replays and measurements for the other two suites are in the
 download and `bllm.load_policy()` (5.3 GB: three `.hbm` files + embedding table +
 tokenizer + manifest).
 
+### SmolVLA — one API, both boards
+
+[LeRobot](https://github.com/huggingface/lerobot)'s SmolVLA is the second VLA
+here and the **first model shipped for two boards at once**. It is far smaller
+than π0.5 and one chunk carries **50** actions instead of 10.
+
+```python
+policy = bllm.load_policy("~/models/smolvla-libero-512-s100p")   # or ...-s600
+actions = policy.act(scene_rgb, wrist_rgb, "pick up the black bowl",
+                     state=eef_state)                            # 50x7 chunk
+```
+
+| libero_spatial | S100P | S600 | reference (RTX 4090) |
+|---|---:|---:|---:|
+| success | **70/100** | **71/100** | 73/100 |
+| per action chunk | 741 ms | **285 ms** | 500 ms |
+| graphs resident | 1.43 GB | 0.43 GB | — |
+
+All three were scored through the *same* harness — same env, same init states,
+same seeds, same wire, with only the side computing the chunk changed. At n = 100
+the binomial standard error is 4.6 points, so the three are indistinguishable,
+and the **per-task profile matches**: the tasks the boards fail are the tasks the
+reference fails. **70 % is this checkpoint's number, not a porting loss.**
+
+One substantive difference from π0.5: **SmolVLA reads proprioception.** The state
+is projected into a prefix token, so omitting it is a different observation
+(measured at 2.0 in action space — a full gripper unit).
+
+**📦 [ruisv/bllm-smolvla-libero-512](https://huggingface.co/ruisv/bllm-smolvla-libero-512)** —
+one repo, both boards (`s100p/` and `s600/`). The whole conversion pipeline is
+open in [bllm-model-zoo](https://github.com/ruisv/bllm-model-zoo/tree/main/models/smolvla-libero/convert):
+the ~100 SmolVLA finetunes on the Hub share this architecture, so converting your
+own is the same scripts with a different `--ckpt`.
+
 ## Relation to the official runtime
 
 BLLM's compute comes from the same D-Robotics BPU runtime (`hbDNN` / `hbUCP`), and
@@ -136,7 +170,7 @@ it happily consumes officially released `.hbm` files. The table below compares
 | Generation control | basic sampling | full sampling + `logit_bias` + `logprobs` + GBNF grammar constraints |
 | Serving | build it yourself | OpenAI-compatible HTTP + Docker + prefix cache + `/metrics` |
 | Coexisting with vision | handle it yourself | BPU priority / time-slice control alongside [bcdl](https://github.com/ruisv/bcdl) |
-| Embodied policies (VLA) | not covered | π0.5 loads in one line and returns action chunks ([above](#embodied-policies-π05-on-the-bpu)) |
+| Embodied policies (VLA) | not covered | π0.5 and SmolVLA load in one line and return action chunks ([above](#embodied-policies-π05-on-the-bpu)) |
 
 In one line: **the official runtime proved the BPU can run LLMs; BLLM turns that
 into a product in minutes.**
@@ -243,7 +277,7 @@ REPL: `bllm_chat_native --model <dir>` (see [`examples/chat_native.cc`](examples
 | **Image + text (VLM)** | `vlm.chat("describe this", images=["a.jpg"])` | [`vlm_native.py`](examples/vlm_native.py) · [`qwen35_native.cc`](examples/qwen35_native.cc) |
 | **Text / image / audio / video** | Qwen2.5-Omni, file paths or raw arrays (zero-copy camera/mic) | [`vlm_native.cc`](examples/vlm_native.cc) |
 | **Text embeddings** | `NativeEmbedder` (Qwen3-VL-Embedding; C++ API, no Python binding yet) | [`embed_native.cc`](examples/embed_native.cc) |
-| **Embodied policy (VLA)** | `bllm.load_policy(...).act(scene, wrist, "instruction")` → action chunk | [above](#embodied-policies-π05-on-the-bpu) · [π0.5 doc](docs/PI05.md) · [`pi05_policy.cc`](examples/pi05_policy.cc) |
+| **Embodied policy (VLA)** | `bllm.load_policy(...).act(scene, wrist, "instruction")` → action chunk | [above](#embodied-policies-π05-on-the-bpu) · [π0.5 doc](docs/PI05.md) · [`pi05_policy.cc`](examples/pi05_policy.cc) · [`smolvla_policy.cc`](examples/smolvla_policy.cc) |
 | **Serving** | OpenAI-compatible HTTP + Docker | [`docker/README.md`](docker/README.md) |
 | **Sharing the BPU** | `llm.set_bpu_priority(0)` | [Sharing the BPU](#sharing-the-bpu-with-a-vision-pipeline) |
 
