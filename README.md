@@ -121,7 +121,7 @@ actions = policy.act(scene_rgb, wrist_rgb, "pick up the black bowl",
 | libero_goal | 79 | 81 | 79 |
 | libero_10 | 51 | 54 | 48 |
 | **四 suite 合计 / 400** | **274** | **281** | **272** |
-| 每动作块 | **562 ms** | **220 ms** | 500 ms |
+| 每动作块 | **562 ms** | **159 ms** | 500 ms |
 | 三图常驻 | 1.43 GB | 0.43 GB | — |
 
 出货包默认 **4 步去噪**（参考是 10 步）——expert 图按步运行，这是唯一不用重编译的
@@ -147,6 +147,10 @@ checkpoint 对长程双段任务的性质，不是板子的问题。只跑板子
 
 与 π0.5 的一个实质差别：**SmolVLA 真读本体感**，`state` 会被投影成 prefix token，
 不传等于换了个观测（实测差 2.0，整整一格夹爪）。
+
+S600 的包**按图混用 BPU 核数**：视觉塔 4 核（59.0 → 29.8 ms/相机，1.98×），
+prefix 与 expert 单核。引擎从每张图自己的编译核数绑定，所以一个包里可以混。
+输出与全单核**逐位相同**——多核改调度不改算术。
 
 **📦 [ruisv/bllm-smolvla-libero-512](https://huggingface.co/ruisv/bllm-smolvla-libero-512)** —
 一个仓两块板（`s100p/` 与 `s600/`）。转换管线完整开源在

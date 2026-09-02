@@ -71,8 +71,27 @@ void submitAndWait(hbUCPTaskHandle_t task, const BpuSched& s) {
   sched.priority = s.priority;
   sched.backend = s.core_mask;
   sched.deviceId = s.device_id;
-  check(hbUCPSubmitTask(task, &sched), "hbUCPSubmitTask");
-  check(hbUCPWaitTaskDone(task, 0), "hbUCPWaitTaskDone");
+  // A multi-core graph fails here for a reason the raw hbDNN error does not
+  // name: the runtime cannot hand out the BPU *temporary* memory space the
+  // graph was compiled to assume. It is a compile-time budget
+  // (`max_l2m_size`), not anything about this machine's load, and it fails
+  // identically on every core pair — which is what makes it look like a
+  // hardware or driver problem when it is a build one.
+  const bool multicore = s.core_mask != HB_UCP_CORE_ANY;
+  const int32_t rc = hbUCPSubmitTask(task, &sched);
+  if (rc != 0 && multicore)
+    throw std::runtime_error(
+        "[native] hbUCPSubmitTask failed for a multi-core graph. If the message "
+        "mentions a temporary memspace, the .hbm was compiled with a larger "
+        "`max_l2m_size` than this runtime can allocate — rebuild without it and "
+        "let the compiler choose.");
+  check(rc, "hbUCPSubmitTask");
+  const int32_t rw = hbUCPWaitTaskDone(task, 0);
+  if (rw != 0 && multicore)
+    throw std::runtime_error(
+        "[native] hbUCPWaitTaskDone failed for a multi-core graph — see the "
+        "note on `max_l2m_size` in submitAndWait.");
+  check(rw, "hbUCPWaitTaskDone");
 }
 
 // ---- Graph -----------------------------------------------------------------

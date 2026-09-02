@@ -139,7 +139,7 @@ actions = policy.act(scene_rgb, wrist_rgb, "pick up the black bowl",
 | libero_goal | 79 | 81 | 79 |
 | libero_10 | 51 | 54 | 48 |
 | **all four suites / 400** | **274** | **281** | **272** |
-| per action chunk | **562 ms** | **220 ms** | 500 ms |
+| per action chunk | **562 ms** | **159 ms** | 500 ms |
 | graphs resident | 1.43 GB | 0.43 GB | — |
 
 Shipped packages default to **four denoising steps** (the reference uses ten) —

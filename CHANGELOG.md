@@ -6,6 +6,48 @@ All notable changes to BLLM are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-09-02
+
+### Added
+- **Multi-core BPU is usable end to end on S600, and it is per-graph.** The
+  engine has bound cores from the model's own compiled count since 0.5.0, but no
+  multi-core artifact had ever run: every one was rejected at submit. Both walls
+  are now understood.
+
+  The shipped S600 package mixes core counts — the vision tower at **four**
+  cores, the prefix and expert at one — because the engine reads each graph's
+  count independently and that is where the win actually is:
+
+  | graph | 1 core | multi-core | |
+  |---|---:|---:|---|
+  | vision, per camera | 59.0 ms | **29.8 ms** (4 cores) | **1.98×** |
+  | prefix | 42.6 ms | 40.0 ms (2 cores) | 1.07× |
+  | expert, per step | 10.7 ms | — | does not compile |
+
+  **Per 50-action chunk: 220 → 159 ms**, with the output **bit-identical** to the
+  single-core package (cosine 1.000000000, max|Δ| 0.00000). Multi-core changes
+  scheduling, not arithmetic.
+
+- **A multi-core submit failure now explains itself.** The raw hbDNN error says a
+  temporary memory space could not be obtained, which reads as a driver or load
+  problem; it is a **compile-time budget**. `submitAndWait` says so.
+
+### Fixed
+- **The conversion scripts no longer copy `leap_llm`'s `max_l2m_size`.** That
+  24 MB budget is what made every multi-core `.hbm` unloadable: *"Get BPU
+  temporary memspace failed"*, identically on cores 0,1 / 2,3 / 1,2 — which is
+  why it looked like hardware rather than a build. Leaving the budget to the
+  compiler makes the same graph load and run. The default is now 0 (unset).
+
+### Known
+- **`core_num=4` still fails to compile** for the prefix at full depth and for
+  the expert at any depth, with `TilingConfig.cpp:1489`. Bisection rules out the
+  obvious explanations: it is not the L2M budget (it fails without it), not RoPE
+  (a single prefix layer has RoPE and compiles), not depth alone (the 12-layer
+  vision tower compiles), and not the cross-attention layers (the expert fails
+  with only a self-attention layer). Left open rather than explained, since the
+  one graph where multi-core pays does compile.
+
 ## [0.5.2] — 2026-09-02
 
 **Documentation only** — no code changed since 0.5.1. Recorded as a release
@@ -633,7 +675,8 @@ driving compiled `.hbm` graphs natively on the BPU (hbDNN / hbUCP), no extra LLM
 - **Packaging** — conda packages (`bllm`, `libbllm`, `tokenizers-cpp`) for linux-aarch64;
   `find_package(bllm)` for C++ consumers.
 
-[Unreleased]: https://github.com/ruisv/bllm/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/ruisv/bllm/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/ruisv/bllm/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/ruisv/bllm/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/ruisv/bllm/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/ruisv/bllm/compare/v0.4.2...v0.5.0
