@@ -6,6 +6,33 @@ All notable changes to BLLM are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-09-02
+
+**Documentation only** — no code changed since 0.5.1. Recorded as a release
+because the numbers it carries are what the READMEs now claim, and a tag makes
+the claim attributable to a state of the tree.
+
+### Changed
+- **SmolVLA is now validated on all four LIBERO suites, on both boards, against
+  the reference through the same harness.** Twelve 100-episode evaluations:
+
+  | | S100P | S600 | reference (RTX 4090) |
+  |---|---:|---:|---:|
+  | libero_spatial | 68 | 71 | 73 |
+  | libero_object | 76 | 75 | 72 |
+  | libero_goal | 79 | 81 | 79 |
+  | libero_10 | 51 | 54 | 48 |
+  | **total / 400** | **274** | **281** | **272** |
+
+  The boards are +2 and +9 over 400 episodes and the **sign flips between
+  suites** — behind on `libero_spatial`, ahead on the other three. A systematic
+  porting loss would move all four the same way. The per-task profile is shared:
+  `libero_goal` task 6 is 5 on all three, `libero_10` task 0 is 1 on all three.
+
+  `libero_10` is why the reference was run on every suite rather than one. The
+  board scores 51 there where the other suites give 68–81, and read alone that is
+  a collapse on long-horizon tasks. The reference scores **48**.
+
 ## [0.5.1] — 2026-09-01
 
 ### Changed
@@ -606,7 +633,8 @@ driving compiled `.hbm` graphs natively on the BPU (hbDNN / hbUCP), no extra LLM
 - **Packaging** — conda packages (`bllm`, `libbllm`, `tokenizers-cpp`) for linux-aarch64;
   `find_package(bllm)` for C++ consumers.
 
-[Unreleased]: https://github.com/ruisv/bllm/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/ruisv/bllm/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/ruisv/bllm/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/ruisv/bllm/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/ruisv/bllm/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/ruisv/bllm/compare/v0.4.1...v0.4.2

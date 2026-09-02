@@ -114,9 +114,13 @@ actions = policy.act(scene_rgb, wrist_rgb, "pick up the black bowl",
                      state=eef_state)                            # 50×7 动作块
 ```
 
-| libero_spatial | S100P | S600 | 参考（RTX 4090） |
+| | S100P | S600 | 参考（RTX 4090） |
 |---|---:|---:|---:|
-| 成功率 | **68/100** | **71/100** | 73/100 |
+| libero_spatial | 68 | 71 | 73 |
+| libero_object | 76 | 75 | 72 |
+| libero_goal | 79 | 81 | 79 |
+| libero_10 | 51 | 54 | 48 |
+| **四 suite 合计 / 400** | **274** | **281** | **272** |
 | 每动作块 | **562 ms** | **220 ms** | 500 ms |
 | 三图常驻 | 1.43 GB | 0.43 GB | — |
 
@@ -132,9 +136,14 @@ actions = policy.act(scene_rgb, wrist_rgb, "pick up the black bowl",
 
 两组逐位相同，合计差 2 集。要参考调度就 `--steps 10` 重新打包。
 
-三者用**同一套 harness**打分（同环境、同初始状态、同种子、同协议，只换算 chunk 的
-那一侧）。n=100 时二项标准误 4.6 个百分点，三者不可区分；而且**逐任务分布一致**
-——板子失手的任务正是参考失手的任务。**70% 是这个 checkpoint 的成绩，不是移植损失。**
+十二个评测全部用**同一套 harness**（同环境、同初始状态、同种子、同协议，只换算 chunk
+的那一侧）。400 集里板子比参考 +2 和 +9，且**方向随 suite 摇摆**——系统性移植损失会让
+四个 suite 同向掉。逐任务分布也共享：`libero_goal` 的 task 6 三边都是 5，`libero_10`
+的 task 0 三边都是 1。
+
+`libero_10` 整体只有 48–54（其他 suite 是 68–81），**参考也最低**——那是这个
+checkpoint 对长程双段任务的性质，不是板子的问题。只跑板子不跑参考的话，这个 51 会
+被读成"移植在长程任务上崩了"。
 
 与 π0.5 的一个实质差别：**SmolVLA 真读本体感**，`state` 会被投影成 prefix token，
 不传等于换了个观测（实测差 2.0，整整一格夹爪）。

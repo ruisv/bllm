@@ -132,9 +132,13 @@ actions = policy.act(scene_rgb, wrist_rgb, "pick up the black bowl",
                      state=eef_state)                            # 50x7 chunk
 ```
 
-| libero_spatial | S100P | S600 | reference (RTX 4090) |
+| | S100P | S600 | reference (RTX 4090) |
 |---|---:|---:|---:|
-| success | **68/100** | **71/100** | 73/100 |
+| libero_spatial | 68 | 71 | 73 |
+| libero_object | 76 | 75 | 72 |
+| libero_goal | 79 | 81 | 79 |
+| libero_10 | 51 | 54 | 48 |
+| **all four suites / 400** | **274** | **281** | **272** |
 | per action chunk | **562 ms** | **220 ms** | 500 ms |
 | graphs resident | 1.43 GB | 0.43 GB | — |
 
@@ -144,11 +148,17 @@ no rebuild. Measured across three paired comparisons, 300 episodes:
 libero_spatial 70→68 (S100P), 71→**71** (S600), libero_object 76→**76** (S100P);
 **217 → 215** in total. `--steps 10` repackages with the reference schedule.
 
-All three were scored through the *same* harness — same env, same init states,
-same seeds, same wire, with only the side computing the chunk changed. At n = 100
-the binomial standard error is 4.6 points, so the three are indistinguishable,
-and the **per-task profile matches**: the tasks the boards fail are the tasks the
-reference fails. **70 % is this checkpoint's number, not a porting loss.**
+All twelve evaluations ran through the *same* harness — same env, same init
+states, same seeds, same wire, with only the side computing the chunk changed.
+Over 400 episodes the boards are **+2** and **+9** against the reference, and the
+sign **flips between suites** — a systematic porting loss would move all four the
+same way. The per-task profile is shared too: `libero_goal` task 6 is 5 on all
+three, `libero_10` task 0 is 1 on all three.
+
+`libero_10` sits at 48–54 where the other suites are 68–81, and **the reference is
+the lowest of the three** — that is this checkpoint on long-horizon two-stage
+tasks, not the board. Scored without the reference column, the 51 would read as
+"the port collapses on long tasks".
 
 One substantive difference from π0.5: **SmolVLA reads proprioception.** The state
 is projected into a prefix token, so omitting it is a different observation
