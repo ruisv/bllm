@@ -134,9 +134,15 @@ actions = policy.act(scene_rgb, wrist_rgb, "pick up the black bowl",
 
 | libero_spatial | S100P | S600 | reference (RTX 4090) |
 |---|---:|---:|---:|
-| success | **70/100** | **71/100** | 73/100 |
-| per action chunk | 741 ms | **285 ms** | 500 ms |
+| success | **68/100** | **71/100** | 73/100 |
+| per action chunk | **562 ms** | **220 ms** | 500 ms |
 | graphs resident | 1.43 GB | 0.43 GB | — |
+
+Shipped packages default to **four denoising steps** (the reference uses ten) —
+the expert graph runs once per step, so this is the one latency lever that costs
+no rebuild. Measured across three paired comparisons, 300 episodes:
+libero_spatial 70→68 (S100P), 71→**71** (S600), libero_object 76→**76** (S100P);
+**217 → 215** in total. `--steps 10` repackages with the reference schedule.
 
 All three were scored through the *same* harness — same env, same init states,
 same seeds, same wire, with only the side computing the chunk changed. At n = 100

@@ -6,6 +6,35 @@ All notable changes to BLLM are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-09-01
+
+### Changed
+- **SmolVLA packages now ship four denoising steps, not ten.** The expert graph
+  runs once per step, so this is the one latency knob that costs no rebuild:
+  **741 → 562 ms** on S100P and **285 → 220 ms** on S600, per 50-action chunk.
+
+  Scored rather than assumed, and on more than one suite because a single 100-
+  episode comparison cannot carry this decision — its interval is about ±9 points:
+
+  | suite / board | 10 steps | 4 steps |
+  |---|---:|---:|
+  | libero_spatial · S100P | 70 | 68 |
+  | libero_spatial · S600 | 71 | **71** |
+  | libero_object · S100P | 76 | **76** |
+  | **total, 300 episodes** | **217** | **215** |
+
+  Two of the three pairs are identical and the total differs by two episodes.
+  `bllm-make-model-dir smolvla --steps 10` restores the reference schedule.
+
+### Added
+- **`bllm-make-model-dir` refuses a `cond_table` whose row count disagrees with
+  `--steps`.** The table encodes the *schedule*, not per-step constants: row `s`
+  holds the time term for `t = 1 + s·(-1/steps)`, so ten steps visit
+  1.0, 0.9, 0.8 … where four visit 1.0, 0.75, 0.5, 0.25. Truncating a longer
+  table therefore gives a *different* schedule rather than a shorter one, and the
+  mismatch is silent at packaging time. (The runtime already rejected it at load;
+  this catches it a step earlier, where the fix is obvious.)
+
 ## [0.5.0] — 2026-09-01
 
 ### Added
@@ -577,7 +606,8 @@ driving compiled `.hbm` graphs natively on the BPU (hbDNN / hbUCP), no extra LLM
 - **Packaging** — conda packages (`bllm`, `libbllm`, `tokenizers-cpp`) for linux-aarch64;
   `find_package(bllm)` for C++ consumers.
 
-[Unreleased]: https://github.com/ruisv/bllm/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/ruisv/bllm/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/ruisv/bllm/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/ruisv/bllm/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/ruisv/bllm/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/ruisv/bllm/compare/v0.4.0...v0.4.1

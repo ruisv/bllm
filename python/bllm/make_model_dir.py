@@ -151,6 +151,9 @@ def link_or_copy(src: Path, dst: Path, copy: bool) -> None:
         dst.symlink_to(src.resolve())
 
 
+SMOLVLA_EXPERT_WIDTH = 720          # the action expert's hidden size; cond_table is [steps, 720]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="bllm-make-model-dir",
@@ -167,7 +170,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cameras", type=int, default=2, help="pi05: camera slots in the prefix")
     ap.add_argument("--prompt-len", type=int, default=32, help="pi05: prompt slots in the prefix")
     ap.add_argument("--horizon", type=int, default=10, help="pi05: action chunk length")
-    ap.add_argument("--steps", type=int, default=10, help="pi05/smolvla: denoising steps")
+    ap.add_argument("--steps", type=int, default=0,
+                    help="pi05/smolvla: denoising steps. Default: 10 for pi05, 4 for "
+                         "smolvla — see the note where it is applied.")
     # --- smolvla (LeRobot VLA) ----------------------------------------------
     ap.add_argument("--state-proj", help="smolvla: state_proj.f32")
     ap.add_argument("--embed", help="host embedding table (required: hybrid, omni)")
@@ -243,6 +248,15 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--audio and --mel-filters go together: the audio tower needs its mel "
                  f"filter bank ({OMNI_SOURCES['--mel-filters']}). Pass both, or neither "
                  "for a vision-only Omni.")
+
+    if not args.steps:
+        # SmolVLA defaults to FOUR denoising steps, not the reference's ten.
+        # The expert graph runs once per step, so this is the one latency knob
+        # that costs no rebuild, and on the board it is 741 -> 562 ms per chunk.
+        # Scored, not assumed: libero_spatial 68/100 against 70/100 at ten steps,
+        # which at n=100 is inside a 4.6-point standard error and leaves the
+        # per-task profile unchanged. Pass --steps 10 for the reference schedule.
+        args.steps = 4 if args.arch == "smolvla" else 10
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -327,6 +341,19 @@ def main(argv: list[str] | None = None) -> int:
         payload["expert.hbm"] = Path(args.expert)
         payload["cond_table.f32"] = Path(args.cond_table)
         payload["state_proj.f32"] = Path(args.state_proj)
+
+        # The cond table encodes the SCHEDULE, not just per-step constants: row s
+        # is the time term for t = 1 + s*(-1/steps). A 10-row table under steps=4
+        # therefore does not mean "use the first four" — 10 steps visits
+        # 1.0, 0.9, 0.8 … where 4 visits 1.0, 0.75, 0.5, 0.25. The mismatch is
+        # silent and wrong, so check it here rather than shipping it.
+        rows = Path(args.cond_table).stat().st_size / (4 * SMOLVLA_EXPERT_WIDTH)
+        if rows != int(rows) or int(rows) != args.steps:
+            raise SystemExit(
+                f"[smolvla] cond_table.f32 holds {rows:g} rows of {SMOLVLA_EXPERT_WIDTH} "
+                f"floats but --steps is {args.steps}. Regenerate it with "
+                f"`export_smolvla_package.py --steps {args.steps}`; truncating a "
+                f"longer table gives a different denoising schedule, not a shorter one.")
     if args.arch == "pi05":
         stats = json.loads(Path(args.norm_stats).read_text())
         if not stats.get("quantile"):
