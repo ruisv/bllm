@@ -169,7 +169,8 @@ def _main_official(argv: list[str]) -> int:
     ap.add_argument("package_dir")
     ap.add_argument("--name", help="display name (default: model · ctx · quant · board)")
     ap.add_argument("--eos", type=int, nargs="+", help="override the stop-token ids")
-    ap.add_argument("--system", default="You are a helpful assistant.")
+    ap.add_argument("--system", default=None,
+                    help="system prompt (default: the chat template's own — usually none)")
     ap.add_argument("--copy", action="store_true", help="copy payload instead of symlinking")
     args = ap.parse_args(argv)
     pkg = find_official_package(args.package_dir)
@@ -183,8 +184,12 @@ def _main_official(argv: list[str]) -> int:
     out = write_official_dir(pkg, Path(args.out_dir), system=args.system, name=args.name,
                              eos=args.eos, copy=args.copy)
     cfg = json.loads((out / "model.json").read_text(encoding="utf-8"))
-    print(f"wrote {out / 'model.json'}: {cfg['name']}  chat={cfg['chat']['format']}  "
-          f"eos={cfg['eos']}")
+    ch = cfg["chat"]
+    think = ("always" if ch["think_on"] and ch["think_on"] == ch["think_off"] else
+             "switch (default " + ("on" if ch["thinking_default"] else "off") + ")"
+             if ch["think_on"] != ch["think_off"] else "none")
+    print(f"wrote {out / 'model.json'}: {cfg['name']}  chat={ch['format']}  eos={cfg['eos']}  "
+          f"thinking={think}  system={ch['system']!r}")
     return 0
 
 

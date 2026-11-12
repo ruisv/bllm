@@ -64,6 +64,7 @@ class NativeVlm {
   explicit NativeVlm(const std::string& model_dir) : NativeVlm(loadModelConfig(model_dir)) {}
   explicit NativeVlm(ModelConfig cfg)
       : cfg_(std::move(cfg)), tk_(Tokenizer::fromFile(cfg_.tokenizer)) {
+    thinking_ = cfg_.chat.thinking_default;
     if (!cfg_.has_vision())
       throw std::runtime_error("[bllm] NativeVlm needs a model.json with a 'visual' tower");
     // Either decoder family can carry a vision tower: "omni" is a dense KV text
@@ -349,10 +350,12 @@ class NativeVlm {
 
   void openTurn(Stream& s) {
     if (first_turn_) {
-      appendText(s, {im_start_});
-      appendText(s, tk_.encode("system\n" + cfg_.chat.system));
-      appendText(s, {im_end_});
-      appendText(s, tk_.encode("\n"));
+      if (!cfg_.chat.system.empty()) {               // empty = no system block, as in HF
+        appendText(s, {im_start_});
+        appendText(s, tk_.encode("system\n" + cfg_.chat.system));
+        appendText(s, {im_end_});
+        appendText(s, tk_.encode("\n"));
+      }
       first_turn_ = false;
     } else {
       appendText(s, {im_end_});                  // close the previous assistant turn
@@ -366,7 +369,10 @@ class NativeVlm {
     appendText(s, tk_.encode("\n"));
     appendText(s, {im_start_});
     appendText(s, tk_.encode("assistant\n"));
-    if (!thinking_) appendText(s, tk_.encode("<think>\n\n</think>\n\n"));   // enable_thinking=False
+    {                                                   // the template's think prefill
+      const std::string& t = thinking_ ? cfg_.chat.think_on : cfg_.chat.think_off;
+      if (!t.empty()) appendText(s, tk_.encode(t));
+    }
   }
   void feedStream(Stream& s) {
     if (s.n) text_->feed_embeds(s.rows.data(), s.n, s.pos.data());
@@ -586,7 +592,7 @@ class NativeVlm {
     return s;
   }
   bool first_turn_ = true;
-  bool thinking_ = true;                          // Qwen3.5 reasoning: prefill empty <think> when false
+  bool thinking_ = true;                          // set from chat.thinking_default
   bool video_ok_ = false;         // is this package's video layout the one implemented?
   int im_start_ = -1, im_end_ = -1, vision_bos_ = -1, vision_eos_ = -1;
   int audio_bos_ = -1, audio_eos_ = -1;

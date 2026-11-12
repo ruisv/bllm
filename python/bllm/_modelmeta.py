@@ -273,36 +273,71 @@ def _desc_eos(desc: dict, specials: dict) -> list:
     return ids
 
 
-def _desc_chat(desc: dict, specials: dict, system: str) -> dict:
+# Literal jinja source fragments. A template's string literals keep `\n` as the two characters
+# backslash + n, so these are matched against the source text, not a rendering of it.
+_THINK_CLOSED = "<think>\\n\\n</think>\\n\\n"
+_THINK_OPEN = "<think>\\n"
+_BOS_FIRST = re.compile(r"^\s*\{\{-?\s*bos_token\s*-?\}\}")
+_CHATML_DEFAULT_SYSTEM = re.compile(r"<\|im_start\|>system\\n([^'\"<]+?)<\|im_end\|>")
+
+
+def _desc_thinking(t: str) -> dict:
+    """The generation-prompt tail after the assistant marker, with thinking on and off, as the
+    template itself writes it. Defaults match what the official runtime does: thinking off
+    unless the checkpoint only ever thinks."""
+    if "enable_thinking" in t:
+        if _THINK_CLOSED not in t:
+            raise ValueError("the template has an enable_thinking switch BLLM does not "
+                             "recognise (no closed empty <think> block for the off case)")
+        on = "<think>\n" if re.search(r"enable_thinking is true\s*%\}\s*\{\{-?\s*'"
+                                         + re.escape(_THINK_OPEN) + "'", t) else ""
+        return {"think_on": on, "think_off": "<think>\n\n</think>\n\n", "thinking_default": False}
+    if "assistant\\n" + _THINK_OPEN in t:              # a thinking-only checkpoint
+        return {"think_on": "<think>\n", "think_off": "<think>\n", "thinking_default": True}
+    return {"think_on": "", "think_off": "", "thinking_default": False}
+
+
+def _desc_chat(desc: dict, specials: dict, system: "str | None") -> dict:
     """The template FAMILY, mapped onto a built-in chat format. The template itself is not
     rendered: BLLM's formats are what the prefix cache, stop matching and thinking control
-    are built on, and every official package so far is ChatML or Phi-style."""
+    are built on, and every official package so far is ChatML or Phi-style. What does vary
+    inside a family is read off the template — the think prefill, a BOS it always emits, the
+    system prompt it falls back to — so the default rendering matches the official runtime's.
+
+    `system=None` means the template's own default: none for most, a fixed one for Qwen2.5."""
     t = _desc_chat_template(desc)
+    tc = desc.get("tokenizer_config") or {}
     if CHATML_START in t and CHATML_START in specials and CHATML_END in specials:
+        if system is None:
+            m = _CHATML_DEFAULT_SYSTEM.search(t)
+            system = m.group(1) if m else ""
         chat = {"format": "chatml", "im_start": specials[CHATML_START],
                 "im_end": specials[CHATML_END], "system": system}
-    elif (PHI_USER in t and PHI_END in t and
+        chat.update(_desc_thinking(t))
+    elif (PHI_END in t and PHI_ASSISTANT in t and
           all(m in specials for m in (PHI_USER, PHI_ASSISTANT, PHI_END))):
+        # Phi builds its role markers by concatenation ('<|' + role + '|>'), so only the
+        # generation prompt and the turn end appear literally.
         chat = {"format": "phi", "r_user": specials[PHI_USER],
                 "r_assistant": specials[PHI_ASSISTANT], "r_end": specials[PHI_END],
-                "system": system}
+                "system": system or ""}
         if PHI_SYSTEM in specials:
             chat["r_system"] = specials[PHI_SYSTEM]
+        chat.update({"think_on": "", "think_off": "", "thinking_default": False})
     else:
         raise ValueError(
             "this package's chat template is neither ChatML nor Phi-style, and BLLM renders "
             "chats with built-in formats only — write a model.json by hand (chat.format "
             "\"none\" gives raw completion)")
-    tc = desc.get("tokenizer_config") or {}
-    if tc.get("add_bos_token"):
-        bos = tc.get("bos_token")
+    if tc.get("add_bos_token") or _BOS_FIRST.match(t):
+        bos = tc.get("bos_token") or ((desc.get("special_tokens_map") or {}).get("bos_token"))
         content = bos if isinstance(bos, str) else (bos or {}).get("content")
         if content in specials:
             chat["bos"] = specials[content]
     return chat
 
 
-def official_model_json(desc: dict, hbm_name: str, *, system: str = "You are a helpful assistant.",
+def official_model_json(desc: dict, hbm_name: str, *, system: "str | None" = None,
                         name: "str | None" = None, eos: "list[int] | None" = None) -> dict:
     """The `model.json` dict for an official LLM 2.0 language graph, from its embedded description
     and file name. Pure — no file or BPU access — so it is testable anywhere."""
@@ -343,7 +378,7 @@ def _read_desc_native(path: str) -> str:
     return read_hbm_desc(path)
 
 
-def write_official_dir(pkg: dict, out: Path, *, system: str = "You are a helpful assistant.",
+def write_official_dir(pkg: dict, out: Path, *, system: "str | None" = None,
                        name: "str | None" = None, eos: "list[int] | None" = None,
                        read_desc=None, copy: bool = False) -> Path:
     """Materialise a native model dir for an official package (`find_official_package`'s dict)
@@ -376,7 +411,7 @@ def write_official_dir(pkg: dict, out: Path, *, system: str = "You are a helpful
 
 
 def official_dir_for(pkg_dir: "str | Path", *, vision: bool = True,
-                     system: str = "You are a helpful assistant.", name: "str | None" = None,
+                     system: "str | None" = None, name: "str | None" = None,
                      eos: "list[int] | None" = None, cache_root: "str | Path | None" = None,
                      read_desc=None) -> Path:
     """A ready-to-load native model dir for an official LLM 2.0 package, synthesized on first
@@ -395,8 +430,8 @@ def official_dir_for(pkg_dir: "str | Path", *, vision: bool = True,
     lang = pkg["language"]
     st = lang.stat()
     raw = "::".join([str(lang.resolve()), str(st.st_size), str(int(st.st_mtime)),
-                     str(pkg["embed"].resolve()), system, name or "", ",".join(map(str, eos or [])),
-                     "official2"])
+                     str(pkg["embed"].resolve()), "\x00" if system is None else system, name or "",
+                     ",".join(map(str, eos or [])), "official2.1"])
     root = Path(cache_root) if cache_root else Path(
         os.environ.get("BLLM_CACHE", Path.home() / ".cache" / "bllm")) / "native"
     out = root / hashlib.sha1(raw.encode()).hexdigest()[:16]

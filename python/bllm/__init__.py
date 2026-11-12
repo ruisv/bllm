@@ -191,16 +191,30 @@ if _HAVE_NATIVE:
             return self._llm.last_logprobs()
 
         def set_thinking(self, enabled: bool) -> "NativeSession":
-            """Qwen3.5 reasoning toggle. enabled=False prefills an empty <think></think> so the
-            model answers DIRECTLY (faster, fewer tokens, clean output). enabled=True (default)
-            reasons and shows the <think>...</think>. The in-message /no_think soft switch is
-            unreliable on this checkpoint; this prefill is."""
+            """Reasoning toggle. enabled=False prefills the template's "off" tail (Qwen3/3.5:
+            an empty <think></think>) so the model answers DIRECTLY; enabled=True prefills its
+            "on" tail and the model reasons, the <think>...</think> shown. What each side
+            renders, and the default, come from the model's chat block (`chat_config`): a
+            checkpoint without a think mode, or one that always thinks, renders the same
+            either way (`thinking_switchable` is False). The in-message /no_think soft switch
+            is unreliable; this prefill is."""
             self._llm.set_thinking(bool(enabled))
             return self
 
         @property
         def thinking(self) -> bool:
             return self._llm.thinking
+
+        @property
+        def thinking_switchable(self) -> bool:
+            """Whether set_thinking() changes anything for this model."""
+            return self._llm.thinking_switchable
+
+        @property
+        def chat_config(self) -> dict:
+            """The model's chat block (format, system, think_on/think_off, thinking_default …),
+            for callers rendering their own prompts, e.g. the OpenAI server."""
+            return dict(self._llm.chat_config)
 
         def set_stop(self, stop: "list[str]") -> "NativeSession":
             """Persistent stop strings: end each turn as soon as any appears in the reply,
@@ -689,9 +703,10 @@ def load(path: str, *, backend: str = "auto", vision: bool = True, **kwargs):
     if os.path.isdir(path) and find_official_package(path) is not None:
         from ._modelmeta import official_dir_for
         system = kwargs.pop("system_prompt", None) or kwargs.pop("system", None)
+        # No system given = the template's own default (none for Qwen3, a fixed one for
+        # Qwen2.5), which is what the official runtime renders too.
         d = official_dir_for(path, vision=vision, name=kwargs.pop("name", None),
-                             eos=kwargs.pop("eos", None),
-                             system=system or "You are a helpful assistant.")
+                             eos=kwargs.pop("eos", None), system=system)
         return NativeSession(str(d), **kwargs)
 
     # Not a native package → a bare `.hbm` / OE-LLM 1.0 package (a `.hbm` + a tokenizer dir).

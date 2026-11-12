@@ -119,6 +119,11 @@ class Engine:
         # only exists on the former, so it doubles as the routing flag; see
         # `_serve_vlm` for how requests to a VLM-loaded model are actually served.
         self.is_vlm = hasattr(self.sess, "vision_tokens")
+        # The model's chat block (think prefill on/off, default), when the runtime is new
+        # enough to say; otherwise the Qwen3/3.5 behaviour every earlier package assumed.
+        self.chat_config = (dict(self.sess.chat_config) if hasattr(self.sess, "chat_config")
+                            else {"think_on": "", "think_off": "<think>\n\n</think>\n\n",
+                                  "thinking_default": False})
         self._vlm_committed: list = []  # [(user_turn, assistant_turn), ...] already fed live
 
         # The prefix cache needs runtime primitives that landed after 0.1.4, and the

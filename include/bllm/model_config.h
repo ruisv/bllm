@@ -18,7 +18,17 @@ struct ChatConfig {
   // text and no newline — the marker itself IS the role. Generation ends on <end> (which
   // is also an eos), so a prior assistant turn is closed by re-emitting <end> next turn.
   int r_user = -1, r_assistant = -1, r_system = -1, r_end = -1;
+  // ChatML: an EMPTY system emits no system block (the HF templates' behaviour when no
+  // system message is given), rather than an empty one.
   std::string system = "You are a helpful assistant.";
+  // What goes right after the assistant marker, with thinking on / off — the template's
+  // own generation prompt, which differs by model: Qwen3 thinks unprompted ("" on) and
+  // closes an empty block when off; MiniCPM5 opens "<think>\n" when on; a thinking-only
+  // checkpoint opens it either way; a model without a think mode adds nothing ever.
+  // Defaults are the Qwen3 / Qwen3.5 behaviour every earlier package was built for.
+  std::string think_on = "";
+  std::string think_off = "<think>\n\n</think>\n\n";
+  bool thinking_default = true;
 };
 
 // The vision tower's own constants. These are per-checkpoint, not universal, and

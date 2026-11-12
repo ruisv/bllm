@@ -73,6 +73,9 @@ ModelConfig loadModelConfig(const std::string& dir) {
     c.chat.r_system = ch.value("r_system", -1);
     c.chat.r_end = ch.value("r_end", -1);
     c.chat.system = ch.value("system", c.chat.system);
+    c.chat.think_on = ch.value("think_on", c.chat.think_on);
+    c.chat.think_off = ch.value("think_off", c.chat.think_off);
+    c.chat.thinking_default = ch.value("thinking_default", c.chat.thinking_default);
   }
   if (j.contains("pi05")) {
     const auto& p = j.at("pi05");

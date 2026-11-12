@@ -235,6 +235,19 @@ NB_MODULE(_bllm_native, m) {
       .def_prop_ro("last_decode_tps", &bllm::NativeLlm::last_decode_tps)
       .def_prop_ro("name", [](bllm::NativeLlm& l) { return l.config().name; })
       .def_prop_ro("arch", [](bllm::NativeLlm& l) { return l.config().arch; })
+      .def_prop_ro("chat_config", [](bllm::NativeLlm& l) {
+        // The manifest's chat block, for a server rendering its own prompts: the format,
+        // the default system prompt and the template's think prefill on / off.
+        const auto& c = l.config().chat;
+        nb::dict d;
+        d["format"] = c.format; d["system"] = c.system;
+        d["im_start"] = c.im_start; d["im_end"] = c.im_end; d["bos"] = c.bos;
+        d["think_on"] = c.think_on; d["think_off"] = c.think_off;
+        d["thinking_default"] = c.thinking_default;
+        return d;
+      }, "The model's chat block: format, system, im_start/im_end, bos, think_on/off, "
+         "thinking_default.")
+      .def_prop_ro("thinking_switchable", &bllm::NativeLlm::thinking_switchable)
       .def_prop_ro("vocab_size", [](bllm::NativeLlm& l) { return l.tokenizer().vocab_size(); })
       .def("encode", [](bllm::NativeLlm& l, const std::string& s) { return l.tokenizer().encode(s); }, "text"_a)
       .def("decode", [](bllm::NativeLlm& l, const std::vector<int>& ids) { return l.tokenizer().decode(ids); }, "ids"_a)

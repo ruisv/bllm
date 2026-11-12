@@ -30,6 +30,18 @@ All notable changes to BLLM are documented here. The format follows
   text tower with `vision=False` — Qwen3-VL-2B w4's text tower matches the
   official demo character for character, which also exercises its `[3,1,T]`
   positions and zeroed deepstack inputs; the vision branch is next.
+- **The think switch follows each model's template.** `model.json`'s `chat` takes
+  `think_on` / `think_off` — what goes after the assistant marker with thinking on
+  or off — and `thinking_default`. Templates differ in exactly this: Qwen3 thinks
+  unprompted and closes an empty block when off, MiniCPM5 opens `<think>\n` when
+  on, a thinking-only checkpoint opens it either way, and a model without a think
+  mode adds nothing. Official packages get all three read off the template, with
+  thinking off by default as in the official runtime; manifests without the fields
+  behave as before. `thinking_switchable` and `chat_config` say what a session
+  will render.
+- Official packages also take the template's own default system prompt (none for
+  most; Qwen2.5's fixed one), a BOS the template always emits (MiniCPM5), and the
+  Phi-style family where the role markers are built by concatenation (Phi-4-mini).
 - `bllm_selfengine --embed <table>` for embedding-input graphs, and
   `bllm_chat_native --no-think` (the template's `enable_thinking=False`).
 
@@ -46,9 +58,25 @@ All notable changes to BLLM are documented here. The format follows
 
   Output is unchanged — the release was never on the data path.
 
+- A ChatML or Phi session with an empty system prompt sends no system block, as
+  the HF templates do when no system message is given (it used to send an empty
+  one).
+
 ### Fixed
+- **An LLM 2.0 graph's embedding input is now byte-identical to the official
+  runtime's.** It was quantised as `x × (1/scale)`; the official runtime divides,
+  and the two disagree whenever `x / scale` sits a hair under .5 — which fp16 table
+  values do often: Qwen3-4B's `0.0294189453125 / 4.16256762e-06 = 7067.4997`,
+  times the float reciprocal `7067.5000`. 54 such elements in a 19-token prompt,
+  found against the official runtime's own tensor dump, sent greedy decoding down
+  a different reply from the third token on; padded prefill positions are now 0
+  as the official runtime writes them, too. (The Omni path is unchanged.)
 - The prefill logits row pitch is read from the tensor's resolved stride instead
   of being assumed to be the vocabulary padded to 32 bytes.
+- **The OpenAI server no longer injects an empty `<think></think>` into models that
+  have no think mode** (Qwen2.5, Qwen3-Instruct-2507, Phi): the assistant opener
+  now uses the model's own think-off tail. `chat_template_kwargs.enable_thinking`
+  is honoured, and wins over the top-level field.
 
 ## [0.6.0] — 2026-09-02
 

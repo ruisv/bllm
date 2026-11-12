@@ -83,7 +83,8 @@ def parse_content(content) -> tuple[str, list[str]]:
     return "".join(texts), images
 
 
-def render_chatml(messages: list[dict], enable_thinking: bool) -> tuple[str, str]:
+def render_chatml(messages: list[dict], enable_thinking: bool,
+                  think_on: str = "", think_off: str = "<think>\n\n</think>\n\n") -> tuple[str, str]:
     """Render an OpenAI ``messages[]`` array into a ChatML prompt, split into
     ``(history, opener)``. Model-agnostic across the Qwen/DeepSeek ChatML family.
     Text-only: the caller has already checked no message carries an image_url part
@@ -102,9 +103,10 @@ def render_chatml(messages: list[dict], enable_thinking: bool) -> tuple[str, str
         role = m.get("role", "user")
         text, _ = parse_content(m.get("content", ""))
         parts.append(f"<|im_start|>{role}\n{text}{IM_END}\n")
-    opener = "<|im_start|>assistant\n"
-    if not enable_thinking:  # Qwen3.5: suppress the thinking block
-        opener += "<think>\n\n</think>\n\n"
+    # After the assistant marker: the template's own tail for thinking on / off (from the
+    # model's chat block). Qwen3/3.5 close an empty block when off; a model with no think
+    # mode adds nothing either way — which the old hard-coded block got wrong.
+    opener = "<|im_start|>assistant\n" + (think_on if enable_thinking else think_off)
     return "".join(parts), opener
 
 
@@ -357,8 +359,21 @@ async def chat_completions(request: Request,
                 status_code=400,
                 detail="this model has no vision tower; image_url requires a model directory "
                        "built with a --visual tower (see docs/MODELS.zh.md)")
-        enable_thinking = bool(body.get("enable_thinking", False))
-        history, opener = render_chatml(messages, enable_thinking)
+        chat = engine.chat_config
+        # enable_thinking: the request's, or chat_template_kwargs' (which wins, as in the
+        # official server), else OFF — this server's long-standing default, and the official
+        # runtime's. (Not the manifest's thinking_default: packages that predate it inherit
+        # the library's "on", and flipping deployed servers to reasoning is not this change.)
+        # A model that always thinks, or never does, renders the same either way.
+        enable_thinking = body.get("enable_thinking", False)
+        kw = body.get("chat_template_kwargs")
+        if isinstance(kw, dict) and "enable_thinking" in kw:
+            enable_thinking = kw["enable_thinking"]
+        if isinstance(enable_thinking, str):
+            enable_thinking = enable_thinking.strip().lower() in ("1", "true", "yes", "on")
+        history, opener = render_chatml(messages, bool(enable_thinking),
+                                        chat.get("think_on", ""),
+                                        chat.get("think_off", "<think>\n\n</think>\n\n"))
         prompt = history + opener
         ids = engine.encode(prompt)
         # How much of `ids` is stable history, and so eligible for caching. Encoding the

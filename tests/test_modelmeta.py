@@ -126,14 +126,62 @@ def test_official_model_json_eos_falls_back_to_tokenizer():
     assert cfg["eos"][0] == 151645                         # tokenizer_config eos_token
 
 
-def test_official_model_json_phi_family():
+_PHI4 = ("{% for message in messages %}{{ '<|' + message['role'] + '|>' + message['content'] "
+         "+ '<|end|>' }}{% endfor %}{% if add_generation_prompt %}{{ '<|assistant|>' }}"
+         "{% else %}{{ eos_token }}{% endif %}")
+
+
+def test_official_model_json_phi_family_built_by_concatenation():
+    # Phi-4-mini's real template never spells "<|user|>": the markers are concatenated.
     phi = [("<|user|>", 200021), ("<|assistant|>", 200019), ("<|system|>", 200022),
            ("<|end|>", 200020)]
-    cfg = mm.official_model_json(_desc(template="{{ '<|user|>' }}...{{ '<|end|>' }}",
-                                       extra_added=phi), _Q3)
+    cfg = mm.official_model_json(_desc(template=_PHI4, extra_added=phi), _Q3)
     assert cfg["chat"] == {"format": "phi", "r_user": 200021, "r_assistant": 200019,
-                           "r_end": 200020, "system": "You are a helpful assistant.",
-                           "r_system": 200022}
+                           "r_end": 200020, "system": "", "r_system": 200022,
+                           "think_on": "", "think_off": "", "thinking_default": False}
+
+
+# Generation-prompt tails as they appear in the jinja SOURCE (literal backslash-n).
+_GEN = "{%- if add_generation_prompt %}{{- '<|im_start|>assistant\\n' }}"
+_QWEN3 = (_GEN + "{%- if enable_thinking is defined and enable_thinking is false %}"
+          "{{- '<think>\\n\\n</think>\\n\\n' }}{%- endif %}{%- endif %}")
+_MINICPM5 = (_GEN + "{%- if enable_thinking is defined %}{%- if enable_thinking is false %}"
+             "{{- '<think>\\n\\n</think>\\n\\n' }}{%- elif enable_thinking is true %}"
+             "{{- '<think>\\n' }}{%- endif %}{%- endif %}{%- endif %}")
+_THINKING_ONLY = "{%- if add_generation_prompt %}{{- '<|im_start|>assistant\\n<think>\\n' }}{%- endif %}"
+
+
+@pytest.mark.parametrize("template,on,off,default", [
+    (_QWEN3, "", "<think>\n\n</think>\n\n", False),          # thinks unprompted when on
+    (_MINICPM5, "<think>\n", "<think>\n\n</think>\n\n", False),  # opens the block when on
+    (_THINKING_ONLY, "<think>\n", "<think>\n", True),           # cannot be switched off
+    (_GEN + "{%- endif %}", "", "", False),                       # no think mode at all
+])
+def test_official_thinking_follows_the_template(template, on, off, default):
+    ch = mm.official_model_json(_desc(template=template), _Q3)["chat"]
+    assert (ch["think_on"], ch["think_off"], ch["thinking_default"]) == (on, off, default)
+
+
+def test_official_thinking_switch_without_a_closed_block_is_refused():
+    with pytest.raises(ValueError, match="enable_thinking"):
+        mm.official_model_json(_desc(template=_GEN + "{% if enable_thinking %}x{% endif %}"), _Q3)
+
+
+def test_official_default_system_is_the_templates_own():
+    q25 = ("{{- '<|im_start|>system\\nYou are Qwen, created by Alibaba Cloud. You are a "
+           "helpful assistant.<|im_end|>\\n' }}" + _GEN + "{%- endif %}")
+    ch = mm.official_model_json(_desc(template=q25), _Q3)["chat"]
+    assert ch["system"] == "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
+    assert mm.official_model_json(_desc(template=_QWEN3), _Q3)["chat"]["system"] == ""
+    assert mm.official_model_json(_desc(template=_QWEN3), _Q3,
+                                  system="Be brief.")["chat"]["system"] == "Be brief."
+
+
+def test_official_bos_when_the_template_always_emits_one():
+    # MiniCPM5: add_bos_token is False, yet the template opens with {{- bos_token }}.
+    d = _desc(template="{{- bos_token }}" + _QWEN3, extra_added=[("<s>", 0)])
+    d["tokenizer_config"]["bos_token"] = "<s>"
+    assert mm.official_model_json(d, _Q3)["chat"]["bos"] == 0
 
 
 def test_official_model_json_rejects_unknown_template_and_non_llm2():

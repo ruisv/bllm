@@ -33,6 +33,7 @@ class NativeLlm {
   explicit NativeLlm(const std::string& model_dir) : NativeLlm(loadModelConfig(model_dir)) {}
   explicit NativeLlm(ModelConfig cfg)
       : cfg_(std::move(cfg)), tk_(Tokenizer::fromFile(cfg_.tokenizer)) {
+    thinking_ = cfg_.chat.thinking_default;
     if (cfg_.is_omni())
       throw std::runtime_error("[bllm] '" + cfg_.name + "' is arch=\"omni\" (multimodal); "
                                "load it with bllm::NativeVlm / bllm.NativeVlmSession");
@@ -143,6 +144,9 @@ class NativeLlm {
   // soft switch is NOT reliable on this checkpoint; this prefill is.
   void set_thinking(bool enabled) { thinking_ = enabled; }
   bool thinking() const { return thinking_; }
+  // Whether the switch does anything for this model (a thinking-only or a non-thinking
+  // checkpoint renders the same either way).
+  bool thinking_switchable() const { return cfg_.chat.think_on != cfg_.chat.think_off; }
   // BPU queue priority (0..255). Lowest (the default) lets a co-resident vision
   // pipeline jump the queue. Note: it orders the queue, it does not preempt a graph
   // that is already running — see native_detail::BpuSched.
@@ -215,7 +219,9 @@ class NativeLlm {
       const int SY = cfg_.chat.r_system, PE = cfg_.chat.r_end;
       if (first_turn_) {
         if (cfg_.chat.bos >= 0) add({cfg_.chat.bos});
-        if (SY >= 0) { add({SY}); add(tk_.encode(cfg_.chat.system)); add({PE}); }
+        if (SY >= 0 && !cfg_.chat.system.empty()) {
+          add({SY}); add(tk_.encode(cfg_.chat.system)); add({PE});
+        }
       } else            { add({PE}); }              // close the previous assistant turn
       add({U}); add(tk_.encode(msg)); add({PE});
       add({A});
@@ -234,11 +240,13 @@ class NativeLlm {
     const std::vector<int> NL = tk_.encode("\n");
     if (first_turn_) {
       if (cfg_.chat.bos >= 0) add({cfg_.chat.bos});
-      add({S}); add(tk_.encode("system\n" + cfg_.chat.system)); add({E}); add(NL);
+      if (!cfg_.chat.system.empty()) {
+        add({S}); add(tk_.encode("system\n" + cfg_.chat.system)); add({E}); add(NL);
+      }
     } else            { add({E}); add(NL); }     // close the previous assistant turn
     add({S}); add(tk_.encode("user\n" + msg)); add({E}); add(NL);
     add({S}); add(tk_.encode("assistant\n"));
-    if (!thinking_) add(tk_.encode("<think>\n\n</think>\n\n"));   // enable_thinking=False: answer directly
+    addThink(ids);
     first_turn_ = false;
     feedIds(ids);
     return streamDecode(max_new, on_text, stop);
@@ -354,6 +362,14 @@ class NativeLlm {
     if (!shared.empty()) add(tk_.encode(shared));    // no template: shared text is the raw prefix
   }
 
+  // The template's generation-prompt tail after the assistant marker (see ChatConfig).
+  void addThink(std::vector<int>& ids) {
+    const std::string& t = thinking_ ? cfg_.chat.think_on : cfg_.chat.think_off;
+    if (t.empty()) return;
+    const std::vector<int> v = tk_.encode(t);
+    ids.insert(ids.end(), v.begin(), v.end());
+  }
+
   // Build one user turn (query) opening the assistant, per format. Same wire form chat() uses.
   void buildUserTurn(std::vector<int>& ids, const std::string& msg) {
     auto add = [&](const std::vector<int>& v) { ids.insert(ids.end(), v.begin(), v.end()); };
@@ -364,7 +380,7 @@ class NativeLlm {
     if (cfg_.chat.format == "chatml" && cfg_.chat.im_start >= 0) {
       add({cfg_.chat.im_start}); add(tk_.encode("user\n" + msg)); add({cfg_.chat.im_end}); add(tk_.encode("\n"));
       add({cfg_.chat.im_start}); add(tk_.encode("assistant\n"));
-      if (!thinking_) add(tk_.encode("<think>\n\n</think>\n\n"));
+      addThink(ids);
       return;
     }
     add(tk_.encode(msg));                            // no template: raw completion
@@ -472,7 +488,7 @@ class NativeLlm {
   std::vector<std::string> vocabText_;            // token id -> bytes, built on first grammar
   std::vector<std::string> stop_;                 // persistent stop strings (default: none)
   bool first_turn_ = true;
-  bool thinking_ = true;                          // Qwen3.5 reasoning: prefill empty <think> when false
+  bool thinking_ = true;                          // set from chat.thinking_default; see addThink()
   std::string prefix_;                            // in-memory snapshot of the reusable prefix
   bool prefixSet_ = false;
   std::atomic<bool> cancelReq_{false};            // set from another thread by request_cancel()
