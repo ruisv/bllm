@@ -479,6 +479,14 @@ def official_dir_for(pkg_dir: "str | Path", *, vision: bool = True,
         raise ValueError(f"{pkg_dir}: not an official LLM 2.0 package (expected one "
                          "*_language_*.hbm and one *_embed_tokens.bin)")
     lang = pkg["language"]
+    m = _LANG_RE.match(lang.name)
+    if m and m["march"] == "nash-p":
+        # Checked before the .hbm is opened: on an S100P the load would fail deep in hbDNN
+        # with no hint why, and on an S600 the engine would refuse the fp16 I/O anyway.
+        raise NotImplementedError(
+            f"{lang.name} is an S600 (nash-p) package; its graphs take fp16 embeddings and "
+            "return fp16 logits, which BLLM does not drive yet — the S100P (nash-m) packages "
+            "load")
     st = lang.stat()
     vis = pkg["vision"] if vision else None
     raw = "::".join([str(lang.resolve()), str(st.st_size), str(int(st.st_mtime)),

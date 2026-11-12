@@ -280,6 +280,16 @@ def test_official_vlm_geometry_follows_the_package_not_qwen3vl():
     assert (cfg["mrope_section"], cfg["mrope_interleaved"]) == ([16, 24, 24], False)
 
 
+def test_official_s600_package_is_refused_before_the_hbm_is_read(tmp_path):
+    p = _package(tmp_path, name=_Q3.replace("nash-m_corenum_1_1", "nash-p_corenum_4_4"))
+
+    def read(path):
+        raise AssertionError("the .hbm must not be opened")
+
+    with pytest.raises(NotImplementedError, match="S600"):
+        mm.official_dir_for(p, cache_root=tmp_path / "cache", read_desc=read)
+
+
 def test_official_vlm_refuses_a_non_square_tower():
     with pytest.raises(ValueError, match="square"):
         mm.official_model_json(_vl_desc(width=640, height=448), _Q3, vision=True)
