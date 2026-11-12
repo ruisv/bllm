@@ -18,6 +18,7 @@
 //   M tokens; a bare "id,id,.." uses the default. Each request streams "TOK <id>"
 //   then "STATS ttft_ms=.. decode_tps=.. ntok=.." then "END".
 
+#include "bllm/native_embed.h"
 #include "bllm/native_engine.h"
 
 #include <cstdio>
@@ -43,7 +44,7 @@ std::vector<int> parseIds(const std::string& s) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::string hbm, ids_str, eos_str;
+  std::string hbm, ids_str, eos_str, embed;
   bool serve = false;
   bllm::NativeSamplingParams sp;
   sp.max_new = 24;
@@ -51,6 +52,7 @@ int main(int argc, char** argv) {
     std::string a = argv[i];
     auto val = [&]() { return std::string(argv[++i]); };
     if (a == "--hbm") hbm = val();
+    else if (a == "--embed") embed = val();
     else if (a == "--ids") ids_str = val();
     else if (a == "--max-new") sp.max_new = std::atoi(val().c_str());
     else if (a == "--serve") serve = true;
@@ -62,7 +64,7 @@ int main(int argc, char** argv) {
     else if (a == "--eos") eos_str = val();
   }
   if (hbm.empty() || (!serve && ids_str.empty())) {
-    std::fprintf(stderr, "usage: %s --hbm <model.hbm> [--ids \"id,..\" | --serve]"
+    std::fprintf(stderr, "usage: %s --hbm <model.hbm> [--embed <embed_tokens.bin>] [--ids \"id,..\" | --serve]"
                  " [--max-new N] [--temp T --top-k K --top-p P --rep-pen R --seed S]"
                  " [--eos \"id,id\"]\n", argv[0]);
     return 1;
@@ -78,10 +80,25 @@ int main(int argc, char** argv) {
     return 1;
   }
   bllm::NativeEngine& eng = *engOpt;
+  // Official LLM 2.0 graphs take embeddings, not ids: the package's fp16 table.
+  std::optional<bllm::EmbedTable> table;
+  if (eng.needs_embedder()) {
+    if (embed.empty()) {
+      std::fprintf(stderr, "this .hbm takes embeddings (LLM 2.0 graph): pass --embed "
+                   "<*_embed_tokens.bin>\n");
+      return 1;
+    }
+    table.emplace(embed, eng.vocab(), eng.hidden());
+    eng.set_embedder([&table](int id, float* dst) { table->lookup(id, dst); });
+  }
   if (!eos_str.empty()) sp.eos = parseIds(eos_str);
   std::fprintf(stderr, "[selfengine] loaded via hbDNN (libxlm never touched): "
-               "layers=%d kv=%d head_dim=%d cache_len=%d vocab=%d\n",
-               eng.n_layers(), eng.n_kv(), eng.head_dim(), eng.cache_len(), eng.vocab());
+               "layers=%d kv=%d head_dim=%d cache_len=%d vocab=%d chunk=%d mode=%s\n",
+               eng.n_layers(), eng.n_kv(), eng.head_dim(), eng.cache_len(), eng.vocab(),
+               eng.chunk(),
+               eng.input_mode() == bllm::NativeEngine::InputMode::Token ? "token"
+               : eng.input_mode() == bllm::NativeEngine::InputMode::Embed ? "embed(omni)"
+                                                                           : "embed+pos(llm2)");
 
   if (serve) {
     if (sp.max_new < 2) sp.max_new = 512;

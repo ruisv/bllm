@@ -6,6 +6,39 @@ All notable changes to BLLM are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **The native engine drives the official D-Robotics LLM 2.0 graphs.** A 2.0
+  language `.hbm` takes `input_embeddings` (int16) + `position_ids` (int32,
+  `[1,T]`, or `[3,1,T]` for mrope) + `attention_mask`, with the KV window in and
+  only the new rows out — the same window contract as before, with the token id
+  replaced by a host embedding from the package's fp16 `*_embed_tokens.bin`. It has
+  the same input count as the 1.0 token graphs, so the contract is recognised by
+  tensor name; extra prefill-only inputs (Qwen3-VL's deepstack features) are found
+  and left at zero for text. Point `model.json`'s `embed` at the table and the
+  package loads like any dense model. Checked on S100P against the official
+  `chat_demo` on Qwen3-0.6B w8: greedy output **identical, token for token**,
+  over 120-token replies in Chinese and English. (Synthesizing `model.json` from
+  the package, and the VLM packages, are next.)
+- `bllm_selfengine --embed <table>` for embedding-input graphs, and
+  `bllm_chat_native --no-think` (the template's `enable_thinking=False`).
+
+### Changed
+- **Each BPU task handle is released one step late,** during the next task's BPU
+  time instead of on the critical path. `hbUCPReleaseTask` measured 1.25 ms per
+  decode step on an LLM 2.0 graph and 0.58 ms on a 1.0 one. Decode on S100P:
+
+  | model | before | after |
+  |---|---:|---:|
+  | Qwen3-0.6B w8 (official 2.0), chat path | 37.8 tok/s | **40.3 tok/s** (official runtime: 40.45) |
+  | Qwen2.5-1.5B (1.0 dense) | 23.74 tok/s | 24.06 tok/s |
+  | Qwen3.5-2B (hybrid), vs the 0.5.2 package | 13.97 tok/s | 14.25 tok/s |
+
+  Output is unchanged — the release was never on the data path.
+
+### Fixed
+- The prefill logits row pitch is read from the tensor's resolved stride instead
+  of being assumed to be the vocabulary padded to 32 bytes.
+
 ## [0.6.0] — 2026-09-02
 
 ### Added

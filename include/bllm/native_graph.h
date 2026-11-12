@@ -125,17 +125,53 @@ struct BpuSched {
 };
 
 void submitAndWait(hbUCPTaskHandle_t task, const BpuSched& s);
+void submitTask(hbUCPTaskHandle_t task, const BpuSched& s);
+void waitTask(hbUCPTaskHandle_t task, const BpuSched& s);
+
+// A finished task's handle, released one step LATE — during the next task's BPU time
+// instead of on the critical path. hbUCPReleaseTask is not cheap: measured on S100P
+// per decode step, 1.245 ms for an official LLM 2.0 graph and 0.578 ms for a 1.0 one,
+// i.e. ~5% of a 24 ms step spent freeing a handle that is already dead once its wait
+// returns. run() = submit this task, release the previous one, wait, keep this one.
+//
+// Whoever owns a raw model handle must drain() before releasing it; the slot's own
+// destructor covers owners that hold a PackedHbm declared ahead of their graphs.
+class TaskSlot {
+ public:
+  TaskSlot() = default;
+  ~TaskSlot() { drain(); }
+  TaskSlot(TaskSlot&& o) noexcept : t_(o.t_) { o.t_ = nullptr; }
+  TaskSlot& operator=(TaskSlot&& o) noexcept {
+    if (this != &o) { drain(); t_ = o.t_; o.t_ = nullptr; }
+    return *this;
+  }
+  TaskSlot(const TaskSlot&) = delete;
+  TaskSlot& operator=(const TaskSlot&) = delete;
+
+  void run(hbUCPTaskHandle_t task, const BpuSched& s);
+  void drain();
+
+ private:
+  hbUCPTaskHandle_t t_ = nullptr;
+};
 
 struct Graph {
   hbDNNHandle_t h = nullptr;
   std::vector<hbDNNTensor> in, out;
   std::vector<Mem> inMem, outMem;
+  // Tensor names as compiled. Older toolchains emit placeholders (`_input_0`, …);
+  // the official LLM 2.0 graphs name their I/O (`input_embeddings`, …), and that
+  // name is the only thing telling a 2.0 graph from a 1.0 one with the same count.
+  std::vector<std::string> inNames, outNames;
   BpuSched sched;
+  TaskSlot slot;                       // last, so it is released before the buffers
 
   void init(hbDNNPackedHandle_t packed, const char* name);
 
   int inCount() const { return (int)in.size(); }
   int outCount() const { return (int)out.size(); }
+  const std::string& inName(int i) const { return inNames[i]; }
+  const std::string& outName(int i) const { return outNames[i]; }
   const hbDNNTensorShape& inShape(int i) const { return in[i].properties.validShape; }
   const hbDNNTensorShape& outShape(int i) const { return out[i].properties.validShape; }
   int inType(int i) const { return in[i].properties.tensorType; }

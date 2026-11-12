@@ -66,6 +66,11 @@ Mem& Mem::operator=(Mem&& o) noexcept {
 // ---- scheduling ------------------------------------------------------------
 
 void submitAndWait(hbUCPTaskHandle_t task, const BpuSched& s) {
+  submitTask(task, s);
+  waitTask(task, s);
+}
+
+void submitTask(hbUCPTaskHandle_t task, const BpuSched& s) {
   hbUCPSchedParam sched;
   HB_UCP_INITIALIZE_SCHED_PARAM(&sched);
   sched.priority = s.priority;
@@ -86,12 +91,37 @@ void submitAndWait(hbUCPTaskHandle_t task, const BpuSched& s) {
         "`max_l2m_size` than this runtime can allocate — rebuild without it and "
         "let the compiler choose.");
   check(rc, "hbUCPSubmitTask");
+}
+
+void waitTask(hbUCPTaskHandle_t task, const BpuSched& s) {
+  const bool multicore = s.core_mask != HB_UCP_CORE_ANY;
   const int32_t rw = hbUCPWaitTaskDone(task, 0);
   if (rw != 0 && multicore)
     throw std::runtime_error(
         "[native] hbUCPWaitTaskDone failed for a multi-core graph — see the "
         "note on `max_l2m_size` in submitAndWait.");
   check(rw, "hbUCPWaitTaskDone");
+}
+
+void TaskSlot::run(hbUCPTaskHandle_t task, const BpuSched& s) {
+  try {
+    submitTask(task, s);
+  } catch (...) {
+    hbUCPReleaseTask(task);
+    throw;
+  }
+  drain();                       // the previous step's handle, while the BPU runs this one
+  try {
+    waitTask(task, s);
+  } catch (...) {
+    hbUCPReleaseTask(task);
+    throw;
+  }
+  t_ = task;
+}
+
+void TaskSlot::drain() {
+  if (t_) { hbUCPReleaseTask(t_); t_ = nullptr; }
 }
 
 // ---- Graph -----------------------------------------------------------------
@@ -138,7 +168,10 @@ void Graph::init(hbDNNPackedHandle_t packed, const char* name) {
   BLLM_NATIVE_CK(hbDNNGetInputCount(&ic, h));
   BLLM_NATIVE_CK(hbDNNGetOutputCount(&oc, h));
   in.resize(ic); out.resize(oc); inMem.resize(ic); outMem.resize(oc);
+  inNames.assign(ic, std::string()); outNames.assign(oc, std::string());
   for (int i = 0; i < ic; ++i) {
+    const char* nm = nullptr;
+    if (hbDNNGetInputName(&nm, h, i) == 0 && nm) inNames[i] = nm;
     auto& p = in[i].properties;
     BLLM_NATIVE_CK(hbDNNGetInputTensorProperties(&p, h, i));
     resolveStrides(p);
@@ -148,6 +181,8 @@ void Graph::init(hbDNNPackedHandle_t packed, const char* name) {
     in[i].sysMem = inMem[i].m;
   }
   for (int i = 0; i < oc; ++i) {
+    const char* nm = nullptr;
+    if (hbDNNGetOutputName(&nm, h, i) == 0 && nm) outNames[i] = nm;
     auto& p = out[i].properties;
     BLLM_NATIVE_CK(hbDNNGetOutputTensorProperties(&p, h, i));
     resolveStrides(p);
@@ -252,8 +287,7 @@ void Graph::readRowsF32As(int i, float* dst, int64_t rows, int64_t cols) const {
 void Graph::infer() {
   hbUCPTaskHandle_t task = nullptr;
   BLLM_NATIVE_CK(hbDNNInferV2(&task, out.data(), in.data(), h));
-  submitAndWait(task, sched);
-  hbUCPReleaseTask(task);
+  slot.run(task, sched);
   for (auto& m : outMem) m.inval();
 }
 

@@ -1,7 +1,7 @@
 // bllm_chat_native — interactive chat over bllm::NativeLlm, entirely in C++ (native
 // engine + C++ tokenizer + ChatML, no libxlm, no Python). One model directory in,
 // streaming chat out.
-//   ./bllm_chat_native --model <model_dir> [--max-new 400] [--raw] [--bpu-priority 0..255]
+//   ./bllm_chat_native --model <model_dir> [--max-new 400] [--raw] [--no-think] [--bpu-priority 0..255]
 //                      [--stop STR ...]   (repeatable; ends the turn on any of them)
 //   commands: /reset  /exit
 #include "bllm/native_llm.h"
@@ -18,6 +18,7 @@ int main(int argc, char** argv) {
   uint64_t seed = 1234;
   bool raw = false;
   std::vector<std::string> stop;
+  bool no_think = false;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     if (a == "--model") dir = argv[++i];
@@ -30,9 +31,10 @@ int main(int argc, char** argv) {
     else if (a == "--seed") seed = std::strtoull(argv[++i], nullptr, 10);
     else if (a == "--stop") stop.push_back(argv[++i]);
     else if (a == "--raw") raw = true;
+    else if (a == "--no-think") no_think = true;
   }
   if (dir.empty()) {
-    std::fprintf(stderr, "usage: %s --model <dir> [--max-new N] [--raw]"
+    std::fprintf(stderr, "usage: %s --model <dir> [--max-new N] [--raw] [--no-think]"
                  " [--temp T --top-p P --top-k K --rep-pen R --seed S]"
                  " [--bpu-priority 0..255]\n", argv[0]);
     return 1;
@@ -42,6 +44,7 @@ int main(int argc, char** argv) {
   if (bpu_priority >= 0) llm.set_bpu_priority(bpu_priority);
   llm.set_sampling(temp, top_p, top_k, rep_pen, seed);
   if (!stop.empty()) llm.set_stop(stop);
+  if (no_think) llm.set_thinking(false);   // == the template's enable_thinking=False
   const auto& c = llm.config();
   std::fprintf(stderr, "[loaded] %s  arch=%s  backend=native  vocab=%d  (%s)\n",
                c.name.c_str(), c.arch.c_str(), llm.tokenizer().vocab_size(),

@@ -7,8 +7,10 @@
 // across feed()/generate(), giving multi-turn chat + chunked prefill. Every model
 // shape is introspected from the graph (model-agnostic).
 //
-// Two graph contracts are supported, distinguished by how many non-cache inputs
-// the decode graph has (the cache count follows from the output count):
+// Three graph contracts are supported. The official LLM 2.0 one is recognised by its
+// tensor NAMES; the two older ones carry placeholder names and are told apart by how
+// many non-cache inputs the decode graph has (the cache count follows from the
+// output count):
 //
 //   TokenInput (3): [token_id, position, mask]     — Qwen2.5 / DeepSeek / Qwen3 / …
 //                   ids in, the graph embeds and ropes internally.
@@ -16,7 +18,17 @@
 //                   the HOST embeds (EmbedTable) and computes rope. That seam is
 //                   what makes VLM possible: vision/audio rows are spliced into
 //                   the embedding stream, and mrope 3-D positions are ours to pick.
+//   EmbedPos   (3): [input_embeddings, position_ids, attention_mask]
+//                   — official D-Robotics LLM 2.0 packages. The host embeds (an fp16
+//                   `*_embed_tokens.bin`), the graph ropes from int32 positions
+//                   ([1,T] text, [3,1,T] mrope). Same count as TokenInput, which is
+//                   why the names decide. A VLM prefill graph may carry extra inputs
+//                   between the fixed three and the caches (Qwen3-VL's deepstack
+//                   features); text-only use leaves them zero, i.e. "no injection".
 //
+// All three share the same KV contract: each layer's whole window goes in, the graph
+// shifts it left by the chunk and returns ONLY the new rows — which is what lets the
+// ring below stay zero-copy.
 //
 #pragma once
 
@@ -48,7 +60,7 @@ struct NativeStats { double ttft_ms = 0, decode_tps = 0; int ntok = 0; };
 
 class NativeEngine {
  public:
-  enum class InputMode { Token, Embed };
+  enum class InputMode { Token, Embed, EmbedPos };
 
   explicit NativeEngine(const std::string& hbm,
                         const char* prefill_name = "prefill",
@@ -88,13 +100,43 @@ class NativeEngine {
     // outputs are [logits] + K[L] + V[L]; inputs are [fixed…] + K[L] + V[L].
     nLayers_ = (decode_.outCount() - 1) / 2;
     const int nFixed = decode_.inCount() - 2 * nLayers_;
-    if (nFixed == 3) mode_ = InputMode::Token;
+    const bool named2 = decode_.inCount() >= 3 && decode_.inName(0) == "input_embeddings" &&
+                        decode_.inName(1) == "position_ids" &&
+                        decode_.inName(2) == "attention_mask";
+    if (named2) {
+      if (nFixed != 3)
+        throw std::runtime_error("[native] LLM 2.0 decode graph with " + std::to_string(nFixed) +
+                                 " non-cache inputs (expected 3)");
+      if (prefill_.inName(0) != "input_embeddings" || prefill_.inName(1) != "position_ids" ||
+          prefill_.inName(2) != "attention_mask")
+        throw std::runtime_error("[native] LLM 2.0 decode graph paired with a prefill graph "
+                                 "of a different contract (inputs: " + prefill_.inName(0) +
+                                 ", " + prefill_.inName(1) + ", " + prefill_.inName(2) + ")");
+      mode_ = InputMode::EmbedPos;
+    } else if (nFixed == 3) mode_ = InputMode::Token;
     else if (nFixed == 4) mode_ = InputMode::Embed;
     else throw std::runtime_error("[native] unsupported graph: " + std::to_string(nFixed) +
                                   " non-cache inputs (expected 3 or 4)");
     base_ = nFixed;
     vInBase_ = base_ + nLayers_;
     vOutBase_ = 1 + nLayers_;
+    // The prefill graph may carry inputs the decode graph does not (Qwen3-VL's
+    // deepstack features sit between the fixed inputs and the caches), so its cache
+    // inputs are located from ITS count, not the decode graph's.
+    pBase_ = prefill_.inCount() - 2 * nLayers_;
+    pvInBase_ = pBase_ + nLayers_;
+    if (pBase_ < base_)
+      throw std::runtime_error("[native] prefill graph has fewer non-cache inputs (" +
+                               std::to_string(pBase_) + ") than decode (" +
+                               std::to_string(base_) + ")");
+    // Extras zeroed once: text-only use never writes them, and zero is a no-op add.
+    for (int i = base_; i < pBase_; ++i) {
+      const auto& p = prefill_.in[i].properties;
+      const int nd = p.validShape.numDimensions;
+      const size_t bytes = nd > 0 ? (size_t)(p.stride[0] * p.validShape.dimensionSize[0]) : 0;
+      std::memset(prefill_.inPtr(i), 0, bytes);
+      prefill_.inClean(i);
+    }
 
     // KV cache is [.., cache_len, n_kv, head_dim] — dense graphs emit it 3-D,
     // the Omni text graph 4-D (leading batch), so index from the back.
@@ -106,12 +148,41 @@ class NativeEngine {
 
     const auto& ls = decode_.outShape(0);
     vocab_ = ls.dimensionSize[ls.numDimensions - 1];
-    logitStride_ = native_detail::alignUp((int64_t)vocab_ * 2, native_detail::kAlign) / 2;
+    // Row pitch of the PREFILL logits [.., chunk, vocab], in int16 elements — read off
+    // the tensor (resolved strides) rather than assumed to be vocab padded to kAlign.
+    {
+      const auto& lp = prefill_.outShape(0);
+      logitStride_ = lp.numDimensions >= 2
+          ? (int)(prefill_.outStride(0, lp.numDimensions - 2) / 2)
+          : (int)(native_detail::alignUp((int64_t)vocab_ * 2, native_detail::kAlign) / 2);
+    }
     logitScale_ = decode_.outScale(0);
 
     const auto& ps = prefill_.inShape(0);
     if (mode_ == InputMode::Token) {
       chunk_ = ps.dimensionSize[ps.numDimensions - 1];
+    } else if (mode_ == InputMode::EmbedPos) {
+      chunk_ = ps.dimensionSize[ps.numDimensions - 2];
+      hidden_ = ps.dimensionSize[ps.numDimensions - 1];
+      const auto& ds = decode_.inShape(0);
+      if (ds.dimensionSize[ds.numDimensions - 1] != hidden_)
+        throw std::runtime_error("[native] prefill/decode embedding widths differ");
+      // Each graph quantises its own input; the official packages share one scale,
+      // but nothing promises that, so keep both.
+      embInvScale_ = 1.0f / decode_.inScale(0);
+      pEmbInvScale_ = 1.0f / prefill_.inScale(0);
+      // position_ids: [1,T] for plain rope, [3,1,T] for mrope (t,h,w rows).
+      const auto& qs = decode_.inShape(1);
+      posRows_ = qs.numDimensions == 3 ? qs.dimensionSize[0] : 1;
+      if (posRows_ != 1 && posRows_ != 3)
+        throw std::runtime_error("[native] position_ids with " + std::to_string(posRows_) +
+                                 " rows (expected 1 or 3)");
+      if (decode_.inType(1) != HB_DNN_TENSOR_TYPE_S32 || prefill_.inType(1) != HB_DNN_TENSOR_TYPE_S32)
+        throw std::runtime_error("[native] LLM 2.0 position_ids must be int32");
+      if (decode_.inType(0) != HB_DNN_TENSOR_TYPE_S16 || decode_.inType(2) != HB_DNN_TENSOR_TYPE_S16)
+        throw std::runtime_error("[native] LLM 2.0 embeddings/mask must be int16 (an S600 "
+                                 "float-I/O package needs its own path)");
+      rowBuf_.resize(hidden_);
     } else {
       chunk_ = ps.dimensionSize[ps.numDimensions - 2];
       hidden_ = ps.dimensionSize[ps.numDimensions - 1];
@@ -139,12 +210,21 @@ class NativeEngine {
     }
     reset();
   }
-  ~NativeEngine() { if (packed_) hbDNNRelease(packed_); }
+  ~NativeEngine() {
+    // The graphs keep their last task handle (TaskSlot); release those while the
+    // model handle they came from is still alive — the body runs before members die.
+    prefill_.slot.drain();
+    decode_.slot.drain();
+    if (packed_) hbDNNRelease(packed_);
+  }
   NativeEngine(const NativeEngine&) = delete;
   NativeEngine& operator=(const NativeEngine&) = delete;
 
   InputMode input_mode() const { return mode_; }
+  // The Omni contract specifically (host rope via cos/sin) — what DenseTextEngine drives.
   bool embed_input() const { return mode_ == InputMode::Embed; }
+  // Any contract where the HOST turns ids into rows: set_embedder() before feed().
+  bool needs_embedder() const { return mode_ != InputMode::Token; }
   int n_layers() const { return nLayers_; }
   int n_kv() const { return nKV_; }
   int head_dim() const { return headDim_; }
@@ -173,8 +253,8 @@ class NativeEngine {
   void set_sched(const native_detail::BpuSched& s) { prefill_.sched = s; decode_.sched = s; }
   const native_detail::BpuSched& sched() const { return decode_.sched; }
 
-  // Embed-mode only: how the engine turns a sampled token id back into a hidden
-  // row (normally EmbedTable::lookup). Required before generate().
+  // Embed / EmbedPos only: how the engine turns a sampled token id back into a hidden
+  // row (normally EmbedTable::lookup). Required before feed()/generate().
   void set_embedder(std::function<void(int, float*)> fn) { embedder_ = std::move(fn); }
 
   // Embed-mode only: rope base + mrope section split (sums to rot/2; empty = plain).
@@ -229,8 +309,9 @@ class NativeEngine {
  private:
   void writeState(std::ostream& f) {
     if (!curLogits_) throw std::runtime_error("[native] no state to save — feed a prompt first");
-    if (mode_ != InputMode::Token)
-      throw std::runtime_error("[native] save_state is only for the token path");
+    // EmbedPos is fine: positions are the graph's, and maxPos_ travels in the header.
+    if (mode_ == InputMode::Embed)
+      throw std::runtime_error("[native] save_state is not supported on the Omni embed path");
     if (P_ > cacheLen_) throw std::runtime_error("[native] cannot snapshot a context past cache_len");
     const int32_t hdr[] = {kStateMagic, nLayers_, (int32_t)rowK_, (int32_t)rowV_, vocab_,
                            cacheLen_, P_, maxPos_};
@@ -275,7 +356,7 @@ class NativeEngine {
   void feed(const std::vector<int>& ids) {
     mark_turn_start();
     checkRoom((int)ids.size());
-    if (mode_ == InputMode::Embed) {
+    if (mode_ != InputMode::Token) {
       if (!embedder_) throw std::runtime_error("[native] embed-mode feed() needs set_embedder()");
       std::vector<float> rows((size_t)ids.size() * hidden_);
       for (size_t i = 0; i < ids.size(); ++i) embedder_((int)ids[i], rows.data() + i * hidden_);
@@ -440,9 +521,9 @@ class NativeEngine {
   // These rows were written by the BPU, so invalidate before the CPU reads them.
   void loadPrefillCaches() {
     for (int l = 0; l < nLayers_; ++l) {
-      uint8_t* pk = (uint8_t*)prefill_.inPtr(base_ + l);
+      uint8_t* pk = (uint8_t*)prefill_.inPtr(pBase_ + l);
       std::memset(pk, 0, cacheLen_ * rowK_);
-      uint8_t* pv = (uint8_t*)prefill_.inPtr(vInBase_ + l);
+      uint8_t* pv = (uint8_t*)prefill_.inPtr(pvInBase_ + l);
       std::memset(pv, 0, cacheLen_ * rowV_);
       if (P_ > 0) {
         kRing_[l].flush((uint64_t)(W_ + cacheLen_ - P_) * rowK_, (uint64_t)P_ * rowK_, HB_SYS_MEM_CACHE_INVALIDATE);
@@ -450,8 +531,8 @@ class NativeEngine {
         vRing_[l].flush((uint64_t)(W_ + cacheLen_ - P_) * rowV_, (uint64_t)P_ * rowV_, HB_SYS_MEM_CACHE_INVALIDATE);
         std::memcpy(pv + (size_t)(cacheLen_ - P_) * rowV_, vRow(l, W_ + cacheLen_ - P_), (size_t)P_ * rowV_);
       }
-      prefill_.inClean(base_ + l);
-      prefill_.inClean(vInBase_ + l);
+      prefill_.inClean(pBase_ + l);
+      prefill_.inClean(pvInBase_ + l);
     }
   }
 
@@ -471,7 +552,7 @@ class NativeEngine {
 
   // ── token-input graphs ─────────────────────────────────────────────────────
   void decodeStepToken(int token) {
-    if (mode_ == InputMode::Embed) {
+    if (mode_ != InputMode::Token) {
       if (!embedder_) throw std::runtime_error("[native] embed-mode decode needs set_embedder()");
       embedder_(token, rowBuf_.data());
       decodeStepEmbed(rowBuf_.data(), Pos3::scalar(maxPos_ + 1));
@@ -518,15 +599,39 @@ class NativeEngine {
       sn[i] = sn[i + half] = s;
     }
   }
-  void quantRow(const float* src, int16_t* dst) const {
-    for (int i = 0; i < hidden_; ++i) dst[i] = native_detail::quantS16(src[i], embInvScale_);
+  void quantRow(const float* src, int16_t* dst) const { quantRow(src, dst, embInvScale_); }
+  void quantRow(const float* src, int16_t* dst, float inv) const {
+    for (int i = 0; i < hidden_; ++i) dst[i] = native_detail::quantS16(src[i], inv);
+  }
+
+  // EmbedPos: positions for `n` tokens into a [1,T] or [3,1,T] int32 tensor. Rows past
+  // `n` (a short prefill chunk) REPEAT the last position: masked out anyway, and never
+  // past a position already in range (the graph may gather rope from a table).
+  void writePositions(native_detail::Graph& g, const Pos3* pos, int n, int width) {
+    auto* base = (uint8_t*)g.inPtr(1);
+    const int64_t rowPitch = posRows_ == 3 ? g.inStride(1, 0) : 0;
+    for (int r = 0; r < posRows_; ++r) {
+      auto* dst = (int32_t*)(base + r * rowPitch);
+      int32_t last = 0;
+      for (int i = 0; i < width; ++i) {
+        if (i < n) last = (posRows_ == 1 || r == 0) ? pos[i].t : (r == 1 ? pos[i].h : pos[i].w);
+        dst[i] = last;
+      }
+    }
+    g.inClean(1);
   }
 
   void decodeStepEmbed(const float* row, Pos3 pos) {
-    quantRow(row, (int16_t*)decode_.inPtr(0)); decode_.inClean(0);
-    writeDecodeMask((int16_t*)decode_.inPtr(1)); decode_.inClean(1);
-    writeRope((int16_t*)decode_.inPtr(2), (int16_t*)decode_.inPtr(3), pos);
-    decode_.inClean(2); decode_.inClean(3);
+    if (mode_ == InputMode::EmbedPos) {
+      quantRow(row, (int16_t*)decode_.inPtr(0)); decode_.inClean(0);
+      writePositions(decode_, &pos, 1, 1);
+      writeDecodeMask((int16_t*)decode_.inPtr(2)); decode_.inClean(2);
+    } else {
+      quantRow(row, (int16_t*)decode_.inPtr(0)); decode_.inClean(0);
+      writeDecodeMask((int16_t*)decode_.inPtr(1)); decode_.inClean(1);
+      writeRope((int16_t*)decode_.inPtr(2), (int16_t*)decode_.inPtr(3), pos);
+      decode_.inClean(2); decode_.inClean(3);
+    }
     ensureRingRoom(1);
     bindDecodeCaches();
     decode_.infer();
@@ -537,6 +642,24 @@ class NativeEngine {
 
   void prefillEmbeds(const float* rows, const Pos3* pos, int cl) {
     ensureRingRoom(cl);
+    if (mode_ == InputMode::EmbedPos) {
+      // Row pitch from the tensor, not hidden*2 — a width that is not a multiple of
+      // 16 elements would otherwise land every row after the first askew.
+      const int64_t pitch = prefill_.inStride(0, prefill_.inShape(0).numDimensions - 2);
+      auto* x = (uint8_t*)prefill_.inPtr(0);
+      std::memset(x, 0, (size_t)chunk_ * pitch);
+      for (int i = 0; i < cl; ++i)
+        quantRow(rows + (size_t)i * hidden_, (int16_t*)(x + i * pitch), pEmbInvScale_);
+      prefill_.inClean(0);
+      writePositions(prefill_, pos, cl, chunk_);
+      writePrefillMask((int16_t*)prefill_.inPtr(2));
+      prefill_.inClean(2);
+      loadPrefillCaches();
+      prefill_.infer();
+      appendPrefill(cl);
+      for (int i = 0; i < cl; ++i) maxPos_ = std::max(maxPos_, pos[i].max());
+      return;
+    }
     auto* x = (int16_t*)prefill_.inPtr(0);
     std::memset(x, 0, (size_t)chunk_ * hidden_ * sizeof(int16_t));
     for (int i = 0; i < cl; ++i) quantRow(rows + (size_t)i * hidden_, x + (size_t)i * hidden_);
@@ -556,7 +679,7 @@ class NativeEngine {
   }
 
   void feedEmbedsNoMark(const float* rows, int n, const Pos3* pos) {
-    if (mode_ != InputMode::Embed) throw std::runtime_error("[native] feed_embeds() needs an embed-input graph");
+    if (mode_ == InputMode::Token) throw std::runtime_error("[native] feed_embeds() needs an embed-input graph");
     std::vector<Pos3> seq;
     if (!pos) {
       seq.resize(n);
@@ -600,7 +723,10 @@ class NativeEngine {
   int hidden_ = 0, rot_ = 0;
   size_t rowK_ = 0, rowV_ = 0;
   int base_ = 3, vInBase_ = 0, vOutBase_ = 0, logitStride_ = 0;
+  int pBase_ = 3, pvInBase_ = 0;                 // prefill's own cache-input offsets
+  int posRows_ = 1;                              // EmbedPos: 1 (rope) or 3 (mrope t,h,w)
   float logitScale_ = 1.0f, embInvScale_ = 1.0f, ropeInvScale_ = 1.0f;
+  float pEmbInvScale_ = 1.0f;                    // EmbedPos prefill's own input scale
   int P_ = 0, maxPos_ = -1;
   const int16_t* curLogits_ = nullptr;
   static constexpr int32_t kStateMagic = 0x424C4B31;   // "BLK1" — prompt-cache file tag

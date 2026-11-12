@@ -9,6 +9,7 @@
 #pragma once
 
 #include "bllm/model_config.h"
+#include "bllm/native_embed.h"         // EmbedTable: host embedding for LLM 2.0 graphs
 #include "bllm/native_engine.h"
 #include "bllm/native_grammar.h"       // GBNF constrained decoding (set_grammar)
 #include "bllm/native_hybrid_engine.h"
@@ -41,8 +42,22 @@ class NativeLlm {
     if (cfg_.is_hybrid())
       hybrid_ = std::make_unique<NativeHybridEngine>(cfg_.hbm, cfg_.embed, cfg_.graph,
                                                      cfg_.rope_theta, cfg_.hbm_prefill);
-    else
+    else {
       dense_ = std::make_unique<NativeEngine>(cfg_.hbm);
+      // An official LLM 2.0 graph takes embeddings, not ids: the package's fp16
+      // `*_embed_tokens.bin` is the table, named by model.json's `embed`.
+      if (dense_->needs_embedder()) {
+        if (dense_->embed_input())
+          throw std::runtime_error("[bllm] '" + cfg_.name + "' is an Omni text tower (host "
+                                   "rope); load it as arch=\"omni\" with bllm::NativeVlm");
+        if (cfg_.embed.empty())
+          throw std::runtime_error("[bllm] '" + cfg_.name + "' is an LLM 2.0 graph (embedding "
+                                   "input) but model.json has no \"embed\" table — point it at "
+                                   "the package's *_embed_tokens.bin");
+        embed_ = std::make_unique<EmbedTable>(cfg_.embed, dense_->vocab(), dense_->hidden());
+        dense_->set_embedder([t = embed_.get()](int id, float* dst) { t->lookup(id, dst); });
+      }
+    }
     // A multi-core .hbm (nash-p / S600) MUST be submitted to specific BPU cores — the
     // runtime rejects HB_UCP_CORE_ANY for multi-core tasks. Bind cores 0..(bpu_cores-1)
     // = mask (1<<N)-1 (HB_UCP_BPU_CORE_k == 1<<k). Single-core keeps the CORE_ANY default.
@@ -448,6 +463,7 @@ class NativeLlm {
 
   ModelConfig cfg_;
   Tokenizer tk_;
+  std::unique_ptr<EmbedTable> embed_;             // LLM 2.0 dense only; outlives dense_
   std::unique_ptr<NativeHybridEngine> hybrid_;
   std::unique_ptr<NativeEngine> dense_;
   NativeSamplingParams sampling_;                 // default: greedy

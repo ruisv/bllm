@@ -420,8 +420,7 @@ class NativeHybridEngine {
     accPrep_ += std::chrono::duration<double, std::milli>(tInfer0 - tPrep0).count();
     hbUCPTaskHandle_t task = nullptr;
     BLLM_NATIVE_CK(hbDNNInferV2(&task, out_.data(), in_.data(), h_));
-    native_detail::submitAndWait(task, sched_);
-    hbUCPReleaseTask(task);
+    slot_.run(task, sched_);                    // releases the PREVIOUS step's task
     logitMem_.inval();                          // logits are CPU-read
     accInfer_ += std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - tInfer0).count();
@@ -645,8 +644,7 @@ class NativeHybridEngine {
     }
     hbUCPTaskHandle_t task = nullptr;
     BLLM_NATIVE_CK(hbDNNInferV2(&task, pout_.data(), pin_.data(), ph_));
-    native_detail::submitAndWait(task, sched_);
-    hbUCPReleaseTask(task);
+    pslot_.run(task, sched_);
     pLogitMem_.inval();
     // Only the LAST row's logits matter — they seed the next sampled token. Copy
     // them into the decode graph's logit buffer rather than pointing at the prefill
@@ -719,6 +717,9 @@ class NativeHybridEngine {
   // mis-position every token after a restore. Old blobs are rejected, not misread.
   HybridStats stats_;
   std::vector<TokenLogprobs> logprobs_;    // last generate()'s, when asked for
+  // Declared last: destroyed first, so each kept task handle is released while
+  // `packed_` (declared first) still holds the model it came from.
+  native_detail::TaskSlot slot_, pslot_;
 };
 
 }  // namespace bllm
