@@ -24,6 +24,19 @@ All notable changes to BLLM are documented here. The format follows
   they used to be ignored without a word. `/metrics` reports `chat_dialect`,
   `supports_tools` and `thinking`.
 - `chat_config` includes the manifest's `dialect`.
+- **Qwen3.5: a short prompt's first token no longer waits on one decode step per token.**
+  The part of a prompt that does not fill a whole 32-token prefill chunk — all of a
+  typical question — used to be stepped through the decode graph, so time to first token
+  was a cliff rather than a slope: on 0.8B a 31-token prompt took 1.71 s, a 32-token one
+  0.39 s. A prefill graph built to take pads now runs that tail as one padded chunk (the
+  pads leave the recurrent state untouched, and the engine takes their K/V back out of the
+  attention window): 7–31 tokens now cost ~0.37 s flat, 37–63 tokens ~0.68 s. Tails under 7
+  tokens are still stepped, where that is faster. Such a graph has the same inputs and
+  outputs as before, so older bllm versions run the re-released packages exactly as they
+  ran the old ones; the package declares it with `prefill_pads: true` in `model.json`
+  (`bllm-make-model-dir --prefill-pads`), and `prefill_min_tail` (`--prefill-min-tail`)
+  moves the threshold. Sessions report `prefill_pads` and take `prefill_min_tail`. Needs
+  the re-released Qwen3.5 packages; older ones keep stepping the tail.
 
 ### Changed
 - On those models the server renders the **whole** conversation as the template does —

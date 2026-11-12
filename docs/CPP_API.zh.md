@@ -74,6 +74,8 @@ bllm::ModelConfig cfg = bllm::loadModelConfig("/models/qwen3.5-2b");
 | `visual` / `audio` / `mel_filters` | 视觉塔 / 音频塔 / mel 滤波器（多模态）。 |
 | `graph` | `.hbm` 内部的图名（hybrid，默认 `"qwen35"`）。 |
 | `hbm_prefill` | 可选的 `seq_len=N` 分块 prefill 图。**缺失不是错误** —— 引擎会退回逐 token 摄入。 |
+| `prefill_pads` | 可选（hybrid），默认 `false`：prefill 图会屏蔽补齐行（按尾部补齐编出来的图），提示尾部可以补齐后一次 prefill。这种图的输入输出与普通 prefill 图完全一样（所以旧版运行时照常能用），只能由包来声明；对不屏蔽补齐行的图打开会算错，不只是变慢。 |
+| `prefill_min_tail` | 可选（hybrid）：提示尾部至少多少个 token 才补齐走一次 prefill，更短的逐 token 走 decode。只对能处理补齐块的 prefill 图有效；缺省用引擎默认值 7（0.8B 实测）。 |
 | `eos` | 停止 token id 列表。 |
 | `mrope_section` / `mrope_interleaved` | VLM 的 rope 维度在 (t,h,w) 上的切分及其频率布局。 |
 | `vision` | `VisionCfg{patch, merge, temporal, mean[3], std[3], resize, window}`。`resize` 为 `"pil"`（HF 的 PIL bicubic，默认）或 `"cv_cubic"`（OpenCV INTER_CUBIC，官方 2.0 包用这个）；`window > 0` 表示视觉塔按窗口注意力顺序输出、要排回光栅顺序（官方 Qwen2.5-VL 为 4）。 |
@@ -220,6 +222,8 @@ std::string a2 = llm.ask("它提到了哪些风险？");   // 复用前缀，且
 | `std::string snapshot() const` | 把当前上下文快照成字节串（与 `save_state()` 同样的载荷，但在内存里）。 |
 | `void restore(const std::string& blob)` | 恢复快照，之后的生成逐位一致。相对 prefill 很便宜，但**不是免费**：`restore()` 会先清空整个缓存窗口再把行拷回去。 |
 | `int prefill_chunk() const` | prefill 分块宽度；`0` 表示该引擎不分块。 |
+| `bool prefill_pads() const` | hybrid（Qwen3.5）：包声明了 prefill 图能处理补齐的块（`model.json` 的 `prefill_pads`），不足一块的提示尾部一次 prefill 走完。旧包为 `false`，dense 恒为 `false`。 |
+| `int prefill_min_tail() const` / `void set_prefill_min_tail(int)` | hybrid：尾部至少多少个 token 才补齐走 prefill（默认 7，更短的逐 token 走 decode 更快）。设得比 `prefill_chunk()` 大就关闭补齐。 |
 | `void feed_ids(const std::vector<int>& ids)` | 只摄入 token 不解码（`generate()` 的前半）。取 id 而不是文本：服务端已经分过词（缓存也是按 token id 匹配的），把文本增量重新编码可能在接缝处切出不同的 token。 |
 | `std::string decode_stream(max_new=256, on_text={}, stop={})` | 从当前上下文开始解码（`generate()` 的后半）。 |
 | `void request_cancel()` / `bool canceled() const` | 在 token 边界干净地中断进行中的生成。**线程安全**，可从别的线程调用（比如服务端发现客户端断连）。上下文保持一致 —— 取消点之后不会再生成任何东西；标志是一次性的，落在两轮之间的取消会被丢弃而不会误杀下一轮。 |
@@ -229,7 +233,7 @@ std::string a2 = llm.ask("它提到了哪些风险？");   // 复用前缀，且
 >相同**。在任意点切分 prompt，就改变了哪些 token 走了哪张图 —— 也就可能改变回答。
 > 只在这些倍数点上快照，分段方式才与直通 prefill 一致，复用才是精确的。
 > `prefill_chunk() == 0` 表示任意切分都精确（hybrid 引擎在没有 `hbm_prefill` 时
-> 就是逐 token 摄入）。
+> 就是逐 token 摄入）。hybrid 的尾部补不补齐也只看剩余 token 数，对齐规则不变。
 
 现成实现见 `docker/serving/`（`cache.py` 的前缀缓存 + `engine.py` 的单 worker 线程）。
 

@@ -81,6 +81,8 @@ bllm::ModelConfig cfg = bllm::loadModelConfig("/models/qwen3.5-2b");
 | `visual` / `audio` / `mel_filters` | vision tower / audio tower / mel filters (multimodal). |
 | `graph` | graph name inside the `.hbm` (hybrid; defaults to `"qwen35"`). |
 | `hbm_prefill` | optional `seq_len=N` chunked prefill graph. **Its absence is not an error** — the engine falls back to token-by-token ingestion. |
+| `prefill_pads` | optional (hybrid), default `false`: the prefill graph gates pad rows (a graph built with tail padding), so a prompt tail can be one padded prefill. Such a graph has exactly the I/O of one that does not — which is why older runtimes still run it — so only the package can declare it; switched on for a graph that does not gate pads it is wrong, not merely slow. |
+| `prefill_min_tail` | optional (hybrid): the shortest prompt tail padded through one prefill run; shorter tails are decode-stepped. Only meaningful for a prefill graph that takes pads; defaults to the engine's 7 (measured on 0.8B). |
 | `eos` | stop-token ids. |
 | `mrope_section` / `mrope_interleaved` | how the VLM's rope dims split across (t,h,w), and the frequency layout of that split. |
 | `vision` | `VisionCfg{patch, merge, temporal, mean[3], std[3], resize, window}`. `resize` is `"pil"` (HF's PIL bicubic, the default) or `"cv_cubic"` (OpenCV INTER_CUBIC, what official 2.0 packages use); `window > 0` means the tower returns its tokens in window-attention order, to be put back in raster order (4 for the official Qwen2.5-VL). |
@@ -237,6 +239,8 @@ snapshot itself:
 | `std::string snapshot() const` | Snapshot the current context to a byte string (same payload as `save_state()`, in memory). |
 | `void restore(const std::string& blob)` | Restore it; generation resumes bit-identically. Cheap relative to a prefill but **not free** — `restore()` clears the whole cache window before copying rows back. |
 | `int prefill_chunk() const` | Prefill chunk width, or `0` when this engine does not chunk. |
+| `bool prefill_pads() const` | Hybrid (Qwen3.5): the package declares that its prefill graph takes a padded chunk (`model.json` `prefill_pads`), so a prompt tail shorter than a chunk is one prefill run. `false` on older packages, always `false` for dense. |
+| `int prefill_min_tail() const` / `void set_prefill_min_tail(int)` | Hybrid: the shortest tail sent as one padded chunk (default 7; shorter tails are faster decode-stepped). Set it above `prefill_chunk()` to turn padding off. |
 | `void feed_ids(const std::vector<int>& ids)` | Ingest tokens without decoding (the prefill half of `generate()`). It takes ids rather than text because the server has already tokenized — and re-encoding a text delta could tokenize differently at the seam than the ids the cache was keyed on. |
 | `std::string decode_stream(max_new=256, on_text={}, stop={})` | Decode from the current context (the generation half of `generate()`). |
 | `void request_cancel()` / `bool canceled() const` | Stop an in-flight generation cleanly at the next token boundary. **Thread-safe** — call it from another thread (a server cancelling a disconnected client). The context stays consistent: nothing is generated past the cancel point. The flag is one-shot, so a cancel that lands between turns is dropped rather than killing the next one. |
@@ -248,7 +252,8 @@ snapshot itself:
 > through which graph — and so can change the reply. Snapshot at those multiples
 > and the segmentation matches a straight-through prefill, making reuse exact.
 > `prefill_chunk() == 0` means any split is exact (the hybrid engine ingests one
-> token at a time unless it carries an `hbm_prefill` graph).
+> token at a time unless it carries an `hbm_prefill` graph). Whether a hybrid tail is
+> padded also depends only on how many tokens remain, so the rule is unchanged.
 
 A worked implementation is in `docker/serving/` (`cache.py` for the prefix cache,
 `engine.py` for the single worker thread).

@@ -40,10 +40,12 @@ class NativeLlm {
     if (cfg_.is_embed())
       throw std::runtime_error("[bllm] '" + cfg_.name + "' is arch=\"embed\" (an encoder, not a "
                                "generator); load it with bllm::NativeEmbedder");
-    if (cfg_.is_hybrid())
+    if (cfg_.is_hybrid()) {
       hybrid_ = std::make_unique<NativeHybridEngine>(cfg_.hbm, cfg_.embed, cfg_.graph,
                                                      cfg_.rope_theta, cfg_.hbm_prefill);
-    else {
+      hybrid_->set_prefill_pads(cfg_.prefill_pads);
+      if (cfg_.prefill_min_tail > 0) hybrid_->set_prefill_min_tail(cfg_.prefill_min_tail);
+    } else {
       dense_ = std::make_unique<NativeEngine>(cfg_.hbm);
       // An official LLM 2.0 graph takes embeddings, not ids: the package's fp16
       // `*_embed_tokens.bin` is the table, named by model.json's `embed`.
@@ -318,6 +320,14 @@ class NativeLlm {
   // 0 means the engine prefills one token at a time. The hybrid engine reports 0
   // unless its .hbm (or a separate hbm_prefill) carries a seq_len=N graph.
   int prefill_chunk() const { return hybrid_ ? hybrid_->prefill_chunk() : dense_->chunk(); }
+
+  // Hybrid engine only (false / 0 otherwise): whether its prefill graph takes a padded
+  // chunk, and the shortest prompt tail it sends through one instead of stepping it.
+  // Raising the threshold past prefill_chunk() turns padding off — the A/B switch. The
+  // split stays a function of the ids alone, so prefix-cache alignment is unaffected.
+  bool prefill_pads() const { return hybrid_ && hybrid_->prefill_pads(); }
+  int prefill_min_tail() const { return hybrid_ ? hybrid_->prefill_min_tail() : 0; }
+  void set_prefill_min_tail(int n) { if (hybrid_) hybrid_->set_prefill_min_tail(n); }
 
   // generate() split in two, so a caller can snapshot exactly at the prefill/decode
   // boundary. feed_ids() takes ids rather than text: the server has already tokenized

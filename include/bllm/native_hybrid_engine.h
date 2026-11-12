@@ -13,7 +13,9 @@
 //     memcpy of the (large) mixed caches.
 //   * Caches are BPU-write then BPU-read only — the CPU never touches them, so
 //     they need NO cache flush. Only the small CPU-written inputs (x/cos/sin/mask)
-//     are cleaned and the logits output invalidated.
+//     are cleaned and the logits output invalidated. The one exception is a padded
+//     prefill chunk, whose pad rows the host moves out of the K/V windows
+//     (dropPadRows), maintaining exactly the rows it touches.
 //   * Embedding lookup is host-side from an fp16 table (aarch64 native __fp16).
 //
 #pragma once
@@ -450,16 +452,36 @@ class NativeHybridEngine {
       pos = seq.data();
     }
     int i = 0;
-    // Whole chunks through the prefill graph (one weight stream per N_ rows), then
-    // the tail one row at a time. With no prefill graph N_ is 0 and this is a no-op,
-    // leaving exactly today's behaviour.
+    // Whole chunks through the prefill graph (one weight stream per N_ rows). With no
+    // prefill graph N_ is 0 and this is a no-op, leaving exactly today's behaviour.
     for (; ph_ && i + N_ <= n; i += N_)
-      prefillChunk(rows + (size_t)i * H_, pos + i);
+      prefillChunk(rows + (size_t)i * H_, pos + i, N_);
+    // The tail: one padded chunk when the graph takes pads and the tail is long enough
+    // to beat stepping it (a 27-token question used to cost 27 decode steps), else one
+    // row at a time. The rule looks only at the tail length and the room left, so the
+    // same ids are always split the same way — which the prefix cache relies on.
+    if (i < n && padsTail(n - i)) {
+      prefillChunk(rows + (size_t)i * H_, pos + i, n - i);
+      i = n;
+    }
     for (; i < n; ++i) stepRow(rows + (size_t)i * H_, pos[i]);
   }
 
   // Does this model carry a prefill graph, and how wide is it? (0 = chunk=1 only.)
   int prefill_chunk() const { return ph_ ? N_ : 0; }
+
+  // Can the prefill graph take a partly-filled chunk (pads after the real rows)? Nothing
+  // in a graph's I/O says so — a graph that takes pads has exactly the I/O of one that
+  // does not, which is what lets an older engine run it unchanged — so the package
+  // declares it (model.json `prefill_pads`) and the session switches it on here. On a
+  // graph that does not gate pads this would be wrong, not merely slow.
+  bool prefill_pads() const { return ph_ && pads_; }
+  void set_prefill_pads(bool on) { pads_ = on; }
+  // Shortest tail sent through the prefill graph as one padded chunk; shorter tails are
+  // stepped. A padded chunk costs about one chunk's time whatever it holds, so below a
+  // few tokens stepping wins. Setting it above prefill_chunk() turns padding off.
+  int prefill_min_tail() const { return minTail_; }
+  void set_prefill_min_tail(int n) { minTail_ = n < 1 ? 1 : n; }
 
   // The next plain-rope position — what a text token following the stream so far
   // should use. Not the same as position() once an image has been fed.
@@ -581,8 +603,24 @@ class NativeHybridEngine {
     }
   }
 
-  // One chunk of exactly N_ already-embedded rows through the prefill graph.
-  void prefillChunk(const float* rows, const Pos3* pos) {
+  bool padsTail(int tail) const {
+    return ph_ && pads_ && tail >= minTail_ && tail < N_ && P_ + N_ <= CL_;
+  }
+
+  // One chunk through the prefill graph: `v` real, already-embedded rows (v == N_ for a
+  // whole chunk; v < N_ only on a graph that takes pads, see padsTail()).
+  //
+  // Pads go AFTER the real rows, as copies of the last one, and are marked by a zero
+  // cos/sin: the graph reads a row's validity off rope frequency 0 (cos^2 + sin^2 is 1
+  // at any real position). Causality keeps pads out of every real query on its own; the
+  // graph gives them decay 1 and beta 0 so the recurrent state passes through them, and
+  // takes the conv state and the logits at the last real row. What it cannot avoid is
+  // writing their K/V: it rolls each attention window by the whole chunk. dropPadRows()
+  // takes them back out.
+  //
+  // Why P_ + N_ <= CL_ for a padded chunk: the roll by N_ evicts the window's first N_
+  // rows, which are only all empty while that holds.
+  void prefillChunk(const float* rows, const Pos3* pos, int v) {
     // These inputs are multi-ROW, unlike decode's [1,H]: hbDNN pads each leading
     // dimension up to its alignment, so index by the tensor's own stride rather
     // than assuming rows are tight. (They usually are at these sizes, which is
@@ -592,7 +630,7 @@ class NativeHybridEngine {
     const int64_t sStride = rowStride(pin_[2].properties);
     auto* xBase = reinterpret_cast<uint8_t*>(pFixedMem_[0].p());
     for (int j = 0; j < N_; ++j)
-      std::memcpy(xBase + (size_t)j * xStride, rows + (size_t)j * H_,
+      std::memcpy(xBase + (size_t)j * xStride, rows + (size_t)(j < v ? j : v - 1) * H_,
                   (size_t)H_ * sizeof(float));
     pFixedMem_[0].clean();
 
@@ -600,9 +638,14 @@ class NativeHybridEngine {
     auto* snBase = reinterpret_cast<uint8_t*>(pFixedMem_[2].p());
     const int half = ROT_ / 2;
     for (int j = 0; j < N_; ++j) {
-      const int32_t pv[3] = {pos[j].t, pos[j].h, pos[j].w};
       float* cj = reinterpret_cast<float*>(csBase + (size_t)j * cStride);
       float* sj = reinterpret_cast<float*>(snBase + (size_t)j * sStride);
+      if (j >= v) {                                       // a pad: zero rope marks it
+        std::memset(cj, 0, (size_t)ROT_ * sizeof(float));
+        std::memset(sj, 0, (size_t)ROT_ * sizeof(float));
+        continue;
+      }
+      const int32_t pv[3] = {pos[j].t, pos[j].h, pos[j].w};
       for (int i = 0; i < half; ++i) {
         const double ang = (double)pv[sec_.empty() ? 0 : sec_[i]] * inv_[i];
         const float c = (float)std::cos(ang), sv = (float)std::sin(ang);
@@ -621,11 +664,8 @@ class NativeHybridEngine {
     // The window doesn't vary by head, but the tensor is [nHead_, N, CL] and the
     // graph reads every head plane rather than broadcasting one — see the decode
     // mask above for what leaving the rest unwritten costs. Fill head 0's plane,
-    // then copy it to the others.
-    //
-    // NOTE: unverified on hardware. No model available here carries the optional
-    // `_prefill` graph, so this path never executes on any .hbm we have; the fix
-    // is by inspection, symmetric with the decode mask it mirrors.
+    // then copy it to the others. A padded chunk needs nothing different: the graph
+    // still rolls by N_, and the pads come after every real query.
     auto* maskBase = reinterpret_cast<uint8_t*>(pFixedMem_[3].p());
     const auto& mp = pin_[3].properties;                 // [nHead_, N, CL]
     const int T = P_ + N_;
@@ -656,10 +696,30 @@ class NativeHybridEngine {
                 (size_t)pLogitStride_);
     curLogits_ = logitMem_.p();
     curLogits_valid_ = true;
+    if (v < N_) dropPadRows(nxt, v);
     phase_ = !phase_;
-    P_ += N_;
-    for (int j = 0; j < N_; ++j)
+    P_ += v;
+    for (int j = 0; j < v; ++j)
       if (pos[j].max() > maxPos_) maxPos_ = pos[j].max();
+  }
+
+  // After a chunk of v < N_ real rows, each attention window reads
+  //   [ ... | P_ earlier rows | v new rows | N_-v pad rows ]
+  // because the graph rolled it by N_. Shift the occupied part right by N_-v so it
+  // reads as a roll by v — right-aligned, which is all decode and the next chunk
+  // assume. Only the P_+v occupied rows move (the rest are masked), so a short
+  // conversation moves little; the window is the BPU's, hence the cache maintenance.
+  void dropPadRows(std::vector<Mem>& win, int v) {
+    const uint64_t d = (uint64_t)(N_ - v), T = (uint64_t)(P_ + v);
+    for (int c = 0; c < nCache_; ++c) {
+      const uint64_t row = kvRow_[c];
+      if (!row) continue;
+      const uint64_t src = ((uint64_t)CL_ - T - d) * row, len = T * row;
+      win[c].flush(src, len + d * row, HB_SYS_MEM_CACHE_INVALIDATE);
+      auto* base = reinterpret_cast<uint8_t*>(win[c].p());
+      std::memmove(base + src + d * row, base + src, len);
+      win[c].flush(src + d * row, len, HB_SYS_MEM_CACHE_CLEAN);
+    }
   }
 
   static constexpr int kFixedIn = 4;            // x, cos, sin, mask
@@ -693,6 +753,11 @@ class NativeHybridEngine {
   int64_t pLogitStride_ = 0;
   int pLogitRows_ = 1;
   int N_ = 0;
+  bool pads_ = false;   // the package declares its prefill graph gates pads (set_prefill_pads)
+  // Measured on S100P, Qwen3.5-0.8B ctx4k: a padded chunk costs ~315 ms whatever it holds
+  // and a decode step 53 ms, so stepping wins up to 6 tokens (320 ms) and padding from 7.
+  // The ratio differs per build (2B/4B: ~5), hence model.json's prefill_min_tail.
+  int minTail_ = 7;
   std::string decodeName_;
   std::vector<uint64_t> kvRow_;   // per cache: bytes/position if window-indexed, else 0
   std::vector<Mem> fixedMem_, bufA_, bufB_;

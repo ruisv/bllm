@@ -128,10 +128,13 @@ class HybridTextEngine final : public TextEngine {
   HybridTextEngine(const std::string& hbm, const std::string& embed_path,
                    const std::string& graph, double rope_theta,
                    const std::vector<int>& mrope_section, bool mrope_interleaved,
-                   const std::string& hbm_prefill = "")
+                   const std::string& hbm_prefill = "", bool prefill_pads = false,
+                   int prefill_min_tail = 0)
       : e_(std::make_unique<NativeHybridEngine>(hbm, embed_path, graph, rope_theta,
                                                 hbm_prefill)) {
     e_->set_mrope(mrope_section, mrope_interleaved);
+    e_->set_prefill_pads(prefill_pads);
+    if (prefill_min_tail > 0) e_->set_prefill_min_tail(prefill_min_tail);
   }
 
   int hidden() const override { return e_->hidden(); }

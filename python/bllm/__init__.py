@@ -411,6 +411,23 @@ if _HAVE_NATIVE:
             """
             return self._llm.prefill_chunk
 
+        @property
+        def prefill_pads(self) -> bool:
+            """Hybrid models: the prefill graph takes a padded chunk, so a prompt tail
+            shorter than `prefill_chunk` costs one graph run instead of one decode step
+            per token. False on older builds (their tail is always stepped)."""
+            return self._llm.prefill_pads
+
+        @property
+        def prefill_min_tail(self) -> int:
+            """Hybrid models: the shortest tail sent as one padded chunk; shorter tails
+            are stepped. Set it above `prefill_chunk` to turn padding off."""
+            return self._llm.prefill_min_tail
+
+        @prefill_min_tail.setter
+        def prefill_min_tail(self, n: int) -> None:
+            self._llm.prefill_min_tail = int(n)
+
         def decode_stream(self, max_new: int = 256,
                           on_text: "Optional[Callable[[str], None]]" = None,
                           stop: "Optional[list[str]]" = None) -> str:

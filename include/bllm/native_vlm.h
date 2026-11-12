@@ -75,7 +75,8 @@ class NativeVlm {
     if (cfg_.is_hybrid())
       text_ = std::make_unique<HybridTextEngine>(cfg_.hbm, cfg_.embed, cfg_.graph,
                                                  cfg_.rope_theta, cfg_.mrope_section,
-                                                 cfg_.mrope_interleaved, cfg_.hbm_prefill);
+                                                 cfg_.mrope_interleaved, cfg_.hbm_prefill,
+                                                 cfg_.prefill_pads, cfg_.prefill_min_tail);
     else if (cfg_.is_omni())
       text_ = std::make_unique<DenseTextEngine>(cfg_.hbm, cfg_.embed, cfg_.rope_theta,
                                                 cfg_.mrope_section, cfg_.mrope_interleaved);

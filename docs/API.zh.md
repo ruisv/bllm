@@ -99,7 +99,9 @@ C++：`bllm::NativeLlm`（`bllm/native_llm.h`，见 [CPP_API.zh.md](CPP_API.zh.m
 | `decode_stream(max_new=256, on_text=None, stop=None) -> str` | 从当前上下文解码（`generate()` 的生成那一半）。 |
 | `stream_decode(max_new=256, stop=None) -> Iterator[str]` | 同上的惰性生成器版本。 |
 | `cache_align(n) -> int` | **可安全快照的最大前缀长度**，见下方警告。 |
-| `prefill_chunk -> int` | prefill 分块宽度；`0` 表示该引擎不分块（hybrid）。 |
+| `prefill_chunk -> int` | prefill 分块宽度；`0` 表示该引擎不分块（不带 prefill 图的 hybrid 包）。 |
+| `prefill_pads -> bool` | hybrid（Qwen3.5）：包声明了 prefill 图能处理补齐的块（`model.json` 的 `prefill_pads`），不足一块的提示尾部一次 prefill 走完，不再逐 token 走 decode。旧包为 `False`。 |
+| `prefill_min_tail -> int`（可写） | hybrid：尾部至少多少个 token 才补齐走 prefill，更短的逐 token 走 decode。设得比 `prefill_chunk` 大就关闭补齐。 |
 | `context_left -> int` | KV/SSM 窗口剩余 token。窗口**就是**上下文，越界报错而非静默丢弃。 |
 | `request_cancel()` / `canceled -> bool` | 在 token 边界干净地中断进行中的生成。**线程安全**，可从别的线程调用（比如服务端发现客户端断连）。上下文保持一致，取消后会话可立即复用。 |
 
@@ -108,7 +110,8 @@ C++：`bllm::NativeLlm`（`bllm/native_llm.h`，见 [CPP_API.zh.md](CPP_API.zh.m
 > token 数，所以未缓存路径的分块边界必落在 `prefill_chunk` 的倍数上；只在这些点快照，
 > 尾部分段才与未缓存时一致。板上实测（Qwen2.5-1.5B，greedy）：对齐切分 **5/5** 复现原答案，
 > 不对齐 **1/18**，其中一次把 "Venus is the hottest" 变成 "Earth is the hottest"。
-> 用 `cache_align()` 即可，别自己算。hybrid 无分块（`prefill_chunk == 0`），任意点都安全。
+> 用 `cache_align()` 即可，别自己算。带 prefill 图的 hybrid 包（Qwen3.5，分块 32）同理：尾部是补齐走
+> prefill 还是逐 token 走 decode，也只看剩余 token 数。不分块的（`prefill_chunk == 0`）任意点都安全。
 
 ```python
 ids  = sess.encode(prompt)

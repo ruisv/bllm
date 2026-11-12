@@ -234,6 +234,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--hbm-prefill", help="optional seq_len=N prefill graph .hbm (hybrid). "
                                           "Amortizes the weight stream over N tokens; without "
                                           "it prefill runs one token at a time.")
+    ap.add_argument("--prefill-pads", action="store_true",
+                    help="hybrid: the prefill graph gates pad rows (a graph built with tail "
+                         "padding), so a prompt tail shorter than a chunk is one padded "
+                         "prefill instead of a decode step per token. Wrong on a graph "
+                         "that does not: its I/O looks the same, so only you can say.")
+    ap.add_argument("--prefill-min-tail", type=int,
+                    help="hybrid: shortest prompt tail sent through the prefill graph as one "
+                         "padded chunk (needs a graph that takes pads; default: the engine's "
+                         "7, measured on 0.8B). Shorter tails are decode-stepped.")
     ap.add_argument("--rope-theta", type=float, help="rope base (default: 1e7 hybrid, 1e6 omni)")
     ap.add_argument("--cache-len", type=int, default=0, help="informational")
     ap.add_argument("--bpu-cores", type=int, choices=[1, 2, 4],
@@ -440,6 +449,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.hbm_prefill:
             cfg["hbm_prefill"] = "model_prefill.hbm"
             payload["model_prefill.hbm"] = Path(args.hbm_prefill)
+        if args.prefill_pads:
+            cfg["prefill_pads"] = True
+        if args.prefill_min_tail:
+            cfg["prefill_min_tail"] = args.prefill_min_tail
         if args.visual:
             cfg["visual"] = "visual.hbm"
             payload["visual.hbm"] = Path(args.visual)

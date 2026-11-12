@@ -324,6 +324,14 @@ NB_MODULE(_bllm_native, m) {
                    "snapshots at multiples of it: the dense engine batch-prefills runs of "
                    "this width and decode-steps the rest, and the two graphs differ "
                    "numerically under int8, so an unaligned split can change the reply.")
+      .def_prop_ro("prefill_pads", &bllm::NativeLlm::prefill_pads,
+                   "Hybrid engine: the prefill graph takes a padded chunk, so a prompt tail "
+                   "shorter than prefill_chunk is one graph run rather than one decode step "
+                   "per token.")
+      .def_prop_rw("prefill_min_tail", &bllm::NativeLlm::prefill_min_tail,
+                   &bllm::NativeLlm::set_prefill_min_tail,
+                   "Hybrid engine: shortest tail sent as one padded chunk; shorter ones are "
+                   "stepped. Above prefill_chunk, padding is off.")
       .def("request_cancel", &bllm::NativeLlm::request_cancel,
            "Stop the in-flight generation at the next token boundary. Thread-safe — call it "
            "from another thread while a generation runs (a server dropping a disconnected "

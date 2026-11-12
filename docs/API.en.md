@@ -105,7 +105,9 @@ one per request — an OpenAI-compatible server, say — drive the snapshot your
 | `decode_stream(max_new=256, on_text=None, stop=None) -> str` | Decode from the current context (the generation half). |
 | `stream_decode(max_new=256, stop=None) -> Iterator[str]` | The same, as a lazy generator. |
 | `cache_align(n) -> int` | **Largest prefix length that is safe to snapshot** — see the warning. |
-| `prefill_chunk -> int` | Prefill chunk width; `0` when the engine does not chunk (hybrid). |
+| `prefill_chunk -> int` | Prefill chunk width; `0` when the engine does not chunk (a hybrid package without a prefill graph). |
+| `prefill_pads -> bool` | Hybrid (Qwen3.5): the package declares that its prefill graph takes a padded chunk (`model.json` `prefill_pads`), so a prompt tail shorter than a chunk is one prefill run instead of one decode step per token. `False` on older packages. |
+| `prefill_min_tail -> int` (settable) | Hybrid: the shortest tail sent as one padded chunk; shorter tails are decode-stepped. Set it above `prefill_chunk` to turn padding off. |
 | `context_left -> int` | Tokens free in the KV/SSM window. The window IS the context — overflow raises rather than silently dropping turns. |
 | `request_cancel()` / `canceled -> bool` | Stop an in-flight generation at a token boundary. **Thread-safe** — call it from another thread (a server dropping a disconnected client). The context stays consistent, so the session is immediately reusable. |
 
@@ -116,7 +118,9 @@ one per request — an OpenAI-compatible server, say — drive the snapshot your
 > tail is segmented exactly as it would have been. Measured on-board (Qwen2.5-1.5B, greedy):
 > aligned splits reproduced the original answer **5/5**, unaligned **1/18** — one turning
 > "Venus is the hottest" into "Earth is the hottest". Use `cache_align()`; do not compute it
-> yourself. The hybrid engine does not chunk (`prefill_chunk == 0`), so any point is safe.
+> yourself. A hybrid package with a prefill graph (Qwen3.5, chunk 32) is the same: whether its
+> tail is padded through prefill or decode-stepped also depends only on how many tokens
+> remain. An engine that does not chunk (`prefill_chunk == 0`) is safe at any point.
 
 ```python
 ids  = sess.encode(prompt)

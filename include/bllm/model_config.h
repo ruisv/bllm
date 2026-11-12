@@ -105,6 +105,14 @@ struct ModelConfig {
   std::string hbm_prefill;                       // optional seq_len=N prefill graph (hybrid).
                                                  // Its absence is not an error: the engine
                                                  // falls back to one-token-at-a-time prefill.
+  bool prefill_pads = false;                     // hybrid: the prefill graph gates pad rows, so a
+                                                 // prompt tail can be one padded chunk. Its I/O
+                                                 // is the same as a graph that does not, so only
+                                                 // the package can say so.
+  int prefill_min_tail = 0;                      // hybrid: shortest prompt tail padded through
+                                                 // the prefill graph (0 = engine default). Set
+                                                 // per package: it is where one padded chunk
+                                                 // starts to beat stepping, a timing ratio.
   std::vector<int> eos;                          // stop-token ids
   std::vector<int> mrope_section;                // VLM: rope dim split across (t,h,w)
   // How that split is laid out across rope frequencies. Contiguous runs (Omni,
