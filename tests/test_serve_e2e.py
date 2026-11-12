@@ -120,9 +120,24 @@ needs_grammar = pytest.mark.skipif(
 
 @needs_grammar
 def test_response_format_json_object_parses():
-    r = chat([{"role": "user", "content": "Describe Paris briefly."}],
-             response_format={"type": "json_object"}, max_tokens=64)
-    json.loads(r["choices"][0]["message"]["content"])   # the whole guarantee, in one call
+    # The prompt asks for JSON, as OpenAI's json_object mode requires: the grammar only
+    # guarantees the shape, and a model never told to write JSON can spend its whole
+    # budget inside one key. (This used to pass on any-JSON-value: "1.1" then newlines.)
+    r = chat([{"role": "user", "content": "Describe Paris briefly as a JSON object with "
+                                          "the keys name and country."}],
+             response_format={"type": "json_object"}, max_tokens=128)
+    c = r["choices"][0]
+    assert c["finish_reason"] == "stop", c
+    assert isinstance(json.loads(c["message"]["content"]), dict)   # an OBJECT, not any value
+
+
+def test_a_reply_cut_at_max_tokens_reports_length():
+    """finish_reason/usage come from the tokens actually generated: re-encoding the reply
+    merges tokens and undercounted, so a cut reply read as finished."""
+    r = chat([{"role": "user", "content": "Count from 1 to 200, separated by spaces."}],
+             max_tokens=12)
+    assert r["choices"][0]["finish_reason"] == "length"
+    assert r["usage"]["completion_tokens"] == 12
 
 
 @needs_grammar
@@ -147,9 +162,12 @@ def test_raw_gbnf_grammar_field():
 
 @needs_grammar
 def test_a_grammar_does_not_leak_into_the_next_request():
-    """The session keeps a grammar until told otherwise, and requests share one session."""
+    """The session keeps a grammar until told otherwise, and requests share one session.
+    Compared against the same unconstrained request made BEFORE the grammar, so the test
+    measures the leak and not whether a small model can follow the instruction."""
+    before = chat(QUESTION, max_tokens=16)["choices"][0]["message"]["content"]
     chat(QUESTION, grammar='root ::= "yes" | "no"\n', max_tokens=8)
-    assert "pineapple" in chat(QUESTION, max_tokens=16)["choices"][0]["message"]["content"].lower()
+    assert chat(QUESTION, max_tokens=16)["choices"][0]["message"]["content"] == before
 
 
 @needs_grammar

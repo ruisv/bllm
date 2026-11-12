@@ -73,6 +73,18 @@ All notable changes to BLLM are documented here. The format follows
   as the official runtime writes them, too. (The Omni path is unchanged.)
 - The prefill logits row pitch is read from the tensor's resolved stride instead
   of being assumed to be the vocabulary padded to 32 bytes.
+- **`response_format: {"type": "json_object"}` now means an object**, as OpenAI
+  defines it, via the new `bllm.json_object_grammar()` (`json_grammar()` still
+  means any JSON value). With any value allowed, Qwen3-1.7B answered with one long
+  top-level string.
+- **JSON grammars bound their whitespace** — one space, or a newline and up to 20
+  indentation characters (llama.cpp's bound) — and no longer allow trailing
+  whitespace. Unbounded, a model could satisfy the grammar forever: Qwen2.5-1.5B
+  produced `1.1` and then newlines to the token limit.
+- **`finish_reason` and `usage.completion_tokens` count the tokens actually
+  generated** (`last_ntok`). Re-encoding the reply merges tokens that were generated
+  separately, so a reply cut at `max_tokens` undercounted and was reported as
+  `stop`.
 - **The OpenAI server no longer injects an empty `<think></think>` into models that
   have no think mode** (Qwen2.5, Qwen3-Instruct-2507, Phi): the assistant opener
   now uses the model's own think-off tail. `chat_template_kwargs.enable_thinking`

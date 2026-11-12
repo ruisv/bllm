@@ -358,7 +358,7 @@ class Engine:
                 self.cache.drop(blob_in)
             raise
 
-        res.n_completion = len(self.sess.encode(res.text)) if res.text else 0
+        res.n_completion = self._completion_tokens(res.text)
         res.ttft_ms = round((first[0] - t0) * 1e3, 1) if first else 0.0
         res.decode_tps = round(float(getattr(self.sess, "last_decode_tps", 0.0) or 0.0), 2)
         res.logprobs = self._logprobs_payload(job.sampling.get("logprobs", -1) >= 0)
@@ -368,6 +368,15 @@ class Engine:
         elif res.n_completion >= job.max_new:
             res.finish_reason = "length"
         return res
+
+    def _completion_tokens(self, text: str) -> int:
+        """What the reply cost in tokens. The runtime's own count when it has one: re-encoding
+        the text merges tokens that were generated separately, so a reply cut at max_new
+        undercounts and would be reported as finished ("stop") rather than "length"."""
+        n = getattr(self.sess, "last_ntok", None)
+        if isinstance(n, int):
+            return n
+        return len(self.sess.encode(text)) if text else 0
 
     def _logprobs_payload(self, wanted: bool) -> Optional[list]:
         """The last turn's logprobs in OpenAI's `logprobs.content[]` shape, or None.
@@ -449,7 +458,7 @@ class Engine:
             job.out.put(piece)
 
         res.text = self.sess.generate(job.prompt, job.max_new, on_text, job.stop)
-        res.n_completion = len(self.sess.encode(res.text)) if res.text else 0
+        res.n_completion = self._completion_tokens(res.text)
         res.ttft_ms = round((first[0] - t0) * 1e3, 1) if first else 0.0
         res.decode_tps = round(float(getattr(self.sess, "last_decode_tps", 0.0) or 0.0), 2)
         if getattr(self.sess, "canceled", False):

@@ -282,7 +282,7 @@ def _grammar_from(body: dict) -> str:
     Structured output has two entrances and they must not disagree, so asking for both is
     an error rather than a precedence rule nobody can remember:
 
-      response_format: {"type": "json_object"}                  any valid JSON
+      response_format: {"type": "json_object"}                  any JSON object
       response_format: {"type": "json_schema",
                         "json_schema": {"schema": {...}}}       that shape exactly
       grammar: "root ::= ..."                                   raw GBNF (llama.cpp's field)
@@ -304,7 +304,10 @@ def _grammar_from(body: dict) -> str:
     if kind == "text":
         return ""
     if kind == "json_object":
-        return bllm.json_grammar()
+        # An OBJECT, as OpenAI defines the mode — not any JSON value. Older runtimes only
+        # had the any-value grammar; it still beats no constraint.
+        return (bllm.json_object_grammar() if hasattr(bllm, "json_object_grammar")
+                else bllm.json_grammar())
     if kind == "json_schema":
         spec = rf.get("json_schema") or {}
         schema = spec.get("schema") if isinstance(spec, dict) else None

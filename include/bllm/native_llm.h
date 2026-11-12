@@ -179,6 +179,11 @@ class NativeLlm {
     first_turn_ = false;                 // a restored context is mid-conversation
   }
 
+  // Tokens the last turn actually generated (stop-string tail included). Re-encoding the
+  // reply undercounts — BPE merges what was generated as separate tokens — so a reply cut
+  // at max_new would read as finished.
+  int last_ntok() const { return lastNtok_; }
+
   double last_decode_tps() const {
     return hybrid_ ? hybrid_->last_stats().decode_tps : dense_->last_stats().decode_tps;
   }
@@ -426,6 +431,7 @@ class NativeLlm {
     if (!cfg_.eos.empty()) sp.eos = cfg_.eos;
     if (hybrid_) hybrid_->generate(sp, on_token);
     else dense_->generate(sp, on_token);
+    lastNtok_ = (int)gen.size();
     collectLogprobs(gen, cut);
     if (cut != std::string::npos) return full.substr(0, cut);
     // No stop string: flush any suffix held back mid-stream (a stop-prefix that never
@@ -488,6 +494,7 @@ class NativeLlm {
   std::vector<std::string> vocabText_;            // token id -> bytes, built on first grammar
   std::vector<std::string> stop_;                 // persistent stop strings (default: none)
   bool first_turn_ = true;
+  int lastNtok_ = 0;                              // see last_ntok()
   bool thinking_ = true;                          // set from chat.thinking_default; see addThink()
   std::string prefix_;                            // in-memory snapshot of the reusable prefix
   bool prefixSet_ = false;

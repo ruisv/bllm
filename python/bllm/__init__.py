@@ -44,7 +44,7 @@ SEED_RANDOM = 0xFFFFFFFF
 
 # JSON Schema -> GBNF. Pure text, no runtime behind it, so it imports even on a dev host
 # with no extension built — which is also where its tests run.
-from ._grammar import gbnf_literal, json_grammar  # noqa: E402
+from ._grammar import gbnf_literal, json_grammar, json_object_grammar  # noqa: E402
 
 # `__all__` is built from what actually imported: on a dev host the extension is absent
 # and `from bllm import *` should still degrade quietly rather than name a missing symbol.
@@ -159,6 +159,7 @@ if _HAVE_NATIVE:
 
                 sess.set_grammar('root ::= "yes" | "no"\\n')
                 sess.set_grammar(bllm.json_grammar())          # any JSON value
+                sess.set_grammar(bllm.json_object_grammar())   # any JSON object
                 sess.set_grammar(bllm.json_grammar(schema))    # a specific shape
             """
             self._llm.set_grammar(gbnf, root)
@@ -239,6 +240,12 @@ if _HAVE_NATIVE:
         @property
         def last_decode_tps(self) -> float:
             return self._llm.last_decode_tps
+
+        @property
+        def last_ntok(self) -> int:
+            """Tokens the last turn actually generated. Use this, not len(encode(reply)):
+            re-encoding merges tokens, so a reply cut at max_new would look finished."""
+            return self._llm.last_ntok
 
         def chat(self, message: str, max_new: int = 400,
                  on_text: "Optional[Callable[[str], None]]" = None,
@@ -772,7 +779,8 @@ def load_policy(path: str):
 
 
 # ── public surface ───────────────────────────────────────────────────────────
-__all__ += ["load", "load_policy", "available_backends", "json_grammar", "gbnf_literal"]
+__all__ += ["load", "load_policy", "available_backends", "json_grammar", "json_object_grammar",
+            "gbnf_literal"]
 if _HAVE_NATIVE:
     __all__ += ["NativeSession", "NativeVlmSession", "load_video"]
 

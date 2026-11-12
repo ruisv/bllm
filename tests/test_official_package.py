@@ -67,3 +67,44 @@ def test_second_load_reads_the_cache_not_the_hbm(official, monkeypatch):
     monkeypatch.setattr(_modelmeta, "_read_desc_native", boom)
     d = _modelmeta.official_dir_for(OFFICIAL_DIR, cache_root=cache / "native")
     assert (d / "model.json").is_file()
+
+
+# ── BLLM's own features, on an official package ──────────────────────────────────────────
+
+def test_grammar_constrains_the_reply(official):
+    s, _ = official
+    s.reset()
+    s.set_grammar('root ::= "yes" | "no"\n')
+    try:
+        reply = s.chat("Is Paris the capital of France? Answer yes or no.", max_new=8)
+    finally:
+        s.clear_grammar()
+    assert reply.strip() in ("yes", "no")
+
+
+def test_logprobs_are_reported(official):
+    s, _ = official
+    s.reset()
+    s.set_sampling(logprobs=3)
+    try:
+        s.chat("Say hello.", max_new=6)
+        lp = s.last_logprobs()
+    finally:
+        s.set_sampling()
+    assert lp and all(e["logprob"] <= 0.0 and len(e["top"]) == 3 for e in lp)
+
+
+def test_snapshot_restore_reproduces_the_reply(official):
+    # The serving prefix cache rests on this: a restored context must decode exactly as
+    # the live one did. Snapshot at a chunk boundary, as the cache does.
+    s, _ = official
+    s.reset()
+    ids = s.encode("<|im_start|>user\nName three planets.<|im_end|>\n<|im_start|>assistant\n")
+    cut = s.cache_align(len(ids)) or len(ids)
+    s.feed_ids(ids[:cut])
+    blob = s.snapshot()
+    s.feed_ids(ids[cut:])
+    first = s.decode_stream(24)
+    s.restore(blob)
+    s.feed_ids(ids[cut:])
+    assert s.decode_stream(24) == first

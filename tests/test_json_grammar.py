@@ -22,7 +22,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "python"))
 
-from bllm._grammar import gbnf_literal, json_grammar  # noqa: E402
+from bllm._grammar import gbnf_literal, json_grammar, json_object_grammar  # noqa: E402
 
 MATCH, PREFIX, REJECT, BAD_GRAMMAR = 0, 1, 2, 3
 
@@ -203,3 +203,21 @@ def test_unsupported_ref_is_an_error():
         json_grammar({"$ref": "https://example.com/schema.json"})
     with pytest.raises(ValueError):
         json_grammar({"$ref": "#/$defs/missing"})
+
+
+# --- json_object mode and bounded whitespace ------------------------------------
+def test_json_object_grammar_accepts_objects_only(checker, tmp_path):
+    g = json_object_grammar()
+    assert check(checker, g, '{"a": [1, {"b": null}]}', tmp_path) == MATCH
+    assert check(checker, g, "{}", tmp_path) == MATCH
+    for scalar in ('"just a string"', "1.1", "[1, 2]", "true"):
+        assert check(checker, g, scalar, tmp_path) == REJECT, scalar
+
+
+def test_whitespace_is_bounded(checker, tmp_path):
+    """Unbounded `ws` let a model satisfy the grammar forever with newlines."""
+    g = json_grammar()
+    assert check(checker, g, '{\n    "a": 1\n}', tmp_path) == MATCH          # pretty-printed
+    assert check(checker, g, "{\n" + " " * 20 + '"a": 1}', tmp_path) == MATCH  # deep indent
+    assert check(checker, g, "1.1\n\n\n", tmp_path) == REJECT                  # no trailing run
+    assert check(checker, g, "{\n\n\n\n" + '"a": 1}', tmp_path) == REJECT       # no blank-line run

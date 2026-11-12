@@ -233,6 +233,8 @@ NB_MODULE(_bllm_native, m) {
            "BPU queue priority 0..255 (default 0 = lowest, yields to a vision pipeline). "
            "Orders the queue; does not preempt a running graph.")
       .def_prop_ro("last_decode_tps", &bllm::NativeLlm::last_decode_tps)
+      .def_prop_ro("last_ntok", &bllm::NativeLlm::last_ntok,
+                   "Tokens the last turn actually generated (re-encoding the text undercounts).")
       .def_prop_ro("name", [](bllm::NativeLlm& l) { return l.config().name; })
       .def_prop_ro("arch", [](bllm::NativeLlm& l) { return l.config().arch; })
       .def_prop_ro("chat_config", [](bllm::NativeLlm& l) {

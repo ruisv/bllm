@@ -25,12 +25,18 @@ import json
 import re
 from typing import Any, Optional
 
-__all__ = ["json_grammar", "gbnf_literal"]
+__all__ = ["json_grammar", "json_object_grammar", "gbnf_literal"]
 
 # The primitives every generated grammar can lean on. `ws` allows (but never requires)
-# whitespace, so the model may format the JSON either way.
+# whitespace, so the model may format the JSON either way — but BOUNDED: one space, or a
+# newline and up to 20 indentation characters (llama.cpp's json.gbnf bound). Left as
+# `[ \t\n]*` a model can satisfy the grammar forever with whitespace; measured on
+# Qwen2.5-1.5B, `json_object` produced "1.1" and then newlines to the token limit.
+_WS_DEPTH = 20
+_IND = "".join("( [ \\t] " for _ in range(_WS_DEPTH)) + ")?" * _WS_DEPTH
 _PREAMBLE = r'''
-ws        ::= [ \t\n]*
+ws        ::= ( " " | "\n" ind )?
+ind       ::= @IND@
 string    ::= "\"" char* "\""
 char      ::= [^"\\] | "\\" (["\\/bfnrt] | "u" hex hex hex hex)
 hex       ::= [0-9a-fA-F]
@@ -41,7 +47,7 @@ null      ::= "null"
 value     ::= object | array | string | number | boolean | null
 object    ::= "{" ws (string ws ":" ws value (ws "," ws string ws ":" ws value)* ws)? "}"
 array     ::= "[" ws (value (ws "," ws value)* ws)? "]"
-'''.lstrip()
+'''.lstrip().replace("@IND@", _IND)
 
 
 def gbnf_literal(text: str) -> str:
@@ -73,10 +79,17 @@ def json_grammar(schema: Optional[dict] = None) -> str:
     'root ::= ...'
     """
     if schema is None:
-        return _PREAMBLE + "root ::= ws value ws\n"
+        return _PREAMBLE + "root ::= ws value\n"
     if not isinstance(schema, dict):
         raise ValueError("schema must be an object")
     return _Converter(schema).build()
+
+
+def json_object_grammar() -> str:
+    """GBNF for any JSON OBJECT — OpenAI's `response_format: {"type": "json_object"}`, which
+    promises an object, not any value. Measured: with any-value, Qwen3-1.7B answered
+    "Describe Paris briefly." with one top-level string that ran past a 64-token limit."""
+    return _PREAMBLE + "root ::= ws object\n"
 
 
 class _Converter:
@@ -89,7 +102,7 @@ class _Converter:
 
     def build(self) -> str:
         body = self.visit(self.schema, "root")
-        return _PREAMBLE + "\n".join(self.rules + [f"root ::= ws {body} ws"]) + "\n"
+        return _PREAMBLE + "\n".join(self.rules + [f"root ::= ws {body}"]) + "\n"
 
     def name(self, hint: str) -> str:
         self.n += 1
