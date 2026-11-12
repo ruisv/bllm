@@ -131,7 +131,7 @@ curl -N localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
 `frequency_penalty`、`logit_bias`、`logprobs` / `top_logprobs`、`seed`、
 `max_tokens` / `max_completion_tokens`、`stop`、`stream`。
 另外接受几个非 OpenAI 标准但通用的扩展:`top_k`、`min_p`、`repetition_penalty`,
-以及 `enable_thinking`(Qwen3.5 思考开关,默认 `false`)。没给的字段一律取默认值,
+以及 `enable_thinking`(Qwen3 / Qwen3.5 思考开关,默认 `false`;也接受 `chat_template_kwargs.enable_thinking`)。没给的字段一律取默认值,
 显式传 `0` 与不传是有区别的(`temperature: 0` = 贪心)。
 
 **结构化输出**:`response_format` 与 `grammar` 二选一(同时给是 400 —— 与其定一条
@@ -159,6 +159,38 @@ delta 是解码后的文本片段(停止串的回退会合并/延后 token),没�
 
 不传 `seed` 时每个请求重新取种子,所以 `temperature` 会真的产生变化;传了 `seed` 则
 相同请求逐字节可复现(OpenAI 的 `seed` 语义)。
+
+### 工具调用与思考内容
+
+模型清单声明了对话模板家族（`chat.dialect`）时，服务端按这个模型自己的模板渲染整段对话（与 HF
+原版模板逐字节一致）。官方 Qwen3 / Qwen2.5 的 2.0 包加载时会自动识别；Qwen3.5 包由
+`bllm-make-model-dir --dialect qwen3.5` 写入清单。在这类模型上：
+
+- **工具调用**：请求里带 `tools`（OpenAI 格式）。模型决定调用工具时，回复里有 `tool_calls`，
+  `finish_reason` 为 `"tool_calls"`。把这条回复和工具结果（`role: "tool"`）追加到 `messages`
+  再请求一次，模型就接着回答。流式时，调用在结束前作为一个完整的 `tool_calls` delta 发出，
+  `<tool_call>` 这类标记不会出现在 `content` 里。
+  - `tool_choice` 支持 `"auto"`（默认）和 `"none"`。强制调用（`"required"` 或指定函数）暂不支持，返回 400。
+  - 没有声明 dialect 的模型收到 `tools` 会返回 400，不会悄悄忽略工具。MiniCPM5、Phi-4-mini 目前没有 dialect。
+- **思考内容单独返回**：Qwen3 / Qwen3.5 开了思考（`enable_thinking: true`，或
+  `chat_template_kwargs.enable_thinking`），以及只会思考的模型（Thinking-2507），思考过程放在
+  `message.reasoning_content`，`content` 里只有回答；流式时 `reasoning_content` delta 先于 `content` 发出。
+- 请求里没有 system 消息时，用模板自带的默认 system（Qwen2.5 有一句固定的，其他为空）。
+
+```bash
+curl localhost:8866/v1/chat/completions -H 'Content-Type: application/json' -d '{
+  "messages": [{"role": "user", "content": "巴黎现在天气怎么样？"}],
+  "tools": [{"type": "function", "function": {"name": "get_weather",
+             "description": "查询城市当前天气",
+             "parameters": {"type": "object", "properties": {"city": {"type": "string"}},
+                            "required": ["city"]}}}]
+}'
+# -> "finish_reason": "tool_calls",
+#    "tool_calls": [{"id": "call_…", "type": "function",
+#                    "function": {"name": "get_weather", "arguments": "{\"city\": \"Paris\"}"}}]
+```
+
+`/metrics` 的 `chat_dialect`、`supports_tools`、`thinking`（`switch` / `always` / `none`）说明当前模型支持哪些。
 
 ### 图文(VLM)
 

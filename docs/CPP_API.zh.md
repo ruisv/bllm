@@ -80,7 +80,7 @@ bllm::ModelConfig cfg = bllm::loadModelConfig("/models/qwen3.5-2b");
 | `cache_len` | 仅供参考。 |
 | `bpu_cores` | `.hbm` 编译时的 BPU 核数；**> 1 时提交必须绑定到具体核**，会话构造时会自动设好核掩码。 |
 | `rope_theta` | rope 底数。 |
-| `chat` | `ChatConfig{format, im_start, im_end, bos, r_user, r_assistant, r_system, r_end, system, think_on, think_off, thinking_default}`。`think_on` / `think_off` 是思考开 / 关时接在 assistant 标记后的内容，按各模型的模板来。 |
+| `chat` | `ChatConfig{format, im_start, im_end, bos, r_user, r_assistant, r_system, r_end, system, think_on, think_off, thinking_default, dialect}`。`think_on` / `think_off` 是思考开 / 关时接在 assistant 标记后的内容，按各模型的模板来；`dialect` 是 OpenAI 服务端渲染整段对话（默认 system、历史里的思考、工具调用）所按的模板家族，C++ 的 `chat()` 不读它。 |
 
 判定用的谓词：`is_hybrid()`、`is_omni()`、`is_embed()`、`has_vision()`。
 

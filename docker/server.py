@@ -37,6 +37,11 @@ import time
 from typing import Any, Iterator, Optional
 
 import bllm
+
+try:  # template-faithful rendering, reasoning_content and tool calls (bllm >= 0.8)
+    from bllm import _chatfmt as chatfmt
+except ImportError:  # an image whose bllm predates it: plain ChatML, no tools
+    chatfmt = None
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -132,6 +137,30 @@ def _vlm_turns_from(messages: list[dict]) -> list[dict]:
 
 
 engine: Engine  # set on startup
+CHAT_FMT = None  # bllm._chatfmt.ChatFormat for a text model, set on startup
+
+
+def _tools_from(body: dict) -> Optional[list]:
+    """The tools this request offers the model, or None. tool_choice "none" offers none;
+    "auto" (the default) lets the model decide. Forcing a call ("required", or a named
+    function) is refused rather than reduced to a hope: it needs a grammar over the
+    call syntax, which is not wired up yet."""
+    tools = body.get("tools")
+    if tools in (None, []):
+        return None
+    if not isinstance(tools, list) or not all(
+            isinstance(t, dict) and isinstance((t.get("function") or {}).get("name"), str)
+            for t in tools):
+        raise HTTPException(status_code=400,
+                            detail="tools must be an array of {type: function, function: {name, ...}}")
+    choice = body.get("tool_choice", "auto")
+    if choice == "none":
+        return None
+    if choice != "auto":
+        raise HTTPException(status_code=400,
+                            detail="tool_choice must be \"auto\" or \"none\"; forcing a call is "
+                                   "not supported yet")
+    return tools
 
 
 # --- FastAPI app ------------------------------------------------------------
@@ -150,8 +179,12 @@ app.add_middleware(
 
 @app.on_event("startup")
 def _startup() -> None:
-    global engine
+    global engine, CHAT_FMT
     engine = Engine()
+    # How this model's conversations are rendered and its replies split (bllm._chatfmt).
+    # A manifest without a chat.dialect gets plain ChatML: what this server always did.
+    CHAT_FMT = (chatfmt.ChatFormat.from_config(engine.chat_config)
+                if chatfmt is not None and not engine.is_vlm else None)
 
 
 @app.on_event("shutdown")
@@ -177,7 +210,16 @@ def metrics(authorization: Optional[str] = Header(None)) -> dict:
     """Cache hit rate, token reuse, queue depth — the numbers that say whether the
     prefix cache is actually earning its memory on this workload."""
     _check_auth(authorization)
-    return engine.metrics()
+    m = engine.metrics()
+    # what this model's conversations can carry (bllm._chatfmt): its template family, and
+    # with it whether tool calls and a separate reasoning_content are available
+    m["chat_dialect"] = CHAT_FMT.dialect if CHAT_FMT is not None else ""
+    m["supports_tools"] = bool(CHAT_FMT is not None and CHAT_FMT.tool_format)
+    m["supports_reasoning_split"] = bool(CHAT_FMT is not None and CHAT_FMT.thinks)
+    # "switch" (enable_thinking decides), "always" (a thinking-only model) or "none"
+    m["thinking"] = ("none" if CHAT_FMT is None or not CHAT_FMT.thinks else
+                     "always" if CHAT_FMT.opener(True) == CHAT_FMT.opener(False) else "switch")
+    return m
 
 
 @app.get("/v1/models")
@@ -350,7 +392,11 @@ async def chat_completions(request: Request,
                             detail="this bllm runtime has no grammar support; "
                                    "install a newer bllm to use response_format/grammar")
 
+    offered = _tools_from(body)
+    enable_thinking = False
     if engine.is_vlm:
+        if offered:
+            raise HTTPException(status_code=400, detail="tools are not supported on an image model yet")
         turns = _vlm_turns_from(messages)
         try:
             job = engine.submit_vlm(turns, max_new, stop, _sampling_from(body), grammar=grammar)
@@ -374,9 +420,21 @@ async def chat_completions(request: Request,
             enable_thinking = kw["enable_thinking"]
         if isinstance(enable_thinking, str):
             enable_thinking = enable_thinking.strip().lower() in ("1", "true", "yes", "on")
-        history, opener = render_chatml(messages, bool(enable_thinking),
-                                        chat.get("think_on", ""),
-                                        chat.get("think_off", "<think>\n\n</think>\n\n"))
+        enable_thinking = bool(enable_thinking)
+        if CHAT_FMT is not None:
+            try:
+                history, opener = CHAT_FMT.render(messages, tools=offered,
+                                                  enable_thinking=enable_thinking)
+            except chatfmt.ChatError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+        else:
+            if offered:
+                raise HTTPException(status_code=400,
+                                    detail="this bllm runtime renders plain ChatML only; tool "
+                                           "calls need a newer bllm")
+            history, opener = render_chatml(messages, enable_thinking,
+                                            chat.get("think_on", ""),
+                                            chat.get("think_off", "<think>\n\n</think>\n\n"))
         prompt = history + opener
         ids = engine.encode(prompt)
         # How much of `ids` is stable history, and so eligible for caching. Encoding the
@@ -391,8 +449,11 @@ async def chat_completions(request: Request,
         except QueueFull as exc:
             return JSONResponse(status_code=429, content=_error_body(exc, "rate_limit_exceeded"))
 
+    # How the reply is split back into content / reasoning_content / tool_calls.
+    reply = (CHAT_FMT.reply_stream(enable_thinking=enable_thinking, tools=offered)
+             if CHAT_FMT is not None and not engine.is_vlm else None)
     if bool(body.get("stream", False)):
-        return StreamingResponse(_sse(request, cid, created, job),
+        return StreamingResponse(_sse(request, cid, created, job, reply),
                                  media_type="text/event-stream")
 
     loop = asyncio.get_running_loop()
@@ -404,8 +465,18 @@ async def chat_completions(request: Request,
         status, payload = _error_payload(exc)
         return JSONResponse(status_code=status, content=payload)
 
-    choice: dict = {"index": 0, "message": {"role": "assistant", "content": res.text},
-                    "finish_reason": res.finish_reason}
+    message: dict = {"role": "assistant", "content": res.text}
+    finish = res.finish_reason
+    if reply is not None:
+        parts = reply.feed(res.text) + reply.finish()
+        message["content"] = "".join(t for k, t in parts if k == "content")
+        if reply.saw_reasoning:
+            message["reasoning_content"] = "".join(t for k, t in parts if k == "reasoning")
+        if reply.tool_calls:
+            message["tool_calls"] = reply.tool_calls
+            message["content"] = message["content"] or None
+            finish = "tool_calls"
+    choice: dict = {"index": 0, "message": message, "finish_reason": finish}
     if res.logprobs is not None:
         choice["logprobs"] = {"content": res.logprobs}
     return JSONResponse({
@@ -447,7 +518,7 @@ def _error_body(exc: BaseException, code: Optional[str]) -> dict:
     return {"error": {"message": str(exc), "type": exc.__class__.__name__, "code": code}}
 
 
-async def _sse(request: Request, cid: str, created: int, job):
+async def _sse(request: Request, cid: str, created: int, job, reply=None):
     """Bridge the worker's deltas to OpenAI SSE chunks.
 
     On disconnect this cancels the job and keeps draining until the worker says it is
@@ -471,7 +542,11 @@ async def _sse(request: Request, cid: str, created: int, job):
                 engine.cancel(job)
                 # keep draining: the worker must finish before the next job starts
                 continue
-            yield _chunk(cid, created, {"content": piece})
+            if reply is None:
+                yield _chunk(cid, created, {"content": piece})
+                continue
+            for kind, text in reply.feed(piece):
+                yield _chunk(cid, created, {"reasoning_content" if kind == "reasoning" else "content": text})
     finally:
         if not job.done.is_set():
             engine.cancel(job)
@@ -486,7 +561,17 @@ async def _sse(request: Request, cid: str, created: int, job):
         # so there is no honest per-chunk alignment to publish. A client that concatenates
         # every chunk's logprobs.content — the normal way to consume them — still ends up
         # with exactly the right array, just at the end of the stream.
-        yield _chunk(cid, created, {}, finish_reason=res.finish_reason, usage=_usage(res),
+        finish = res.finish_reason
+        if reply is not None:
+            for kind, text in reply.finish():
+                yield _chunk(cid, created, {"reasoning_content" if kind == "reasoning" else "content": text})
+            if reply.tool_calls:
+                # whole calls in one delta: OpenAI clients accumulate the fragments of a
+                # call by index, and one fragment is a valid sequence of them
+                yield _chunk(cid, created, {"tool_calls": [dict(c, index=i)
+                                                           for i, c in enumerate(reply.tool_calls)]})
+                finish = "tool_calls"
+        yield _chunk(cid, created, {}, finish_reason=finish, usage=_usage(res),
                      logprobs=res.logprobs)
     yield "data: [DONE]\n\n"
 

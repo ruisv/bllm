@@ -29,6 +29,10 @@ struct ChatConfig {
   std::string think_on = "";
   std::string think_off = "<think>\n\n</think>\n\n";
   bool thinking_default = true;
+  // The template family a server renders whole conversations by — system defaults,
+  // thinking in history, tool calls ("qwen2.5" | "qwen3" | "qwen3-instruct" | "qwen3.5";
+  // empty = plain ChatML, no tools). The C++ chat() does not read it: see bllm._chatfmt.
+  std::string dialect;
 };
 
 // The vision tower's own constants. These are per-checkpoint, not universal, and

@@ -143,7 +143,8 @@ Supports `/v1/chat/completions` (streaming + non-streaming), `/v1/models`,
 `presence_penalty`, `frequency_penalty`, `logit_bias`, `logprobs` / `top_logprobs`,
 `seed`, `max_tokens` / `max_completion_tokens`, `stop`, `stream`. Plus a few common
 non-OpenAI extensions: `top_k`, `min_p`, `repetition_penalty`, and `enable_thinking`
-(the Qwen3.5 reasoning toggle, default `false`). Omitted fields take their default, and
+(the Qwen3 / Qwen3.5 reasoning toggle, default `false`; `chat_template_kwargs.enable_thinking`
+works too). Omitted fields take their default, and
 an explicit `0` is distinct from omitting one (`temperature: 0` means greedy).
 
 **Structured output**: `response_format` or `grammar`, not both (sending both is a 400 —
@@ -178,6 +179,45 @@ array.
 With no `seed`, each request draws a fresh one, so `temperature` actually varies the
 reply; with an explicit `seed`, identical requests reproduce byte for byte (OpenAI's
 `seed` semantics).
+
+### Tool calls and reasoning
+
+When a model's manifest declares its chat template family (`chat.dialect`), the server
+renders whole conversations the way that model's own template does — byte-identical to the
+original HF template. Official Qwen3 / Qwen2.5 2.0 packages are recognised on load; a
+Qwen3.5 package gets it from `bllm-make-model-dir --dialect qwen3.5`. On such a model:
+
+- **Tool calls**: send `tools` (OpenAI format). When the model decides to call one, the
+  reply carries `tool_calls` and `finish_reason` is `"tool_calls"`. Append that reply and
+  the tool's result (`role: "tool"`) to `messages` and ask again, and the model carries on.
+  Streamed, the calls arrive as one complete `tool_calls` delta before the end, and markers
+  such as `<tool_call>` never appear in `content`.
+  - `tool_choice` takes `"auto"` (the default) or `"none"`. Forcing a call (`"required"`, or
+    a named function) is not supported yet and is a 400.
+  - A model with no dialect answers `tools` with a 400 rather than quietly ignoring them.
+    MiniCPM5 and Phi-4-mini have none yet.
+- **Reasoning on its own**: with thinking on (`enable_thinking: true`, or
+  `chat_template_kwargs.enable_thinking`) on Qwen3 / Qwen3.5, and always on a thinking-only
+  model (Thinking-2507), the thinking goes in `message.reasoning_content` and `content`
+  holds the answer alone; streamed, `reasoning_content` deltas come before `content` ones.
+- A request without a system message gets the template's default one (a fixed one for
+  Qwen2.5, none for the others).
+
+```bash
+curl localhost:8866/v1/chat/completions -H 'Content-Type: application/json' -d '{
+  "messages": [{"role": "user", "content": "What is the weather in Paris right now?"}],
+  "tools": [{"type": "function", "function": {"name": "get_weather",
+             "description": "Current weather for a city",
+             "parameters": {"type": "object", "properties": {"city": {"type": "string"}},
+                            "required": ["city"]}}}]
+}'
+# -> "finish_reason": "tool_calls",
+#    "tool_calls": [{"id": "call_…", "type": "function",
+#                    "function": {"name": "get_weather", "arguments": "{\"city\": \"Paris\"}"}}]
+```
+
+`/metrics` reports `chat_dialect`, `supports_tools` and `thinking` (`switch` / `always` /
+`none`) for the loaded model.
 
 ### Image + text (VLM)
 

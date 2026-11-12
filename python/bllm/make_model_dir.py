@@ -243,6 +243,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="rope dim split (omni default 16 24 24; Qwen3.5 is 11 11 10)")
     ap.add_argument("--eos", type=int, nargs="+", help="override the stop-token ids")
     ap.add_argument("--system", default="You are a helpful assistant.")
+    ap.add_argument("--dialect", choices=["qwen2.5", "qwen3", "qwen3-instruct", "qwen3.5"],
+                    help="ChatML template family the OpenAI server renders conversations by — "
+                         "default system, thinking in history, tool calls (Qwen3.5: qwen3.5); "
+                         "without it the server renders plain ChatML and refuses tools")
     ap.add_argument("--copy", action="store_true", help="copy payload instead of symlinking")
     args = ap.parse_args(argv)
 
@@ -332,6 +336,8 @@ def main(argv: list[str] | None = None) -> int:
     if CHATML_START in specials and CHATML_END in specials:
         cfg["chat"] = {"format": "chatml", "im_start": specials[CHATML_START],
                        "im_end": specials[CHATML_END], "system": args.system}
+        if args.dialect:
+            cfg["chat"]["dialect"] = args.dialect
     elif PHI_USER in specials and PHI_ASSISTANT in specials and PHI_END in specials:
         cfg["chat"] = {"format": "phi", "r_user": specials[PHI_USER],
                        "r_assistant": specials[PHI_ASSISTANT], "r_end": specials[PHI_END],

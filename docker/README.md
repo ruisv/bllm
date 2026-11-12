@@ -85,8 +85,8 @@ curl -N localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"数到5"}],"stream":true}'
 ```
 
-OpenAI-compatible `/v1/chat/completions` (streaming + non-streaming),
-`/v1/models`, `/health`. The engine is a **singleton** — one generation in
+OpenAI-compatible `/v1/chat/completions` (streaming + non-streaming, tool calls and
+`reasoning_content` on models with a chat dialect — see USAGE), `/v1/models`, `/health`. The engine is a **singleton** — one generation in
 flight at a time (BPU = single prefill/decode graph); requests serialize. Run a
 **single** uvicorn worker.
 

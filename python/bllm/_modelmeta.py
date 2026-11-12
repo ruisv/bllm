@@ -299,6 +299,27 @@ def _desc_thinking(t: str) -> dict:
     return {"think_on": "", "think_off": "", "thinking_default": False}
 
 
+# Template fingerprints for the families bllm._chatfmt renders (ADR 0003). Literal source
+# text, so a template edited upstream stops matching instead of being half-recognised.
+_HERMES_TOOLS = "You may call one or more functions to assist with the user query."
+_XML_TOOLS = "You have access to the following functions:"
+
+
+def _desc_dialect(t: str) -> str:
+    """The template family a server renders a whole conversation by, or "" (plain ChatML,
+    no tool calls). Qwen2.5 and Qwen3 share the Hermes tool format but not their rules for
+    a default system prompt and for thinking in the history; Qwen3.5 has its own XML one."""
+    if _XML_TOOLS in t and "<function=" in t:
+        return "qwen3.5"
+    if _HERMES_TOOLS in t:
+        if "last_query_index" in t:
+            return "qwen3"
+        if "You are Qwen, created by Alibaba Cloud." in t:
+            return "qwen2.5"
+        return "qwen3-instruct"
+    return ""
+
+
 def _desc_chat(desc: dict, specials: dict, system: "str | None") -> dict:
     """The template FAMILY, mapped onto a built-in chat format. The template itself is not
     rendered: BLLM's formats are what the prefix cache, stop matching and thinking control
@@ -316,6 +337,9 @@ def _desc_chat(desc: dict, specials: dict, system: "str | None") -> dict:
         chat = {"format": "chatml", "im_start": specials[CHATML_START],
                 "im_end": specials[CHATML_END], "system": system}
         chat.update(_desc_thinking(t))
+        dialect = _desc_dialect(t)
+        if dialect:
+            chat["dialect"] = dialect
     elif (PHI_END in t and PHI_ASSISTANT in t and
           all(m in specials for m in (PHI_USER, PHI_ASSISTANT, PHI_END))):
         # Phi builds its role markers by concatenation ('<|' + role + '|>'), so only the
@@ -492,7 +516,7 @@ def official_dir_for(pkg_dir: "str | Path", *, vision: bool = True,
     raw = "::".join([str(lang.resolve()), str(st.st_size), str(int(st.st_mtime)),
                      str(pkg["embed"].resolve()), str(vis.resolve()) if vis else "",
                      "\x00" if system is None else system, name or "",
-                     ",".join(map(str, eos or [])), "official2.2"])
+                     ",".join(map(str, eos or [])), "official2.3"])
     root = Path(cache_root) if cache_root else Path(
         os.environ.get("BLLM_CACHE", Path.home() / ".cache" / "bllm")) / "native"
     out = root / hashlib.sha1(raw.encode()).hexdigest()[:16]

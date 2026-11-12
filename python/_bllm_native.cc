@@ -263,9 +263,10 @@ NB_MODULE(_bllm_native, m) {
         d["im_start"] = c.im_start; d["im_end"] = c.im_end; d["bos"] = c.bos;
         d["think_on"] = c.think_on; d["think_off"] = c.think_off;
         d["thinking_default"] = c.thinking_default;
+        d["dialect"] = c.dialect;
         return d;
       }, "The model's chat block: format, system, im_start/im_end, bos, think_on/off, "
-         "thinking_default.")
+         "thinking_default, dialect.")
       .def_prop_ro("thinking_switchable", &bllm::NativeLlm::thinking_switchable)
       .def_prop_ro("vocab_size", [](bllm::NativeLlm& l) { return l.tokenizer().vocab_size(); })
       .def("encode", [](bllm::NativeLlm& l, const std::string& s) { return l.tokenizer().encode(s); }, "text"_a)

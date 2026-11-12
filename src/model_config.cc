@@ -81,6 +81,7 @@ ModelConfig loadModelConfig(const std::string& dir) {
     c.chat.think_on = ch.value("think_on", c.chat.think_on);
     c.chat.think_off = ch.value("think_off", c.chat.think_off);
     c.chat.thinking_default = ch.value("thinking_default", c.chat.thinking_default);
+    c.chat.dialect = ch.value("dialect", c.chat.dialect);
   }
   if (j.contains("pi05")) {
     const auto& p = j.at("pi05");

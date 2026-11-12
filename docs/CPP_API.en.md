@@ -87,7 +87,7 @@ bllm::ModelConfig cfg = bllm::loadModelConfig("/models/qwen3.5-2b");
 | `cache_len` | informational. |
 | `bpu_cores` | BPU cores the `.hbm` was compiled for; **> 1 must be submitted to specific cores**, and the session sets the core mask at construction. |
 | `rope_theta` | rope base. |
-| `chat` | `ChatConfig{format, im_start, im_end, bos, r_user, r_assistant, r_system, r_end, system, think_on, think_off, thinking_default}`. `think_on` / `think_off` are what follows the assistant marker with thinking on / off, per the model's template. |
+| `chat` | `ChatConfig{format, im_start, im_end, bos, r_user, r_assistant, r_system, r_end, system, think_on, think_off, thinking_default, dialect}`. `think_on` / `think_off` are what follows the assistant marker with thinking on / off, per the model's template; `dialect` is the template family the OpenAI server renders whole conversations by (default system, thinking in the history, tool calls) — the C++ `chat()` does not read it. |
 
 Predicates: `is_hybrid()`, `is_omni()`, `is_embed()`, `has_vision()`.
 

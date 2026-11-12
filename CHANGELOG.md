@@ -6,6 +6,32 @@ All notable changes to BLLM are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **The OpenAI server calls tools and returns reasoning on its own.** On a model whose
+  manifest names its chat template family (`chat.dialect`), a request's `tools` reach the
+  model in that template's own format, and a call comes back as OpenAI `tool_calls` with
+  `finish_reason: "tool_calls"`; `role: "tool"` results and an assistant's earlier calls go
+  back into the prompt the same way, so the whole call → result → answer loop works,
+  streamed or not. Thinking is split into `message.reasoning_content` (and
+  `reasoning_content` deltas) and kept out of `content`. Four families: `qwen2.5`, `qwen3`,
+  `qwen3-instruct` (Hermes-style `<tool_call>{json}`) and `qwen3.5` (its XML calls, with
+  argument types read from the tool's schema). Official 2.0 packages get the family from
+  their template — Qwen3, Qwen3-2507, Qwen2.5 and Qwen3-VL; `bllm-make-model-dir --dialect`
+  writes it for a package of our own. Checked end to end on official Qwen3-1.7B,
+  Qwen3-4B-Instruct-2507 / Thinking-2507 and Qwen2.5-3B, and on a Qwen3.5-0.8B.
+  `tool_choice` takes `"auto"` and `"none"`; forcing a call is refused with a 400 for now,
+  as are `tools` sent to a model without a family (MiniCPM5, Phi-4-mini, 1.0 packages) —
+  they used to be ignored without a word. `/metrics` reports `chat_dialect`,
+  `supports_tools` and `thinking`.
+- `chat_config` includes the manifest's `dialect`.
+
+### Changed
+- On those models the server renders the **whole** conversation as the template does —
+  byte-identical to the original HF templates, tested with jinja2 on all six (the official
+  packages embed the same ones). That is more than tools: Qwen2.5 gets its default system
+  prompt when the request has none, and Qwen3 drops the thinking of turns before the last
+  question. Models without a family render exactly as before.
+
 ## [0.7.0] — 2026-11-12
 
 Official D-Robotics LLM 2.0 packages load as unzipped — the nine S100P text packages
