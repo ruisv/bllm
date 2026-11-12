@@ -6,7 +6,7 @@
 [![C++](https://img.shields.io/badge/C%2B%2B-17-00599C.svg)](CMakeLists.txt)
 [![Python](https://img.shields.io/badge/python-3.9%E2%80%933.14-3776AB.svg)](python/CMakeLists.txt)
 [![Platform](https://img.shields.io/badge/platform-RDK%20S100%20%2F%20S100P%20%2F%20S600%20(aarch64)-0A7BBB.svg)](#1-install-one-minute)
-[![Version](https://img.shields.io/badge/version-0.4.2-informational.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.7.0-informational.svg)](CHANGELOG.md)
 
 [简体中文](README.md) | **English**
 
@@ -73,23 +73,25 @@ default.
 - **✅ Serving out of the box** — OpenAI-compatible HTTP (streaming + non-streaming),
   Docker images, and conversation prefix caching (measured on-board: 31.6 s → 1.3 s,
   ~25×).
-- **✅ Architectures the official toolchain doesn't cover** — Qwen3.5 hybrid
-  Gated-DeltaNet/SSM strictly 100% on the BPU (**BLLM-native only**), plus GLM-Edge
-  and Phi-4-mini.
+- **✅ Official packages load as unzipped, and what they don't ship runs too** — the
+  official LLM 2.0 S100P packages (Qwen3, Qwen3-VL, Qwen2.5-VL, MiniCPM5, Phi-4-mini)
+  load with `bllm.load()`, output **token-identical** to the official runtime; the
+  official Qwen3.5 is S600-only, while BLLM runs the Qwen3.5 hybrid Gated-DeltaNet/SSM
+  strictly 100% on the BPU on S100 / S100P, plus GLM-Edge.
 - **✅ Coexists with vision** — on a single BPU core, lowering the LLM's priority
   takes a co-resident detector's p99 from 41 ms down to **2.95 ms** — not "run both
   and watch them starve each other".
 - **✅ Not just chat: embodied policies run on the BPU too** — π0.5 and SmolVLA,
   two vision-language-action models, load in one line and match their x86
   references on `libero_spatial` (next section).
-  **The official runtime does not cover this class of model.**
+  **The official 2.0 VLA packages are S600-only.**
 
 ## Embodied policies: π0.5 on the BPU
 
 On-device LLMs are not only about chat. BLLM runs a whole **vision-language-action
-(VLA)** model — π0.5 — on the BPU. This is a class of workload the official LLM
-runtime does not cover, and it is what takes a board from "answers questions" to
-"moves an arm".
+(VLA)** model — π0.5 — on the BPU. On S100P the official LLM runtime has no such
+model (its 2.0 VLA packages are S600-only), and it is what takes a board from "answers
+questions" to "moves an arm".
 
 <div align="center">
   <img src="docs/pi05_libero_grid.gif" width="760" alt="π0.5 replaying all ten libero_spatial tasks on an RDK S100P BPU"><br>
@@ -173,20 +175,22 @@ own is the same scripts with a different `--ckpt`.
 ## Relation to the official runtime
 
 BLLM's compute comes from the same D-Robotics BPU runtime (`hbDNN` / `hbUCP`), and
-it happily consumes officially released `.hbm` files. The table below compares
-**abstraction level and positioning**, not quality:
+it happily consumes officially released `.hbm` files — an official LLM 2.0 S100P package
+loads as unzipped, with output token-identical to the official runtime's. The table below
+compares **abstraction level and positioning**, not quality (against the official LLM
+2.0.0 S100 SDK):
 
-| | Official OE-LLM runtime (sample-level) | BLLM |
+| | Official OE-LLM 2.0 runtime | BLLM |
 |---|---|---|
-| Shape | a standalone LLM runtime + sample programs | a reusable framework running directly on the generic hbDNN / hbUCP — **no extra LLM SDK** |
-| Interface | mostly C APIs | C++17 library + Python bindings, task-style session API |
-| Loading a model | organise paths and flags per the sample | `bllm.load(dir)`; `bllm-make-model-dir` writes the manifest and resolves stop tokens |
-| Model coverage | the officially released `.hbm` | the official `.hbm` **plus** architectures it doesn't cover (Qwen3.5 hybrid SSM / GLM-Edge / Phi-4-mini) |
-| Sessions | template, history and cache are yours to assemble | built-in C++ tokenizer, ChatML templating, multi-turn, streaming, prompt cache |
-| Generation control | basic sampling | full sampling + `logit_bias` + `logprobs` + GBNF grammar constraints |
-| Serving | build it yourself | OpenAI-compatible HTTP + Docker + prefix cache + `/metrics` |
-| Coexisting with vision | handle it yourself | BPU priority / time-slice control alongside [bcdl](https://github.com/ruisv/bcdl) |
-| Embodied policies (VLA) | not covered | π0.5 and SmolVLA load in one line and return action chunks ([above](#embodied-policies-π05-on-the-bpu)) |
+| Shape | a closed-source runtime library + sample programs | an open-source framework running directly on the generic hbDNN / hbUCP — **no extra LLM SDK** |
+| Interface | C++ API | C++17 library + Python bindings, task-style session API |
+| Loading a model | paths organised in a JSON config | `bllm.load(dir)`, official 2.0 packages as unzipped; `bllm-make-model-dir` writes manifests |
+| Model coverage | the officially released `.hbm`; Qwen3.5 and VLA are S600-only | the official S100P 2.0 packages and 1.0's Qwen2.5-Omni, **plus** Qwen3.5 hybrid SSM and GLM-Edge on S100 / S100P |
+| Sessions | chat templates, multi-turn history, prefix reuse | built-in C++ tokenizer, ChatML / Phi templating, multi-turn, streaming, prompt-cache snapshots |
+| Generation control | sampling parameters (top-k / top-p / temperature / repetition penalty) | full sampling + `logit_bias` + `logprobs` + GBNF grammar constraints / JSON Schema |
+| Serving | a sample OpenAI server (with tool calls) | OpenAI-compatible HTTP + Docker + prefix cache + `/metrics` |
+| Coexisting with vision | per-core assignment | BPU priority / time-slice control alongside [bcdl](https://github.com/ruisv/bcdl) |
+| Embodied policies (VLA) | S600 only | π0.5 / SmolVLA on both S100P and S600, one line to an action chunk ([above](#embodied-policies-π05-on-the-bpu)) |
 
 In one line: **the official runtime proved the BPU can run LLMs; BLLM turns that
 into a product in minutes.**
@@ -255,8 +259,11 @@ tar xzf qwen3.5-4b-ctx512-int8-s100.tar.gz
 Conversion methodology, acceptance protocol, and every rejected build are in
 [bllm-model-zoo](https://github.com/ruisv/bllm-model-zoo).
 
-Already have an officially released `.hbm`? Assemble it into a model directory with
-`bllm-make-model-dir` — see [Making a model directory](#making-a-model-directory).
+**An official LLM 2.0 package** (Qwen3, Qwen3-VL, Qwen2.5-VL, MiniCPM5, Phi-4-mini — S100P)
+loads as unzipped, no configuration: `bllm.load("Qwen3-1.7B_w4/")` — see
+[section 2 of the deployment guide](docs/MODELS.en.md#2-official-llm-20-packages-unzip-and-load-s100p).
+A 1.0 SDK `.hbm` is assembled into a model directory with `bllm-make-model-dir` — see
+[Making a model directory](#making-a-model-directory).
 
 ### 3. Run (one minute)
 
@@ -367,8 +374,28 @@ dense TTFT 274 → 141 ms. One generation runs at a time (single BPU graph); req
 
 ## Multimodal
 
-Two routes: the official Qwen2.5-Omni (text/image/audio/video), and **Qwen3.5
-image+text** with a vision tower we compiled ourselves.
+Three routes: **the official LLM 2.0 Qwen3-VL / Qwen2.5-VL** (as unzipped), the official
+Qwen2.5-Omni (text/image/audio/video), and **Qwen3.5 image+text** with a vision tower we
+compiled ourselves.
+
+### Official Qwen3-VL / Qwen2.5-VL
+
+```python
+vlm = bllm.load("Qwen3-VL-2B_w4/")     # official 2.0 package, as unzipped
+print(vlm.chat("Describe this image.", images=["a.jpg"]))
+```
+
+Every input that reaches the BPU is byte-identical to the official runtime's (image
+preprocessing, splicing, 3-D positions, DeepStack), and replies are token-identical to the
+official `chat_demo`. Measured on S100P:
+
+| package | vision tower | first token | decode |
+|---|---:|---:|---:|
+| Qwen3-VL-2B w4 | 180 ms | 0.41 s | 26.2 tok/s |
+| Qwen3-VL-4B w4 | 181 ms | 0.73 s | 14.7 tok/s |
+| Qwen3-VL-8B w4 | 229 ms | 1.01 s | 9.0 tok/s |
+| Qwen2.5-VL-3B w4 | 302 ms | 0.90 s | 21.7 tok/s |
+| Qwen2.5-VL-7B w4 | 304 ms | 1.46 s | 10.4 tok/s |
 
 ### Qwen3.5 image + text
 
@@ -506,6 +533,11 @@ Measured on the board (int8 weights; decode throughput and first-token latency):
 | Qwen3.5-0.8B (hybrid SSM) | S600 (single core) | — | **42.7 tok/s** |
 | Qwen3.5-4B (hybrid SSM) | S600 (4 cores) | — | **27 tok/s** |
 
+Official LLM 2.0 packages (S100P, w4/w8 weights) decode at the official runtime's speed:
+Qwen3-0.6B w8 **39.7**, Qwen3-1.7B w4 **28.4**, Qwen3-4B w4 **15.8**, Qwen3-8B w4 **9.4**,
+MiniCPM5-2B w4 **28.4** tok/s (official: 40.0 / 28.7 / 15.9 / 9.5 / 28.8); image packages are
+under [Multimodal](#official-qwen3-vl--qwen25-vl).
+
 The 2B/4B rows are measured against this release's GQA batched-matmul + mask-dedup
 rewrite (4B is nearly 2x faster than the pre-rewrite 3.29 tok/s — mostly DMA saved
 by dropping the old `expand_win` broadcast).
@@ -523,18 +555,25 @@ These run through one config-free path (auto model-type, auto chat template, per
 quirks like int8 KV handled internally), validated across q8/q4 × context 1024/4096
 variants.
 
-**Officially released `.hbm` (D-Robotics)**:
+**Official D-Robotics LLM 2.0 packages** (S100P, as unzipped; greedy output token-identical
+to the official `chat_demo`):
+
+- **Qwen3** 0.6B / 1.7B / 4B / 8B, **Qwen3-4B-Instruct-2507**, **Qwen3-4B-Thinking-2507**
+- **Qwen2.5-3B** · **MiniCPM5-2B** · **Phi-4-mini**
+- **Qwen3-VL** 2B / 4B / 8B · **Qwen2.5-VL** 3B / 7B (image + text)
+
+**Official D-Robotics 1.0 SDK `.hbm`**:
 
 - **Qwen2.5** 1.5B / 7B (Base + Instruct)
 - **DeepSeek-R1-Distill-Qwen** 1.5B / 7B
 - **InternLM2-1.8B**
 - **Qwen2.5-Omni-3B** (multimodal)
 
-**Converted by us** (architectures the official toolchain does not cover; converted
+**Converted by us** (architectures with no official package for S100 / S100P; converted
 offline and validated on the board):
 
-- **Qwen3.5-0.8B / 2B / 4B** (hybrid SSM, **BLLM-native only**; strict 100% on-BPU int8)
-- **GLM-Edge** · **Phi-4-mini**
+- **Qwen3.5-0.8B / 2B / 4B** (hybrid SSM, strict 100% on-BPU int8; the official 2.0 one is S600-only)
+- **GLM-Edge** · **Phi-4-mini** (int8, predating the official 2.0 w8 package)
 
 Model conversion (how a `.hbm` is produced) is an offline process, out of scope here; this
 repo consumes a finished `.hbm` + tokenizer config. Prebuilt packages: see

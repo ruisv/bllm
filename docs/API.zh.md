@@ -13,11 +13,17 @@ Python 包 `bllm`。C++ 对应类型见每节末尾。English: [API.en.md](API.e
 - `path` 为**模型目录**（含 `model.json`）→ 按**是否带视觉塔**路由，而不是按 `arch`：目录含
   `visual`（Qwen2.5-Omni 或 **Qwen3.5 图文**）返回 `NativeVlmSession`，否则（纯文本稠密/混合）
   返回 `NativeSession`。
+- `path` 为**官方 LLM 2.0 包目录**（`*_language_*.hbm` + `*_embed_tokens.bin`，图文包另有
+  `*_vision_*.hbm`）→ 从 `.hbm` 内嵌的描述合成清单（缓存在 `$BLLM_CACHE`），文本包返回
+  `NativeSession`，图文包返回 `NativeVlmSession`。`vision=False` 只加载文本塔；`system="..."`
+  覆盖模板自带的默认 system。
 - `path` 为**裸 `.hbm`** 且传 `tokenizer_dir=<目录>` → 运行时合成清单并返回 `NativeSession`。
 - 多余的关键字参数透传给会话构造函数。
 
 ```python
 llm = bllm.load("/models/qwen2.5-1.5b")
+llm = bllm.load("Qwen3-1.7B_w4/")                      # 官方 2.0 包，解压即用
+vlm = bllm.load("Qwen3-VL-2B_w4/")                     # 官方 2.0 图文包
 llm = bllm.load("Qwen2.5_1.5B.hbm", tokenizer_dir="Qwen2.5_1.5B_config/")
 ```
 
@@ -119,7 +125,7 @@ for piece in sess.stream_decode(256):
 
 现成实现见 `docker/serving/`（`cache.py` 的前缀缓存 + `engine.py` 的单 worker 线程）。
 
-## `bllm.NativeVlmSession` — 多模态（Qwen2.5-Omni / Qwen3.5 图文）
+## `bllm.NativeVlmSession` — 多模态（Qwen2.5-Omni / Qwen3.5 图文 / 官方 Qwen3-VL、Qwen2.5-VL）
 
 ```python
 vlm = bllm.NativeVlmSession(model_dir)        # 或 bllm.load(...)
@@ -131,6 +137,10 @@ vlm = bllm.NativeVlmSession(model_dir)        # 或 bllm.load(...)
 |---|---|---|---|
 | `arch="omni"`（Qwen2.5-Omni） | dense KV 双图 | 图 / 音 / 视频 | 448px → 256 |
 | `arch="hybrid"` + `visual`（Qwen3.5） | Gated-DeltaNet 单图 | **仅图** | 448px → 196 |
+| 官方 LLM 2.0 图文包（Qwen3-VL / Qwen2.5-VL） | dense KV 双图（RoPE 在图内） | **仅图** | 448px → 196 / 256 |
+
+官方图文包的图片直接拉伸到 448×448（与官方运行时一致，不保持宽高比）；图片路径用 Pillow 解码
+（装了的话），送进 BPU 的输入与官方运行时逐字节相同。
 
 多模态是**包**的属性、不是解码器家族的属性：同一个 hybrid 文本 `.hbm`，配上视觉塔就是
 图文模型。两者的静止图布局是**同一套**（`<vision_start>` + 视觉行 + `<vision_end>`，
@@ -142,7 +152,7 @@ vlm = bllm.NativeVlmSession(model_dir)        # 或 bllm.load(...)
 > 而不是悄悄按 Omni 那套编出一个看着通顺、其实顺序错乱的答案。
 
 **属性**：`name`、`vision_tokens`、`vision_image_size`、`has_audio`、`last_decode_tps`、
-`last_ttft_ms`（首字延迟，含媒体编码）、`streaming`、`tokens_used`、`context_left`（KV 窗口剩余额度）。
+`last_ttft_ms`（首字延迟，含媒体编码）、`last_ntok`（上一轮实际生成的 token 数）、`streaming`、`tokens_used`、`context_left`（KV 窗口剩余额度）。
 
 **离线问答**（媒体传文件路径或原始数组：`HxWx3` uint8 帧 / 16 kHz 单声道 float PCM）：
 

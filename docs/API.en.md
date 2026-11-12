@@ -14,12 +14,19 @@ Load a model and return the right session object.
 - `path` is a **model directory** (with `model.json`) → routed on whether it carries a
   **vision tower**, not on `arch`: a dir with a `visual` (Qwen2.5-Omni or **Qwen3.5
   image+text**) returns `NativeVlmSession`, otherwise (text-only dense/hybrid) `NativeSession`.
+- `path` is an **official LLM 2.0 package directory** (`*_language_*.hbm` +
+  `*_embed_tokens.bin`, plus `*_vision_*.hbm` for an image model) → the manifest is synthesized
+  from the description embedded in the `.hbm` (cached under `$BLLM_CACHE`); a text package
+  returns `NativeSession`, an image package `NativeVlmSession`. `vision=False` loads the text
+  tower alone; `system="..."` overrides the template's default system prompt.
 - `path` is a **bare `.hbm`** and you pass `tokenizer_dir=<dir>` → the runtime synthesizes the
   manifest and returns a `NativeSession`.
 - Extra keyword args are forwarded to the session constructor.
 
 ```python
 llm = bllm.load("/models/qwen2.5-1.5b")
+llm = bllm.load("Qwen3-1.7B_w4/")                      # official 2.0 package, as unzipped
+vlm = bllm.load("Qwen3-VL-2B_w4/")                     # official 2.0 image package
 llm = bllm.load("Qwen2.5_1.5B.hbm", tokenizer_dir="Qwen2.5_1.5B_config/")
 ```
 
@@ -127,14 +134,18 @@ for piece in sess.stream_decode(256):
 A working implementation lives in `docker/serving/` (`cache.py` for the cache,
 `engine.py` for the single-worker engine).
 
-## `bllm.NativeVlmSession` — multimodal (Qwen2.5-Omni / Qwen3.5 image+text)
+## `bllm.NativeVlmSession` — multimodal (Qwen2.5-Omni / Qwen3.5 image+text / official Qwen3-VL, Qwen2.5-VL)
 
 ```python
-vlm = bllm.NativeVlmSession(model_dir)        # or bllm.load(...) with arch="omni"
+vlm = bllm.NativeVlmSession(model_dir)        # or bllm.load(...) on anything with a vision tower
 ```
 
+An official LLM 2.0 image package stretches the image to 448×448 (as the official runtime
+does; the aspect ratio is not kept), and image paths are decoded with Pillow when it is
+installed — the input reaching the BPU is byte-identical to the official runtime's.
+
 **Properties**: `name`, `vision_tokens`, `vision_image_size`, `has_audio`, `last_decode_tps`,
-`last_ttft_ms` (first-token latency, includes media encode), `streaming`, `tokens_used`,
+`last_ttft_ms` (first-token latency, includes media encode), `last_ntok` (tokens the last turn generated), `streaming`, `tokens_used`,
 `context_left` (KV-window budget remaining).
 
 **Offline Q&A** (media as file paths or raw arrays: `HxWx3` uint8 frames / 16 kHz mono float PCM):

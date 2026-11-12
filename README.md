@@ -6,7 +6,7 @@
 [![C++](https://img.shields.io/badge/C%2B%2B-17-00599C.svg)](CMakeLists.txt)
 [![Python](https://img.shields.io/badge/python-3.9%E2%80%933.14-3776AB.svg)](python/CMakeLists.txt)
 [![Platform](https://img.shields.io/badge/platform-RDK%20S100%20%2F%20S100P%20%2F%20S600%20(aarch64)-0A7BBB.svg)](#快速上手)
-[![Version](https://img.shields.io/badge/version-0.4.2-informational.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.7.0-informational.svg)](CHANGELOG.md)
 
 **简体中文** | [English](README.en.md)
 
@@ -66,18 +66,20 @@ BLLM 把这些做成默认行为。
   **解码期**就只允许仍能满足语法的 token，所以 `json.loads()` 不会失败。
 - **✅ 开箱即用的服务化** —— OpenAI 兼容 HTTP（流式 + 非流式）+ Docker 镜像 +
   对话前缀缓存（板上实测 31.6s → 1.3s，约 25×）。
-- **✅ 覆盖官方没覆盖的架构** —— Qwen3.5 混合 Gated-DeltaNet/SSM 严格 100% 落 BPU
-  （**BLLM 原生独有**），另有 GLM-Edge、Phi-4-mini。
+- **✅ 官方包解压即用，官方没发的也能跑** —— 官方 LLM 2.0 的 S100P 包（Qwen3、Qwen3-VL、
+  Qwen2.5-VL、MiniCPM5、Phi-4-mini）`bllm.load()` 直接加载，输出与官方运行时**逐 token 相同**；
+  官方只为 S600 发了 Qwen3.5，BLLM 在 S100 / S100P 上把 Qwen3.5 混合 Gated-DeltaNet/SSM
+  严格 100% 落 BPU，另有 GLM-Edge。
 - **✅ 能和视觉共存** —— 单 BPU 核上把 LLM 优先级压低，同驻检测器的 p99 从 41 ms
   降到 **2.95 ms**，不是"各跑各的然后互相拖死"。
 - **✅ 不止于对话：具身策略也在 BPU 上** —— π0.5 与 SmolVLA 两个视觉-语言-动作模型
-  一行加载，板上成绩与 x86 参考持平（下一节）。**官方运行时不覆盖这一类。**
+  一行加载，板上成绩与 x86 参考持平（下一节）。**官方 2.0 的 VLA 包只有 S600 版。**
 
 ## 具身策略：π0.5 跑在 BPU 上
 
 端侧大模型不只是聊天。BLLM 把 π0.5 这类**视觉-语言-动作（VLA）模型**整条搬到了
-BPU 上——这是官方大模型运行时不提供的一类能力，也是把板子从"能问答"推到
-"能动手"的关键一步。
+BPU 上——S100P 上的官方大模型运行时没有这一类能力（官方 2.0 只发了 S600 版），而它
+正是把板子从"能问答"推到"能动手"的关键一步。
 
 <div align="center">
   <img src="docs/pi05_libero_grid.gif" width="760" alt="π0.5 在 RDK S100P BPU 上完成 libero_spatial 全部十个任务的回放"><br>
@@ -160,19 +162,20 @@ Hub 上约 100 个 SmolVLA 微调架构相同，换个 `--ckpt` 就能转自己�
 ## 与官方运行时的关系
 
 BLLM 的算力同样来自 D-Robotics 官方 BPU 运行时（`hbDNN` / `hbUCP`），也同样
-可以直接吃官方发布的 `.hbm`。下表比较的是**抽象层次与定位**，不是优劣：
+可以直接吃官方发布的 `.hbm`——官方 LLM 2.0 的 S100P 包解压即可加载，输出与官方运行时
+逐 token 相同。下表比较的是**抽象层次与定位**，不是优劣（对照的是官方 LLM 2.0.0 的 S100 SDK）：
 
-| | 官方 OE-LLM 运行时（示例级） | BLLM |
+| | 官方 OE-LLM 2.0 运行时 | BLLM |
 |---|---|---|
-| 形态 | 独立的大模型运行时 + 示例程序 | 可复用的框架，直接跑在通用 hbDNN / hbUCP 上，**无需额外大模型 SDK** |
-| 接口 | 以 C API 为主 | C++17 库 + Python 绑定，任务式会话 API |
-| 加载模型 | 按示例的路径与参数组织 | `bllm.load(dir)` 一行；`bllm-make-model-dir` 生成清单并解析停止符 |
-| 模型覆盖 | 官方发布的 `.hbm` | 官方 `.hbm` **加上**官方未覆盖的架构（Qwen3.5 混合 SSM / GLM-Edge / Phi-4-mini） |
-| 会话 | 模板、历史、缓存自己拼 | 内置 C++ tokenizer、ChatML 模板、多轮、流式、提示缓存 |
-| 生成控制 | 基础采样 | 全套采样 + `logit_bias` + `logprobs` + GBNF 语法约束 |
-| 服务化 | 自行搭建 | OpenAI 兼容 HTTP + Docker + 前缀缓存 + `/metrics` |
-| 与视觉共存 | 自行处理 | BPU 优先级 / 时间片控制，与 [bcdl](https://github.com/ruisv/bcdl) 协同 |
-| 具身策略（VLA） | 不覆盖 | π0.5 与 SmolVLA 一行加载并出动作块（[上一节](#具身策略π05-跑在-bpu-上)） |
+| 形态 | 闭源运行时库 + 示例程序 | 开源框架，直接跑在通用 hbDNN / hbUCP 上，**无需额外大模型 SDK** |
+| 接口 | C++ API | C++17 库 + Python 绑定，任务式会话 API |
+| 加载模型 | 按 JSON 配置组织路径 | `bllm.load(dir)` 一行，官方 2.0 包解压即用；`bllm-make-model-dir` 生成清单 |
+| 模型覆盖 | 官方发布的 `.hbm`；Qwen3.5 与 VLA 只有 S600 版 | 官方 S100P 的 2.0 包与 1.0 的 Qwen2.5-Omni，**加上** S100 / S100P 上的 Qwen3.5 混合 SSM、GLM-Edge |
+| 会话 | 对话模板、多轮历史、前缀复用 | 内置 C++ tokenizer、ChatML / Phi 模板、多轮、流式、提示缓存快照 |
+| 生成控制 | 采样参数（top-k / top-p / 温度 / 重复惩罚） | 全套采样 + `logit_bias` + `logprobs` + GBNF 语法约束 / JSON Schema |
+| 服务化 | 示例级 OpenAI 服务（含 tool calls） | OpenAI 兼容 HTTP + Docker + 前缀缓存 + `/metrics` |
+| 与视觉共存 | 按核分配 | BPU 优先级 / 时间片控制，与 [bcdl](https://github.com/ruisv/bcdl) 协同 |
+| 具身策略（VLA） | 仅 S600 | S100P 与 S600 都能跑 π0.5 / SmolVLA，一行加载出动作块（[上一节](#具身策略π05-跑在-bpu-上)） |
 
 一句话：**官方运行时证明了 BPU 能跑大模型；BLLM 让你几分钟内把它做成产品。**
 
@@ -237,8 +240,10 @@ tar xzf qwen3.5-4b-ctx512-int8-s100.tar.gz
 转换方法论、验收协议、被拒绝的构建版本见
 [bllm-model-zoo](https://github.com/ruisv/bllm-model-zoo)。
 
-已经有官方发布的 `.hbm`？用 `bllm-make-model-dir` 拼成模型目录即可，见
-[制作模型目录](#制作模型目录)。
+**官方 LLM 2.0 的模型包**（Qwen3、Qwen3-VL、Qwen2.5-VL、MiniCPM5、Phi-4-mini，S100P）解压后
+直接 `bllm.load("Qwen3-1.7B_w4/")`，不用任何配置，见
+[部署手册第二节](docs/MODELS.zh.md#二官方-llm-20-包解压即用s100p)。1.0 SDK 的 `.hbm` 用
+`bllm-make-model-dir` 拼成模型目录，见[制作模型目录](#制作模型目录)。
 
 ### 3. 跑（一分钟）
 
@@ -342,7 +347,26 @@ curl localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
 
 ## 多模态
 
-两条路：官方 Qwen2.5-Omni（文/图/音/视频），以及 **Qwen3.5 图文**（我们自己编的视觉塔）。
+三条路：**官方 LLM 2.0 的 Qwen3-VL / Qwen2.5-VL**（解压即用），官方 Qwen2.5-Omni（文/图/音/视频），
+以及 **Qwen3.5 图文**（我们自己编的视觉塔）。
+
+### 官方 Qwen3-VL / Qwen2.5-VL
+
+```python
+vlm = bllm.load("Qwen3-VL-2B_w4/")     # 官方 2.0 包，解压即用
+print(vlm.chat("描述这张图片。", images=["a.jpg"]))
+```
+
+送进 BPU 的每一个输入都与官方运行时逐字节相同（图片预处理、拼接、三维位置、DeepStack），
+回答与官方 `chat_demo` 逐 token 相同。S100P 实测：
+
+| 包 | 视觉塔 | 首字延迟 | 解码 |
+|---|---:|---:|---:|
+| Qwen3-VL-2B w4 | 180 ms | 0.41 s | 26.2 tok/s |
+| Qwen3-VL-4B w4 | 181 ms | 0.73 s | 14.7 tok/s |
+| Qwen3-VL-8B w4 | 229 ms | 1.01 s | 9.0 tok/s |
+| Qwen2.5-VL-3B w4 | 302 ms | 0.90 s | 21.7 tok/s |
+| Qwen2.5-VL-7B w4 | 304 ms | 1.46 s | 10.4 tok/s |
 
 ### Qwen3.5 图文
 
@@ -469,6 +493,10 @@ llm.set_bpu_priority(0)      # 最低，让视觉抢占 BPU 队列
 | Qwen3.5-0.8B（混合 SSM） | S600（单核） | — | **42.7 tok/s** |
 | Qwen3.5-4B（混合 SSM） | S600（4 核并行） | — | **27 tok/s** |
 
+官方 LLM 2.0 包（S100P，w4/w8 权重）的解码速度与官方运行时持平：Qwen3-0.6B w8 **39.7**、
+Qwen3-1.7B w4 **28.4**、Qwen3-4B w4 **15.8**、Qwen3-8B w4 **9.4**、MiniCPM5-2B w4 **28.4** tok/s
+（官方：40.0 / 28.7 / 15.9 / 9.5 / 28.8）；图文包见[多模态](#官方-qwen3-vl--qwen25-vl)。
+
 2B/4B 一行是本轮 GQA batched matmul + mask 去重重写后的实测（4B 相比重写前的
 3.29 tok/s 提升近 2 倍——省下的主要是 `expand_win` 广播冗余的 DMA）。
 
@@ -483,17 +511,23 @@ Qwen3.5-4B VLM **2.93 s**（ctx512）/ **3.29 s**（ctx4096）。
 下列模型走同一条免配置路径（自动识别类型、发现对话模板、处理各家差异如 int8 KV），
 在 q8/q4 × 上下文 1024/4096 等变体上验证。
 
-**D-Robotics 官方发布的 `.hbm`**：
+**D-Robotics 官方 LLM 2.0 包**（S100P，解压即用；贪心输出与官方 `chat_demo` 逐 token 相同）：
+
+- **Qwen3** 0.6B / 1.7B / 4B / 8B，**Qwen3-4B-Instruct-2507**，**Qwen3-4B-Thinking-2507**
+- **Qwen2.5-3B** · **MiniCPM5-2B** · **Phi-4-mini**
+- **Qwen3-VL** 2B / 4B / 8B · **Qwen2.5-VL** 3B / 7B（图文）
+
+**D-Robotics 官方 1.0 SDK 的 `.hbm`**：
 
 - **Qwen2.5** 1.5B / 7B（Base + Instruct）
 - **DeepSeek-R1-Distill-Qwen** 1.5B / 7B
 - **InternLM2-1.8B**
 - **Qwen2.5-Omni-3B**（多模态）
 
-**本仓自行转换的 `.hbm`**（官方工具链未覆盖的架构，由我们离线转换后在板上验证）：
+**本仓自行转换的 `.hbm`**（S100 / S100P 上官方没有的架构，由我们离线转换后在板上验证）：
 
-- **Qwen3.5-0.8B / 2B / 4B**（混合 SSM，**BLLM 原生独有**；100% 落 BPU int8）
-- **GLM-Edge** · **Phi-4-mini**
+- **Qwen3.5-0.8B / 2B / 4B**（混合 SSM，100% 落 BPU int8；官方 2.0 只发了 S600 版）
+- **GLM-Edge** · **Phi-4-mini**（int8，早于官方 2.0 的 w8 包）
 
 模型转换（`.hbm` 如何产出）是离线流程，不在本仓范围；本仓消费成品 `.hbm` + tokenizer 配置。
 预编译好的模型包见[快速上手](#快速上手)。

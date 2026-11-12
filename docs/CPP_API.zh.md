@@ -76,17 +76,18 @@ bllm::ModelConfig cfg = bllm::loadModelConfig("/models/qwen3.5-2b");
 | `hbm_prefill` | 可选的 `seq_len=N` 分块 prefill 图。**缺失不是错误** —— 引擎会退回逐 token 摄入。 |
 | `eos` | 停止 token id 列表。 |
 | `mrope_section` / `mrope_interleaved` | VLM 的 rope 维度在 (t,h,w) 上的切分及其频率布局。 |
-| `vision` | `VisionCfg{patch, merge, temporal, mean[3], std[3]}`。 |
+| `vision` | `VisionCfg{patch, merge, temporal, mean[3], std[3], resize, window}`。`resize` 为 `"pil"`（HF 的 PIL bicubic，默认）或 `"cv_cubic"`（OpenCV INTER_CUBIC，官方 2.0 包用这个）；`window > 0` 表示视觉塔按窗口注意力顺序输出、要排回光栅顺序（官方 Qwen2.5-VL 为 4）。 |
 | `cache_len` | 仅供参考。 |
 | `bpu_cores` | `.hbm` 编译时的 BPU 核数；**> 1 时提交必须绑定到具体核**，会话构造时会自动设好核掩码。 |
 | `rope_theta` | rope 底数。 |
-| `chat` | `ChatConfig{format, im_start, im_end, bos, r_user, r_assistant, r_system, r_end, system}`。 |
+| `chat` | `ChatConfig{format, im_start, im_end, bos, r_user, r_assistant, r_system, r_end, system, think_on, think_off, thinking_default}`。`think_on` / `think_off` 是思考开 / 关时接在 assistant 标记后的内容，按各模型的模板来。 |
 
 判定用的谓词：`is_hybrid()`、`is_omni()`、`is_embed()`、`has_vision()`。
 
 > **多模态是「包」的属性，不是解码器家族的属性。** `has_vision()`（目录里带
 > `visual` 塔）才是"能不能看图"的判据：`"omni"` 是带视觉+音频的 dense 文本塔，
-> Qwen3.5 是带视觉的 hybrid 文本塔，两者都走 `NativeVlm`。
+> Qwen3.5 是带视觉的 hybrid 文本塔，官方 LLM 2.0 的图文包是 `"dense"` 加视觉塔（RoPE 在图内），
+> 三者都走 `NativeVlm`。
 
 > **`VisionCfg` 里的常量必须由清单携带。** 编译好的图里看不出 patch 尺寸与像素
 > 归一化 —— 用 patch-14 的预处理去喂 patch-16 的图，会得到**形状正确的垃圾**。

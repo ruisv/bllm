@@ -83,18 +83,19 @@ bllm::ModelConfig cfg = bllm::loadModelConfig("/models/qwen3.5-2b");
 | `hbm_prefill` | optional `seq_len=N` chunked prefill graph. **Its absence is not an error** — the engine falls back to token-by-token ingestion. |
 | `eos` | stop-token ids. |
 | `mrope_section` / `mrope_interleaved` | how the VLM's rope dims split across (t,h,w), and the frequency layout of that split. |
-| `vision` | `VisionCfg{patch, merge, temporal, mean[3], std[3]}`. |
+| `vision` | `VisionCfg{patch, merge, temporal, mean[3], std[3], resize, window}`. `resize` is `"pil"` (HF's PIL bicubic, the default) or `"cv_cubic"` (OpenCV INTER_CUBIC, what official 2.0 packages use); `window > 0` means the tower returns its tokens in window-attention order, to be put back in raster order (4 for the official Qwen2.5-VL). |
 | `cache_len` | informational. |
 | `bpu_cores` | BPU cores the `.hbm` was compiled for; **> 1 must be submitted to specific cores**, and the session sets the core mask at construction. |
 | `rope_theta` | rope base. |
-| `chat` | `ChatConfig{format, im_start, im_end, bos, r_user, r_assistant, r_system, r_end, system}`. |
+| `chat` | `ChatConfig{format, im_start, im_end, bos, r_user, r_assistant, r_system, r_end, system, think_on, think_off, thinking_default}`. `think_on` / `think_off` are what follows the assistant marker with thinking on / off, per the model's template. |
 
 Predicates: `is_hybrid()`, `is_omni()`, `is_embed()`, `has_vision()`.
 
 > **Multimodality is a property of the PACKAGE, not of the decoder family.**
 > `has_vision()` (a `visual` tower in the directory) is what decides whether a
 > model can answer about images: `"omni"` is a dense text tower with vision and
-> audio, Qwen3.5 is a hybrid one with vision, and both run through `NativeVlm`.
+> audio, Qwen3.5 is a hybrid one with vision, an official LLM 2.0 image package is
+> `"dense"` with a vision tower (rope inside the graph), and all three run through `NativeVlm`.
 
 > **The `VisionCfg` constants have to be carried by the manifest.** Nothing about
 > a compiled graph reveals the patch size or the pixel normalization — a patch-14
