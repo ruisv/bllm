@@ -55,6 +55,18 @@ inline int16_t quantS16(float v, float inv_scale) {
   return (int16_t)q;
 }
 
+// The same, DIVIDING by the scale — which is what the official LLM 2.0 runtime does, and
+// it is not the same number. fp16 embedding values land a hair under .5 often enough:
+// Qwen3-4B's 0.0294189453125 / 4.16256762e-06 = 7067.4997 rounds to 7067, but times
+// the float reciprocal it is 7067.5000 and rounds to 7068. 54 such elements in a
+// 19-token prompt were enough to send greedy decoding down a different reply.
+inline int16_t quantS16Div(float v, float scale) {
+  const float q = std::rint(v / scale);
+  if (q <= -32768.0f) return -32768;
+  if (q >= 32767.0f) return 32767;
+  return (int16_t)q;
+}
+
 // Owns an hbDNN packed handle for the lifetime of whoever holds it.
 //
 // Every model class here loads its .hbm in the constructor and then keeps

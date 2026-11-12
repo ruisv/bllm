@@ -171,6 +171,8 @@ class NativeEngine {
       // but nothing promises that, so keep both.
       embInvScale_ = 1.0f / decode_.inScale(0);
       pEmbInvScale_ = 1.0f / prefill_.inScale(0);
+      embScale_ = decode_.inScale(0);              // EmbedPos quantises by DIVISION
+      pEmbScale_ = prefill_.inScale(0);            // (see native_detail::quantS16Div)
       // position_ids: [1,T] for plain rope, [3,1,T] for mrope (t,h,w rows).
       const auto& qs = decode_.inShape(1);
       posRows_ = qs.numDimensions == 3 ? qs.dimensionSize[0] : 1;
@@ -599,24 +601,29 @@ class NativeEngine {
       sn[i] = sn[i + half] = s;
     }
   }
-  void quantRow(const float* src, int16_t* dst) const { quantRow(src, dst, embInvScale_); }
+  void quantRow(const float* src, int16_t* dst) const {
+    if (mode_ == InputMode::EmbedPos) quantRowDiv(src, dst, embScale_);
+    else quantRow(src, dst, embInvScale_);
+  }
   void quantRow(const float* src, int16_t* dst, float inv) const {
     for (int i = 0; i < hidden_; ++i) dst[i] = native_detail::quantS16(src[i], inv);
   }
+  // EmbedPos: bit-identical to the official runtime's input (checked against its own
+  // tensor dump), which multiplying by the reciprocal is not.
+  void quantRowDiv(const float* src, int16_t* dst, float scale) const {
+    for (int i = 0; i < hidden_; ++i) dst[i] = native_detail::quantS16Div(src[i], scale);
+  }
 
   // EmbedPos: positions for `n` tokens into a [1,T] or [3,1,T] int32 tensor. Rows past
-  // `n` (a short prefill chunk) REPEAT the last position: masked out anyway, and never
-  // past a position already in range (the graph may gather rope from a table).
+  // `n` (a short prefill chunk) are 0, as the official runtime writes them: masked out
+  // anyway, always in range of any rope table, and byte-identical to its input.
   void writePositions(native_detail::Graph& g, const Pos3* pos, int n, int width) {
     auto* base = (uint8_t*)g.inPtr(1);
     const int64_t rowPitch = posRows_ == 3 ? g.inStride(1, 0) : 0;
     for (int r = 0; r < posRows_; ++r) {
       auto* dst = (int32_t*)(base + r * rowPitch);
-      int32_t last = 0;
-      for (int i = 0; i < width; ++i) {
-        if (i < n) last = (posRows_ == 1 || r == 0) ? pos[i].t : (r == 1 ? pos[i].h : pos[i].w);
-        dst[i] = last;
-      }
+      for (int i = 0; i < width; ++i)
+        dst[i] = i >= n ? 0 : (posRows_ == 1 || r == 0) ? pos[i].t : (r == 1 ? pos[i].h : pos[i].w);
     }
     g.inClean(1);
   }
@@ -649,7 +656,7 @@ class NativeEngine {
       auto* x = (uint8_t*)prefill_.inPtr(0);
       std::memset(x, 0, (size_t)chunk_ * pitch);
       for (int i = 0; i < cl; ++i)
-        quantRow(rows + (size_t)i * hidden_, (int16_t*)(x + i * pitch), pEmbInvScale_);
+        quantRowDiv(rows + (size_t)i * hidden_, (int16_t*)(x + i * pitch), pEmbScale_);
       prefill_.inClean(0);
       writePositions(prefill_, pos, cl, chunk_);
       writePrefillMask((int16_t*)prefill_.inPtr(2));
@@ -727,6 +734,7 @@ class NativeEngine {
   int posRows_ = 1;                              // EmbedPos: 1 (rope) or 3 (mrope t,h,w)
   float logitScale_ = 1.0f, embInvScale_ = 1.0f, ropeInvScale_ = 1.0f;
   float pEmbInvScale_ = 1.0f;                    // EmbedPos prefill's own input scale
+  float embScale_ = 1.0f, pEmbScale_ = 1.0f;     // EmbedPos: the scales themselves
   int P_ = 0, maxPos_ = -1;
   const int16_t* curLogits_ = nullptr;
   static constexpr int32_t kStateMagic = 0x424C4B31;   // "BLK1" — prompt-cache file tag
