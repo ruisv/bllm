@@ -34,6 +34,23 @@ NB_MODULE(_bllm_native, m) {
         "The description JSON embedded in an .hbm (\"\" if it has none). Official LLM 2.0 "
         "language graphs carry their HF configs + tokenizer here. Loads the file, ~1 s.");
 
+  m.def(
+      "resize_cubic_cv",
+      [](nb::ndarray<const uint8_t, nb::ndim<3>, nb::c_contig, nb::device::cpu> img, int width,
+         int height) {
+        const int h = (int)img.shape(0), w = (int)img.shape(1), c = (int)img.shape(2);
+        if (width <= 0 || height <= 0) throw std::runtime_error("[bllm] bad target size");
+        auto* out = new uint8_t[(size_t)width * height * c];
+        nb::capsule owner(out, [](void* p) noexcept { delete[] (uint8_t*)p; });
+        bllm::vision_detail::resizeCubicCv(img.data(), w, h, c, out, width, height);
+        return nb::ndarray<nb::numpy, uint8_t, nb::ndim<3>>(
+            out, {(size_t)height, (size_t)width, (size_t)c}, owner);
+      },
+      "image"_a, "width"_a, "height"_a,
+      "cv2.resize(image, (width, height), interpolation=cv2.INTER_CUBIC), bit for bit, without "
+      "OpenCV: how an official LLM 2.0 VLM package's image is brought to its tower's side. "
+      "Exposed so the equivalence can be checked against cv2.");
+
   nb::class_<bllm::NativeSamplingParams>(m, "SamplingParams")
       .def(nb::init<>())
       .def_rw("temp", &bllm::NativeSamplingParams::temp)
@@ -321,7 +338,8 @@ NB_MODULE(_bllm_native, m) {
   using PcmArray = nb::ndarray<const float, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
   nb::class_<bllm::NativeVlm>(m, "NativeVlm")
       .def(nb::init<const std::string&>(), "model_dir"_a,
-           "Load an omni model directory (model.json: text + visual/audio towers + embed table).")
+           "Load a multimodal model directory (model.json with a visual tower: omni, hybrid, "
+           "or an official LLM 2.0 VLM package's synthesized dir).")
       .def(
           "chat",
           [](bllm::NativeVlm& vlm, const std::string& text, nb::list images, nb::list audios,
@@ -455,6 +473,8 @@ NB_MODULE(_bllm_native, m) {
       .def_prop_ro("vision_image_size", &bllm::NativeVlm::vision_image_size)
       .def_prop_ro("has_audio", &bllm::NativeVlm::has_audio)
       .def_prop_ro("last_decode_tps", &bllm::NativeVlm::last_decode_tps)
+      .def_prop_ro("last_ntok", &bllm::NativeVlm::last_ntok,
+                   "Tokens the last turn generated (the engine's count).")
       .def_prop_ro("last_ttft_ms", &bllm::NativeVlm::last_ttft_ms)
       .def("encode", &bllm::NativeVlm::encode, "text"_a,
            "Plain tokenizer encode (no ChatML wrapping) — a token count for usage "

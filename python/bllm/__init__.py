@@ -19,6 +19,7 @@ superset.
 
 from __future__ import annotations
 
+import os
 import queue
 import threading
 from typing import Callable, Iterator, Optional
@@ -463,6 +464,26 @@ if _HAVE_NATIVE:
                 pcm = np.frombuffer(out, np.float32).copy()
         return {"frames": [np.ascontiguousarray(f) for f in frames], "fps": fps, "audio": pcm}
 
+    def _images(images) -> list:
+        """Image paths decoded with Pillow when it is installed — libjpeg's decode, which
+        is what HF processors and the official runtime see. The native fallback (stb)
+        decodes JPEG a level or two off in ~5% of values, enough to move a quantised
+        tower's reply. EXIF orientation is applied, as both of those do. Arrays pass
+        through untouched."""
+        out = []
+        for im in images:
+            if isinstance(im, (str, os.PathLike)):
+                try:
+                    import numpy as np
+                    from PIL import Image, ImageOps
+                except ImportError:
+                    out.append(os.fspath(im))
+                    continue
+                with Image.open(im) as f:
+                    im = np.ascontiguousarray(np.asarray(ImageOps.exif_transpose(f).convert("RGB")))
+            out.append(im)
+        return out
+
     class NativeVlmSession:
         """Unified native multimodal session — image + text, no libxlm.
 
@@ -507,6 +528,12 @@ if _HAVE_NATIVE:
         def last_ttft_ms(self) -> float:
             """Time to first token, including the vision encode."""
             return self._vlm.last_ttft_ms
+
+        @property
+        def last_ntok(self) -> int:
+            """Tokens the last turn generated — the engine's count, which a re-encode of
+            the reply text undercounts when generation was cut at max_new."""
+            return self._vlm.last_ntok
 
         def reset(self) -> None:
             """Start a fresh conversation."""
@@ -558,13 +585,13 @@ if _HAVE_NATIVE:
                  stop: "Optional[list[str]]" = None) -> str:
             """Answer a turn of text + images + audio + videos; returns the full reply.
             stop=[...] ends the answer on any of those strings (trimmed)."""
-            return self._vlm.chat(text, list(images), list(audios), list(videos), max_new,
+            return self._vlm.chat(text, _images(images), list(audios), list(videos), max_new,
                                   on_text, list(stop) if stop else [])
 
         def stream_chat(self, text: str, images=(), audios=(), videos=(),
                         max_new: int = 256, stop: "Optional[list[str]]" = None) -> "Iterator[str]":
             """The same turn as a lazy generator of decoded text chunks."""
-            imgs, aus, vids = list(images), list(audios), list(videos)
+            imgs, aus, vids = _images(images), list(audios), list(videos)
             s = list(stop) if stop else []
             return _stream(lambda cb: self._vlm.chat(text, imgs, aus, vids, max_new, cb, s))
 
@@ -575,7 +602,7 @@ if _HAVE_NATIVE:
             itself only needs the media/text fed back into context, not regenerated
             (regenerating would also risk not reproducing the same text, since
             sampling is stochastic)."""
-            self._vlm.append_turn(text, list(images), reply)
+            self._vlm.append_turn(text, _images(images), reply)
 
         # ── live capture: push frames / mic PCM as they arrive, ask any time ──
         #
@@ -655,15 +682,16 @@ def load(path: str, *, backend: str = "auto", vision: bool = True, **kwargs):
       * a native package (a directory with model.json) → NativeSession (dense/hybrid) or
         NativeVlmSession (anything carrying a `visual` tower), by its `arch`;
       * an official D-Robotics LLM 2.0 package directory (`*_language_*.hbm` +
-        `*_embed_tokens.bin`) → NativeSession, by synthesizing model.json + tokenizer.json from
-        the description embedded in the .hbm (cached; bllm._modelmeta). A VLM package needs
-        vision=False for now (its text tower only);
+        `*_embed_tokens.bin`) → NativeSession, or NativeVlmSession when it also carries a
+        `*_vision_*.hbm`, by synthesizing model.json + tokenizer.json from the description
+        embedded in the .hbm (cached; bllm._modelmeta);
       * a bare `.hbm` + tokenizer_dir (an OE-LLM 1.0 package) → NativeSession, by synthesizing a
         dense model.json from the `.hbm` + tokenizer dir (bllm._modelmeta).
     Extra kwargs go to the chosen session's constructor.
 
         s = bllm.load("qwen3.5-0.8b")      # -> NativeSession (hybrid SSM)
         s = bllm.load("Qwen3-1.7B_w4/")     # official LLM 2.0 package dir -> dense
+        v = bllm.load("Qwen3-VL-2B_w4/")    # official VLM package -> NativeVlmSession
         s = bllm.load("Qwen2.5_1.5B.hbm", tokenizer_dir="Qwen2.5_1.5B_config/")  # -> dense
         s.chat("你好")
 
@@ -714,6 +742,8 @@ def load(path: str, *, backend: str = "auto", vision: bool = True, **kwargs):
         # Qwen2.5), which is what the official runtime renders too.
         d = official_dir_for(path, vision=vision, name=kwargs.pop("name", None),
                              eos=kwargs.pop("eos", None), system=system)
+        if (d / "visual.hbm").exists():
+            return NativeVlmSession(str(d), **kwargs)
         return NativeSession(str(d), **kwargs)
 
     # Not a native package → a bare `.hbm` / OE-LLM 1.0 package (a `.hbm` + a tokenizer dir).

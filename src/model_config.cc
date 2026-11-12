@@ -51,6 +51,11 @@ ModelConfig loadModelConfig(const std::string& dir) {
     c.vision.patch = v.value("patch", c.vision.patch);
     c.vision.merge = v.value("merge", c.vision.merge);
     c.vision.temporal = v.value("temporal", c.vision.temporal);
+    c.vision.resize = v.value("resize", c.vision.resize);
+    c.vision.window = v.value("window", c.vision.window);
+    if (c.vision.resize != "pil" && c.vision.resize != "cv_cubic")
+      throw std::runtime_error("[bllm] vision.resize must be \"pil\" or \"cv_cubic\", got \"" +
+                               c.vision.resize + "\"");
     if (v.contains("mean")) {
       const auto m = v.at("mean").get<std::vector<float>>();
       if (m.size() != 3) throw std::runtime_error("[bllm] vision.mean must have 3 entries");

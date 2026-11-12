@@ -173,6 +173,11 @@ def test_official_default_system_is_the_templates_own():
     ch = mm.official_model_json(_desc(template=q25), _Q3)["chat"]
     assert ch["system"] == "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
     assert mm.official_model_json(_desc(template=_QWEN3), _Q3)["chat"]["system"] == ""
+    # Qwen2.5-VL writes the default turn in the template's literal text: a real newline
+    q25vl = ("{% for message in messages %}{% if loop.first and message['role'] != 'system' %}"
+             "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n{% endif %}" + _GEN)
+    assert mm.official_model_json(_desc(template=q25vl), _Q3)["chat"]["system"] == \
+        "You are a helpful assistant."
     assert mm.official_model_json(_desc(template=_QWEN3), _Q3,
                                   system="Be brief.")["chat"]["system"] == "Be brief."
 
@@ -231,10 +236,50 @@ def test_official_dir_for_synthesizes_once_then_hits_cache(tmp_path):
     assert d2 == d1 and len(calls) == 1                    # second load reads nothing
 
 
-def test_official_dir_for_vlm_needs_vision_false(tmp_path):
+# A Qwen3-VL description's vision-relevant parts, as the 2.0 packages carry them.
+_VL_PP = {"patch_size": 16, "temporal_patch_size": 2, "merge_size": 2,
+          "image_mean": [0.5, 0.5, 0.5], "image_std": [0.5, 0.5, 0.5]}
+
+
+def _vl_desc(pp=_VL_PP, width=448, height=448,
+             rope={"rope_parameters": {"mrope_interleaved": True, "mrope_section": [24, 20, 20]}}):
+    d = _desc()
+    d["preprocessor_config"] = dict(pp)
+    d["horizon"].update(image_width=width, image_height=height)
+    d["config"]["text_config"] = dict(rope)
+    return d
+
+
+def test_official_vlm_dir_carries_the_tower_and_its_geometry(tmp_path):
     p = _package(tmp_path, vision=True)
-    read = lambda path: json.dumps(_desc())
-    with pytest.raises(NotImplementedError, match="vision=False"):
-        mm.official_dir_for(p, cache_root=tmp_path / "cache", read_desc=read)
-    d = mm.official_dir_for(p, vision=False, cache_root=tmp_path / "cache", read_desc=read)
-    assert json.loads((d / "model.json").read_text())["arch"] == "dense"
+    read = lambda path: json.dumps(_vl_desc())
+    d = mm.official_dir_for(p, cache_root=tmp_path / "cache", read_desc=read)
+    cfg = json.loads((d / "model.json").read_text())
+    assert cfg["arch"] == "dense" and cfg["visual"] == "visual.hbm"
+    assert cfg["vision"] == {"patch": 16, "merge": 2, "temporal": 2, "resize": "cv_cubic",
+                             "mean": [0.5, 0.5, 0.5], "std": [0.5, 0.5, 0.5]}      # no window: Qwen3-VL's tower is raster order
+    assert (cfg["mrope_section"], cfg["mrope_interleaved"]) == ([24, 20, 20], True)
+    assert (d / "visual.hbm").resolve() == next(p.glob("*_vision_*.hbm")).resolve()
+    # vision=False is a different dir: the text tower alone, no tower linked
+    t = mm.official_dir_for(p, vision=False, cache_root=tmp_path / "cache", read_desc=read)
+    assert t != d and "visual" not in json.loads((t / "model.json").read_text())
+    assert not (t / "visual.hbm").exists()
+
+
+def test_official_vlm_geometry_follows_the_package_not_qwen3vl():
+    # Qwen2.5-VL's packages rewrite temporal_patch_size to 1 and keep CLIP normalization
+    pp = {"patch_size": 14, "temporal_patch_size": 1, "merge_size": 2,
+          "image_mean": [0.48145466, 0.4578275, 0.40821073],
+          "image_std": [0.26862954, 0.26130258, 0.27577711]}
+    d = _vl_desc(pp, rope={"rope_scaling": {"mrope_section": [16, 24, 24]}})
+    d["config"]["vision_config"] = {"window_size": 112, "patch_size": 14}
+    cfg = mm.official_model_json(d, _Q3, vision=True)
+    v = cfg["vision"]
+    assert (v["patch"], v["temporal"], v["mean"][0]) == (14, 1, 0.48145466)
+    assert v["window"] == 4          # its tower's rows come back in 4x4-token window order
+    assert (cfg["mrope_section"], cfg["mrope_interleaved"]) == ([16, 24, 24], False)
+
+
+def test_official_vlm_refuses_a_non_square_tower():
+    with pytest.raises(ValueError, match="square"):
+        mm.official_model_json(_vl_desc(width=640, height=448), _Q3, vision=True)

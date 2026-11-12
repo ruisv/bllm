@@ -40,6 +40,12 @@ struct VisionCfg {
   int patch = 14, merge = 2, temporal = 2;
   float mean[3] = {0.48145466f, 0.4578275f, 0.40821073f};
   float std[3]  = {0.26862954f, 0.26130258f, 0.27577711f};
+  // "pil" — PIL bicubic, what HF's processors (and our own towers) use; "cv_cubic" —
+  // OpenCV INTER_CUBIC, what the official LLM 2.0 runtime stretches its input with.
+  std::string resize = "pil";
+  // >0: the tower's rows come out in window-attention order, `window` merged tokens a side
+  // (an official Qwen2.5-VL export: 4), and are put back in raster order.
+  int window = 0;
 };
 
 // π0.5 (openpi VLA). Three graphs rather than one, and a handful of constants

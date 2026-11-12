@@ -11,6 +11,10 @@ server:
     BLLM_TEST_IMAGE=~/qwen3_deploy/bears448.png \
     pytest tests/test_serve_e2e_vlm.py -v
 
+The follow-up turn asks for the image's colour; BLLM_TEST_IMAGE_COLORS lists the
+acceptable answers (comma-separated, default "棕,brown" for the bears image above —
+e.g. "红,red" for the official SDK's red-panda `resource/image.jpg`).
+
 Optionally BLLM_SERVE_TEXT_URL for the "image on a text-only model" 400 check:
 
     BLLM_MODEL=~/models/qwen35-0.8b uvicorn server:app --port 8878 &
@@ -37,6 +41,7 @@ import pytest
 VLM_BASE = os.environ.get("BLLM_SERVE_VLM_URL")
 TEXT_BASE = os.environ.get("BLLM_SERVE_TEXT_URL")
 IMAGE = os.environ.get("BLLM_TEST_IMAGE")
+COLORS = [c for c in os.environ.get("BLLM_TEST_IMAGE_COLORS", "棕,brown").split(",") if c]
 
 if not VLM_BASE:
     pytest.skip("BLLM_SERVE_VLM_URL not set — needs a running VLM server", allow_module_level=True)
@@ -127,7 +132,8 @@ def test_multi_turn_follow_up_reuses_committed_history():
         {"role": "user", "content": "图里是什么颜色？一个词回答。"},
     ])
     assert status == 200
-    assert "棕" in r2["choices"][0]["message"]["content"] or "brown" in r2["choices"][0]["message"]["content"].lower()
+    colour = r2["choices"][0]["message"]["content"].lower()
+    assert any(c in colour for c in COLORS), colour
     assert r2["usage"]["prompt_tokens_details"]["cached_tokens"] == r1["usage"]["total_tokens"]
 
 

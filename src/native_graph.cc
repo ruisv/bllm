@@ -242,6 +242,12 @@ void Graph::writeRowsF32As(int i, const float* src, int64_t rows, int64_t cols) 
         for (int64_t k = 0; k < cols; ++k) p[k] = (int32_t)std::lround(s[k]);
         break;
       }
+      case HB_DNN_TENSOR_TYPE_S16: {           // scaled int16: the official 2.0 towers
+        const float scale = scaleOf(in[i].properties);
+        auto* p = (int16_t*)d;
+        for (int64_t k = 0; k < cols; ++k) p[k] = quantS16Div(s[k], scale);
+        break;
+      }
       default:
         throw std::runtime_error("[native] writeRowsF32As: unsupported input type " +
                                  std::to_string(type));

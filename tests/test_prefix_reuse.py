@@ -149,17 +149,20 @@ def test_cache_align_only_returns_safe_points(dense):
 
 
 def test_hybrid_reuse_is_exact_at_any_split(hybrid):
-    """The hybrid engine has no chunked prefill (prefill_chunk == 0), so it is not
-    segmentation-sensitive: every split is exact. The SSM state is a recurrent summary
-    that cannot be truncated, but restoring and appending must still be transparent."""
+    """A hybrid build without a prefill graph (prefill_chunk == 0) steps every token, so it
+    is not segmentation-sensitive: every split is exact. One with chunked prefill (the
+    published Qwen3.5 packages, chunk 32) is exact at every chunk-aligned split, the only
+    ones the server snapshots at. The SSM state is a recurrent summary that cannot be
+    truncated, but restoring and appending must still be transparent."""
     sess = hybrid
-    assert sess.prefill_chunk == 0
     ids = sess.encode(PROMPT)
     base = _baseline(sess, ids)
     assert base.strip()
 
-    for at in (37, len(ids) // 3, len(ids) // 2, len(ids) - 5):
-        assert sess.cache_align(at) == at
+    splits = {sess.cache_align(at) for at in (37, len(ids) // 3, len(ids) // 2, len(ids) - 5)}
+    if sess.prefill_chunk == 0:
+        assert splits == {37, len(ids) // 3, len(ids) // 2, len(ids) - 5}
+    for at in sorted(splits - {0}):
         got, _ = _via_snapshot(sess, ids, at)
         assert got == base, f"hybrid split {at} diverged"
 

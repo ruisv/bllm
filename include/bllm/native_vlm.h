@@ -1,8 +1,9 @@
 // bllm::NativeVlm — image+text chat on the self-built native runtime (no libxlm).
 //
 // This is the multimodal sibling of bllm::NativeLlm. It loads a model directory
-// (model.json, arch="omni") holding a text tower, a vision tower and the host
-// embedding table, and answers a turn of text + images:
+// (model.json with a `visual` tower: arch "omni", "hybrid", or "dense" for an official
+// LLM 2.0 VLM package) holding a text tower, a vision tower and the host embedding
+// table, and answers a turn of text + images:
 //
 //   bllm::NativeVlm vlm("/models/qwen2.5-omni-3b");
 //   std::string a = vlm.chat("这张图里有什么?", {img}, 256, [](auto s){ std::cout << s; });
@@ -14,7 +15,8 @@
 //      image sits — HF's <|IMAGE|> placeholders are never needed,
 //   3. assigns 3-D mrope positions — scalar for text, (t, t+row, t+col) for image
 //      patches — and feeds the whole stream to prefill/decode.
-//
+//   4. Qwen3-VL only: the tower also returns DeepStack maps, which ride along with the
+//      image rows and go into the prefill graph's extra inputs at the same positions.
 //
 #pragma once
 
@@ -77,16 +79,34 @@ class NativeVlm {
     else if (cfg_.is_omni())
       text_ = std::make_unique<DenseTextEngine>(cfg_.hbm, cfg_.embed, cfg_.rope_theta,
                                                 cfg_.mrope_section, cfg_.mrope_interleaved);
+    else if (cfg_.arch == "dense")       // an official LLM 2.0 VLM: rope inside the graph
+      text_ = std::make_unique<DenseTextEngine>(cfg_.hbm, cfg_.embed, cfg_.rope_theta,
+                                                cfg_.mrope_section, cfg_.mrope_interleaved,
+                                                "prefill", "decode");
     else
-      throw std::runtime_error("[bllm] NativeVlm needs arch \"omni\" or \"hybrid\", got \"" +
-                               cfg_.arch + "\"");
+      throw std::runtime_error("[bllm] NativeVlm needs arch \"omni\", \"hybrid\" or \"dense\", "
+                               "got \"" + cfg_.arch + "\"");
 
     VisionSpec vs;
     vs.patch = cfg_.vision.patch;
     vs.merge = cfg_.vision.merge;
     vs.temporal = cfg_.vision.temporal;
+    vs.resize = cfg_.vision.resize == "cv_cubic" ? ResizeKind::CvCubic : ResizeKind::PilBicubic;
+    vs.out_window = cfg_.vision.window;
     for (int i = 0; i < 3; ++i) { vs.mean[i] = cfg_.vision.mean[i]; vs.std[i] = cfg_.vision.std[i]; }
     vision_ = std::make_unique<VisionTower>(cfg_.visual, "visual", vs);
+    // DeepStack maps out of the tower must land in as many prefill inputs; a tower that
+    // emits them for a decoder that cannot take them would silently drop the image detail.
+    if (vision_->deepstack() != text_->prefill_extras())
+      throw std::runtime_error("[bllm] the vision tower returns " +
+                               std::to_string(vision_->deepstack()) + " DeepStack maps but the "
+                               "text prefill graph takes " +
+                               std::to_string(text_->prefill_extras()));
+    {                                    // int16 tower -> int16 decoder: requantise directly
+      float es = 0.0f;
+      std::vector<float> xs;
+      if (text_->input_scales(es, xs)) vision_->set_target_scales(es, xs);
+    }
 
     // Qwen3.5's merger emits exactly the text hidden size (1024), so no adapter is
     // needed — but check, because a mismatch here is a silent garbage splice.
@@ -149,6 +169,9 @@ class NativeVlm {
   int vision_image_size() const { return vision_->image_size(); }
   bool has_audio() const { return !cfg_.audio.empty() && !cfg_.mel_filters.empty(); }
   double last_decode_tps() const { return text_->decode_tps(); }
+  // Tokens the last chat()/stream_ask() generated — the engine's count, not a re-encode
+  // of the text (which merges tokens and undercounts a reply cut at max_new).
+  int last_ntok() const { return lastNtok_; }
   double last_ttft_ms() const { return text_->ttft_ms(); }
 
   void set_sampling(float temp, float top_p, int top_k, float rep_pen, uint64_t seed,
@@ -327,17 +350,25 @@ class NativeVlm {
     return -1;
   }
 
-  // The turn being assembled: one hidden row + one mrope position per token.
+  // The turn being assembled: one hidden row + one mrope position per token, and for
+  // an image token of a DeepStack model its `nx` extra rows (see PrefillExtras).
   struct Stream {
     Stream(int hidden, int next) : H(hidden), nextPos(next) {}
     void push(const float* row, Pos3 p) {
       rows.insert(rows.end(), row, row + H);
       pos.push_back(p);
+      slot.push_back(-1);
       ++n;
     }
-    int H, nextPos, n = 0;
-    std::vector<float> rows;
+    void push(const float* row, Pos3 p, const float* const* extra, int nx) {
+      push(row, p);
+      slot.back() = slots++;
+      for (int j = 0; j < nx; ++j) extraRows.insert(extraRows.end(), extra[j], extra[j] + H);
+    }
+    int H, nextPos, n = 0, slots = 0;
+    std::vector<float> rows, extraRows;
     std::vector<Pos3> pos;
+    std::vector<int> slot;
   };
 
   void appendText(Stream& s, const std::vector<int>& ids) {
@@ -375,7 +406,9 @@ class NativeVlm {
     }
   }
   void feedStream(Stream& s) {
-    if (s.n) text_->feed_embeds(s.rows.data(), s.n, s.pos.data());
+    if (!s.n) return;
+    const PrefillExtras ex{s.extraRows.data(), s.slot.data()};
+    text_->feed_embeds(s.rows.data(), s.n, s.pos.data(), s.slots ? &ex : nullptr);
   }
 
   // ── live-stream internals ─────────────────────────────────────────────────
@@ -434,9 +467,15 @@ class NativeVlm {
     const float* emb = vision_->encode(im.rgb, im.width, im.height);
     const int G = vision_->spec().llm_grid();
     const int st = s.nextPos;
+    const int nx = vision_->deepstack();
+    std::vector<const float*> extra(nx);
     for (int r = 0; r < G; ++r)
-      for (int c = 0; c < G; ++c)
-        s.push(emb + (size_t)(r * G + c) * s.H, Pos3{st, st + r, st + c});
+      for (int c = 0; c < G; ++c) {
+        const size_t off = (size_t)(r * G + c) * s.H;
+        if (!nx) { s.push(emb + off, Pos3{st, st + r, st + c}); continue; }
+        for (int j = 0; j < nx; ++j) extra[j] = vision_->deepstack_rows(j) + off;
+        s.push(emb + off, Pos3{st, st + r, st + c}, extra.data(), nx);
+      }
     s.nextPos = st + G;                          // next text token continues after the block
     appendText(s, {vision_eos_});
   }
@@ -571,6 +610,7 @@ class NativeVlm {
     sp.max_new = max_new;
     sp.eos = cfg_.eos;
     text_->generate(sp, on_token);
+    lastNtok_ = (int)gen.size();
     if (cut != std::string::npos) return full.substr(0, cut);
     if (on_text && full.size() > emitted) on_text(full.substr(emitted));
     return full.empty() ? tk_.decode(gen) : full;
@@ -592,6 +632,7 @@ class NativeVlm {
     return s;
   }
   bool first_turn_ = true;
+  int lastNtok_ = 0;
   bool thinking_ = true;                          // set from chat.thinking_default
   bool video_ok_ = false;         // is this package's video layout the one implemented?
   int im_start_ = -1, im_end_ = -1, vision_bos_ = -1, vision_eos_ = -1;

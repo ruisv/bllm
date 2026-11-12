@@ -172,24 +172,25 @@ def _main_official(argv: list[str]) -> int:
     ap.add_argument("--system", default=None,
                     help="system prompt (default: the chat template's own — usually none)")
     ap.add_argument("--copy", action="store_true", help="copy payload instead of symlinking")
+    ap.add_argument("--text-only", action="store_true",
+                    help="VLM package: leave the vision tower out (text tower alone)")
     args = ap.parse_args(argv)
     pkg = find_official_package(args.package_dir)
     if pkg is None:
         print(f"error: {args.package_dir} is not an official LLM 2.0 package (expected one "
               "*_language_*.hbm and one *_embed_tokens.bin)", file=sys.stderr)
         return 2
-    if pkg["vision"] is not None:
-        print("[warn] VLM package: writing the text tower only (its vision branch is not "
-              "supported yet)", file=sys.stderr)
     out = write_official_dir(pkg, Path(args.out_dir), system=args.system, name=args.name,
-                             eos=args.eos, copy=args.copy)
+                             eos=args.eos, copy=args.copy, vision=not args.text_only)
     cfg = json.loads((out / "model.json").read_text(encoding="utf-8"))
     ch = cfg["chat"]
     think = ("always" if ch["think_on"] and ch["think_on"] == ch["think_off"] else
              "switch (default " + ("on" if ch["thinking_default"] else "off") + ")"
              if ch["think_on"] != ch["think_off"] else "none")
+    vis = (f"  vision=patch {cfg['vision']['patch']}, temporal {cfg['vision']['temporal']}"
+           if "visual" in cfg else "")
     print(f"wrote {out / 'model.json'}: {cfg['name']}  chat={ch['format']}  eos={cfg['eos']}  "
-          f"thinking={think}  system={ch['system']!r}")
+          f"thinking={think}  system={ch['system']!r}{vis}")
     return 0
 
 

@@ -543,7 +543,7 @@ class Engine:
             self._vlm_committed = []
             raise
 
-        res.n_completion = len(self.sess.encode(res.text)) if res.text else 0
+        res.n_completion = self._completion_tokens(res.text)
         # tokens_used is the WHOLE conversation so far including this reply — OpenAI's
         # prompt_tokens means "the context this reply was drawn from", so subtract the
         # reply back out rather than trying to total up media/text tokens ourselves.

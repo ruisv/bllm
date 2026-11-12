@@ -278,7 +278,9 @@ def _desc_eos(desc: dict, specials: dict) -> list:
 _THINK_CLOSED = "<think>\\n\\n</think>\\n\\n"
 _THINK_OPEN = "<think>\\n"
 _BOS_FIRST = re.compile(r"^\s*\{\{-?\s*bos_token\s*-?\}\}")
-_CHATML_DEFAULT_SYSTEM = re.compile(r"<\|im_start\|>system\\n([^'\"<]+?)<\|im_end\|>")
+# The default system turn may sit inside a string literal (`\n` as two characters) or in the
+# template's literal text (a real newline) — Qwen2.5 does the first, Qwen2.5-VL the second.
+_CHATML_DEFAULT_SYSTEM = re.compile(r"<\|im_start\|>system(?:\\n|\n)([^'\"<{]+?)<\|im_end\|>")
 
 
 def _desc_thinking(t: str) -> dict:
@@ -337,10 +339,51 @@ def _desc_chat(desc: dict, specials: dict, system: "str | None") -> dict:
     return chat
 
 
+def _desc_vision(desc: dict) -> dict:
+    """model.json's `vision` block for an official VLM package. The tower's geometry is the
+    package's own preprocessor_config — which for Qwen2.5-VL is rewritten to
+    temporal_patch_size 1, matching how its tower was compiled — and the official runtime
+    stretches the image to the tower's side with OpenCV INTER_CUBIC."""
+    pp = desc.get("preprocessor_config") or {}
+    h = desc.get("horizon") or {}
+    w, hh = h.get("image_width"), h.get("image_height")
+    if w is not None and hh is not None and w != hh:
+        raise ValueError(f"a {w}x{hh} vision tower: only square towers are supported")
+    v = {"patch": int(pp.get("patch_size", 14)), "merge": int(pp.get("merge_size", 2)),
+         "temporal": int(pp.get("temporal_patch_size", 2)), "resize": "cv_cubic"}
+    # Qwen2.5-VL's ViT runs windowed attention, and the official export returns its tokens
+    # in that window order — HF's closing reverse permutation is not in the graph (checked
+    # on the official runtime's dump: it reorders on the host). Window side in merged tokens.
+    vc = (desc.get("config") or {}).get("vision_config") or {}
+    if vc.get("window_size"):
+        v["window"] = int(vc["window_size"]) // (v["patch"] * v["merge"])
+    for k, src in (("mean", "image_mean"), ("std", "image_std")):
+        if src in pp:
+            vals = [float(x) for x in pp[src]]
+            if len(vals) != 3:
+                raise ValueError(f"preprocessor_config.{src} must have 3 entries")
+            v[k] = vals
+    return v
+
+
+def _desc_mrope(desc: dict) -> "tuple[list[int], bool]":
+    """(mrope_section, interleaved) from the checkpoint config, wherever its transformers
+    version put it (rope_parameters or rope_scaling, top level or text_config)."""
+    cfg = desc.get("config") or {}
+    for sec in (cfg.get("text_config") or {}, cfg):
+        for key in ("rope_parameters", "rope_scaling"):
+            r = sec.get(key) or {}
+            if isinstance(r, dict) and r.get("mrope_section"):
+                return [int(x) for x in r["mrope_section"]], bool(r.get("mrope_interleaved"))
+    raise ValueError("a VLM package whose config names no mrope_section")
+
+
 def official_model_json(desc: dict, hbm_name: str, *, system: "str | None" = None,
-                        name: "str | None" = None, eos: "list[int] | None" = None) -> dict:
+                        name: "str | None" = None, eos: "list[int] | None" = None,
+                        vision: bool = False) -> dict:
     """The `model.json` dict for an official LLM 2.0 language graph, from its embedded description
-    and file name. Pure — no file or BPU access — so it is testable anywhere."""
+    and file name. Pure — no file or BPU access — so it is testable anywhere. `vision` adds the
+    package's vision tower (linked as `visual.hbm`)."""
     h = desc.get("horizon")
     if not isinstance(h, dict) or not h:
         raise ValueError(f"{hbm_name}: the description has no `horizon` section — not an "
@@ -370,6 +413,13 @@ def official_model_json(desc: dict, hbm_name: str, *, system: "str | None" = Non
     }
     if ctx:
         cfg["cache_len"] = int(ctx)
+    if vision:
+        cfg["visual"] = "visual.hbm"
+        cfg["vision"] = _desc_vision(desc)
+        # The graph applies M-RoPE itself; recorded so the manifest says what it is.
+        sec, inter = _desc_mrope(desc)
+        cfg["mrope_section"] = sec
+        cfg["mrope_interleaved"] = inter
     return cfg
 
 
@@ -380,15 +430,18 @@ def _read_desc_native(path: str) -> str:
 
 def write_official_dir(pkg: dict, out: Path, *, system: "str | None" = None,
                        name: "str | None" = None, eos: "list[int] | None" = None,
-                       read_desc=None, copy: bool = False) -> Path:
+                       read_desc=None, copy: bool = False, vision: bool = True) -> Path:
     """Materialise a native model dir for an official package (`find_official_package`'s dict)
-    in `out`. model.json is written LAST, so a dir that has one is complete."""
+    in `out`. model.json is written LAST, so a dir that has one is complete. A VLM package
+    gets its vision tower unless `vision=False` (then it is its text tower alone)."""
     lang = pkg["language"]
     raw = (read_desc or _read_desc_native)(str(lang))
     if not raw:
         raise ValueError(f"{lang.name}: no embedded description — not an LLM 2.0 graph")
     desc = json.loads(raw)
-    cfg = official_model_json(desc, lang.name, system=system, name=name, eos=eos)
+    with_vision = vision and pkg.get("vision") is not None
+    cfg = official_model_json(desc, lang.name, system=system, name=name, eos=eos,
+                              vision=with_vision)
     out.mkdir(parents=True, exist_ok=True)
     (out / "tokenizer.json").write_text(json.dumps(desc["tokenizer"], ensure_ascii=False),
                                         encoding="utf-8")
@@ -396,7 +449,10 @@ def write_official_dir(pkg: dict, out: Path, *, system: "str | None" = None,
         if isinstance(desc.get(key), dict):
             (out / f"{key}.json").write_text(json.dumps(desc[key], indent=2, ensure_ascii=False)
                                              + "\n", encoding="utf-8")
-    for src, dst in ((lang, out / "model.hbm"), (pkg["embed"], out / "embed_tokens.bin")):
+    files = [(lang, out / "model.hbm"), (pkg["embed"], out / "embed_tokens.bin")]
+    if with_vision:
+        files.append((pkg["vision"], out / "visual.hbm"))
+    for src, dst in files:
         if copy:
             import shutil
             if dst.exists() or dst.is_symlink():
@@ -417,24 +473,22 @@ def official_dir_for(pkg_dir: "str | Path", *, vision: bool = True,
     """A ready-to-load native model dir for an official LLM 2.0 package, synthesized on first
     use and cached: reading the description loads the GB-scale .hbm, a cache hit reads nothing.
 
-    A VLM package loads as its text tower with vision=False; its vision branch is not
-    supported yet."""
+    A VLM package loads with its vision tower; vision=False gives its text tower alone."""
     pkg = find_official_package(pkg_dir)
     if pkg is None:
         raise ValueError(f"{pkg_dir}: not an official LLM 2.0 package (expected one "
                          "*_language_*.hbm and one *_embed_tokens.bin)")
-    if pkg["vision"] is not None and vision:
-        raise NotImplementedError(
-            f"{Path(pkg_dir).name} is a VLM package; its vision branch is not supported yet — "
-            "pass vision=False to load the text tower")
     lang = pkg["language"]
     st = lang.stat()
+    vis = pkg["vision"] if vision else None
     raw = "::".join([str(lang.resolve()), str(st.st_size), str(int(st.st_mtime)),
-                     str(pkg["embed"].resolve()), "\x00" if system is None else system, name or "",
-                     ",".join(map(str, eos or [])), "official2.1"])
+                     str(pkg["embed"].resolve()), str(vis.resolve()) if vis else "",
+                     "\x00" if system is None else system, name or "",
+                     ",".join(map(str, eos or [])), "official2.2"])
     root = Path(cache_root) if cache_root else Path(
         os.environ.get("BLLM_CACHE", Path.home() / ".cache" / "bllm")) / "native"
     out = root / hashlib.sha1(raw.encode()).hexdigest()[:16]
     if (out / "model.json").is_file():
         return out
-    return write_official_dir(pkg, out, system=system, name=name, eos=eos, read_desc=read_desc)
+    return write_official_dir(pkg, out, system=system, name=name, eos=eos, read_desc=read_desc,
+                              vision=vision)

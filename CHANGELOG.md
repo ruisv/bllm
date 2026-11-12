@@ -26,10 +26,49 @@ All notable changes to BLLM are documented here. The format follows
   chat format is the template's family, ChatML or Phi-style, mapped onto the
   built-in formats (anything else is refused rather than guessed); the name
   carries context, quantization and board. C++ users get the same directory from
-  `bllm-make-model-dir official <out_dir> <package_dir>`. A VLM package loads its
-  text tower with `vision=False` — Qwen3-VL-2B w4's text tower matches the
-  official demo character for character, which also exercises its `[3,1,T]`
-  positions and zeroed deepstack inputs; the vision branch is next.
+  `bllm-make-model-dir official <out_dir> <package_dir>`. A VLM package loads as an
+  image session (next entry); `vision=False` (`--text-only`) gives its text tower
+  alone.
+- **Official VLM packages chat about images: Qwen3-VL and Qwen2.5-VL.**
+  `bllm.load("Qwen3-VL-2B_w4/")` returns a `NativeVlmSession`. Every input BLLM
+  feeds the graphs — `pixel_values`, the embeddings with the image spliced in, the
+  3-D positions, the mask and Qwen3-VL's three DeepStack maps — is **byte-identical
+  to the official runtime's**, checked against its own tensor dumps on Qwen3-VL-2B
+  and 4B and Qwen2.5-VL-3B, and greedy replies match the official `chat_demo` token
+  for token on all five S100P VLM packages. Four cases each — the SDK's own photo
+  asked in Chinese and in English, the same photo stretched to 1600×400, a drawn PNG
+  with text and shapes:
+
+  | package (S100P) | identical | vision tower | TTFT (BLLM) | decode official / BLLM |
+  |---|---:|---:|---:|---:|
+  | Qwen3-VL-2B w4 | 4/4 | 180 ms | 404–409 ms | 26.2 / 26.1–26.2 tok/s |
+  | Qwen3-VL-4B w4 | 4/4 | 181 ms | 723–728 ms | 14.7 / 14.7 tok/s |
+  | Qwen2.5-VL-3B w4 | 4/4 | 302 ms | 902–907 ms | 21.7 / 21.3–21.7 tok/s |
+  | Qwen3-VL-8B w4 | 4/4 | 229 ms | 1008–1017 ms | 9.0 / 8.7–9.0 tok/s |
+  | Qwen2.5-VL-7B w4 | 4/4 | 304 ms | 1457–1464 ms | 10.4 / 10.2–10.4 tok/s |
+
+  The three graphs take the same BPU time under both runtimes; what TTFT adds on
+  top is host work (preprocessing ~8 ms, splicing ~15 ms, against the official
+  runtime's ~4 ms for the latter). What that took:
+  - the image is stretched to the tower's side with OpenCV `INTER_CUBIC`, as the
+    official runtime does, reproduced bit for bit without linking OpenCV (checked
+    against cv2 across shrink, enlarge, odd sizes and rounding ties;
+    `bllm._bllm_native.resize_cubic_cv` exposes it), then normalised in the float
+    form that reproduces their int16 input for every pixel value;
+  - Qwen3-VL's DeepStack maps ride with the image rows into the prefill graph's
+    extra inputs; any token that carries them is prefilled, never decoded;
+  - a quantised tower feeds the quantised decoder as `rint(q · (s_out/s_in))`, the
+    official formula — on Qwen3-VL-4B, where the two scales differ, the
+    dequantise-then-divide we had disagreed on ~1 value in 600 and changed the
+    reply from the first token;
+  - Qwen2.5-VL's tower returns its tokens in window-attention order (HF's final
+    reverse permutation is not in the exported graph), so they are put back in
+    raster order on the host; its positions are `[1,3,T]` for prefill and a single
+    row for decode, so a token with a 3-D position is always prefilled.
+  The geometry comes from the package's own `preprocessor_config`; `model.json`
+  records it under `vision` (`resize: "cv_cubic"`, `window`).
+- `NativeVlmSession.last_ntok`, as on `NativeSession`; the server's image path now
+  counts `usage` and `finish_reason` with it too.
 - **The think switch follows each model's template.** `model.json`'s `chat` takes
   `think_on` / `think_off` — what goes after the assistant marker with thinking on
   or off — and `thinking_default`. Templates differ in exactly this: Qwen3 thinks
@@ -61,6 +100,18 @@ All notable changes to BLLM are documented here. The format follows
 - A ChatML or Phi session with an empty system prompt sends no system block, as
   the HF templates do when no system message is given (it used to send an empty
   one).
+- **Prefill reads the KV window in place.** Its cache inputs are bound to the same
+  ring the decode graph reads instead of being zeroed and refilled every chunk —
+  226 MB of memset and cache maintenance per chunk on a 36-layer model — and the
+  graph's own cache buffers are no longer allocated. About 10 ms off every prefill
+  chunk on Qwen3-VL-4B, and that much less ION.
+- `NativeVlmSession` decodes image **paths** with Pillow when it is installed
+  (libjpeg, as HF processors and the official runtime decode), applying EXIF
+  orientation. stb, still the fallback and the C++ examples' decoder, is off by 1–3
+  levels in ~5% of a JPEG's values. Arrays are untouched.
+- On LLM 2.0 graphs the masked attention value is `mask_pad_value` quantised through
+  the mask's scale, as the official runtime writes it (-32760 at Qwen3-VL's scale of
+  1.00026); numerically the same -inf, byte-identical input.
 
 ### Fixed
 - **An LLM 2.0 graph's embedding input is now byte-identical to the official
@@ -73,6 +124,9 @@ All notable changes to BLLM are documented here. The format follows
   as the official runtime writes them, too. (The Omni path is unchanged.)
 - The prefill logits row pitch is read from the tensor's resolved stride instead
   of being assumed to be the vocabulary padded to 32 bytes.
+- An official template that writes its default system turn in literal text rather
+  than a string (Qwen2.5-VL: "You are a helpful assistant.") had it missed.
+- `bllm_graph_probe` released the model before its last task handle.
 - **`response_format: {"type": "json_object"}` now means an object**, as OpenAI
   defines it, via the new `bllm.json_object_grammar()` (`json_grammar()` still
   means any JSON value). With any value allowed, Qwen3-1.7B answered with one long

@@ -45,8 +45,15 @@ class TextEngine {
 
   // token id -> hidden row, from whichever embedding table this engine owns.
   virtual void embed(int id, float* dst) const = 0;
-  // Splice n already-embedded rows in at explicit 3-D positions.
-  virtual void feed_embeds(const float* rows, int n, const Pos3* pos) = 0;
+  // Splice n already-embedded rows in at explicit 3-D positions. `extras` carries the
+  // per-token rows a prefill graph adds on top (Qwen3-VL DeepStack), if it takes any.
+  virtual void feed_embeds(const float* rows, int n, const Pos3* pos,
+                           const PrefillExtras* extras) = 0;
+  // How many such extra maps the prefill graph takes (0: none).
+  virtual int prefill_extras() const { return 0; }
+  // A graph that takes scaled-int16 embeddings: their scale and the extra maps' (else
+  // false). Lets a quantised vision tower requantise straight to them.
+  virtual bool input_scales(float& embed, std::vector<float>& extras) const { return false; }
   virtual std::vector<int> generate(const NativeSamplingParams& p,
                                     const std::function<bool(int)>& on_token) = 0;
 
@@ -54,7 +61,10 @@ class TextEngine {
   virtual double ttft_ms() const = 0;
 };
 
-// ── dense KV dual-graph (Qwen2.5-Omni): engine + a separately mmap'd table ──────
+// ── dense KV dual-graph: engine + a separately mmap'd table ─────────────────────
+// Two contracts: Qwen2.5-Omni's (host rope from cos/sin, mrope sections ours to set) and
+// the official LLM 2.0 one (int32 [3,1,T] positions, rope inside the graph — so the
+// rope arguments are unused, and the positions must have all three rows).
 class DenseTextEngine final : public TextEngine {
  public:
   DenseTextEngine(const std::string& hbm, const std::string& embed_path,
@@ -63,9 +73,15 @@ class DenseTextEngine final : public TextEngine {
                   const char* prefill = "text_model_prefill",
                   const char* decode = "text_model_decode")
       : e_(std::make_unique<NativeEngine>(hbm, prefill, decode)) {
-    if (!e_->embed_input())
+    if (e_->input_mode() == NativeEngine::InputMode::EmbedPos) {
+      if (e_->pos_rows() != 3)
+        throw std::runtime_error("[bllm] a VLM text tower needs 3-row (mrope) position_ids, "
+                                 "this one has " + std::to_string(e_->pos_rows()));
+    } else if (!e_->embed_input()) {
       throw std::runtime_error("[bllm] a VLM text tower must take an embedding input");
-    e_->set_rope(rope_theta, mrope_section, mrope_interleaved);
+    } else {
+      e_->set_rope(rope_theta, mrope_section, mrope_interleaved);
+    }
     tbl_ = std::make_unique<EmbedTable>(embed_path, e_->vocab(), e_->hidden());
     e_->set_embedder([this](int id, float* dst) { tbl_->lookup(id, dst); });
   }
@@ -79,8 +95,16 @@ class DenseTextEngine final : public TextEngine {
   void mark_turn_start() override { e_->mark_turn_start(); }
   void set_sched(const native_detail::BpuSched& s) override { e_->set_sched(s); }
   void embed(int id, float* dst) const override { tbl_->lookup(id, dst); }
-  void feed_embeds(const float* rows, int n, const Pos3* pos) override {
-    e_->feed_embeds(rows, n, pos);
+  void feed_embeds(const float* rows, int n, const Pos3* pos,
+                   const PrefillExtras* extras) override {
+    e_->feed_embeds(rows, n, pos, extras);
+  }
+  int prefill_extras() const override { return e_->prefill_extras(); }
+  bool input_scales(float& embed, std::vector<float>& extras) const override {
+    if (e_->input_mode() != NativeEngine::InputMode::EmbedPos) return false;
+    embed = e_->prefill_embed_scale();
+    extras = e_->prefill_extra_scales();
+    return true;
   }
   std::vector<int> generate(const NativeSamplingParams& p,
                             const std::function<bool(int)>& on_token) override {
@@ -119,7 +143,9 @@ class HybridTextEngine final : public TextEngine {
   void mark_turn_start() override { e_->mark_turn_start(); }
   void set_sched(const native_detail::BpuSched& s) override { e_->set_sched(s); }
   void embed(int id, float* dst) const override { e_->embed_row(id, dst); }
-  void feed_embeds(const float* rows, int n, const Pos3* pos) override {
+  void feed_embeds(const float* rows, int n, const Pos3* pos,
+                   const PrefillExtras* extras) override {
+    if (extras) throw std::runtime_error("[bllm] the hybrid engine takes no DeepStack rows");
     e_->feed_embeds(rows, n, pos);
   }
   std::vector<int> generate(const NativeSamplingParams& p,

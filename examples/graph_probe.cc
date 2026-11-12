@@ -135,6 +135,7 @@ int main(int argc, char** argv) {
       o.write((const char*)v.data(), n * sizeof(float));
     }
   }
+  g.slot.drain();            // the graph keeps its last task; release it before the model
   hbDNNRelease(packed);
   return 0;
 }
