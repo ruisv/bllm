@@ -242,18 +242,17 @@ Performance mode does not survive a reboot; set it once per boot (see
 
 ### 2. Get a model (one minute)
 
-Fastest route: **download a ready-to-`bllm.load()` package** — the file names
-already encode context length / target board / quantization width. Qwen3.5
-image+text (VLM, S100P, ctx4k/ctx512) is published on Hugging Face with a full
-acceptance record on the model card:
+Fastest route: **download a ready-to-`bllm.load()` package**. Qwen3.5 image+text
+(VLM) is published on Hugging Face with a full acceptance record on the model card;
+each repo has a folder per board (`s100p/` for an RDK S100P, `s100/` for an RDK S100 —
+4B is `s100p/` only), each with a ctx4k and a ctx512 build:
 
 **📦 [ruisv/bllm-qwen3.5-0.8b](https://huggingface.co/ruisv/bllm-qwen3.5-0.8b) ·
 [ruisv/bllm-qwen3.5-2b](https://huggingface.co/ruisv/bllm-qwen3.5-2b) ·
 [ruisv/bllm-qwen3.5-4b](https://huggingface.co/ruisv/bllm-qwen3.5-4b)**
 
 ```bash
-sha256sum -c qwen3.5-4b-ctx512-int8-s100.tar.gz.sha256   # integrity check
-tar xzf qwen3.5-4b-ctx512-int8-s100.tar.gz
+hf download ruisv/bllm-qwen3.5-4b --include "s100p/ctx512/*" --local-dir bllm-qwen3.5-4b
 ```
 
 Conversion methodology, acceptance protocol, and every rejected build are in
@@ -270,7 +269,7 @@ A 1.0 SDK `.hbm` is assembled into a model directory with `bllm-make-model-dir` 
 ```python
 import bllm
 
-llm = bllm.load("qwen3.5-4b-ctx512-int8-s100")  # a dir, or a bare .hbm + tokenizer_dir=
+llm = bllm.load("bllm-qwen3.5-4b/s100p/ctx512")  # a dir, or a bare .hbm + tokenizer_dir=
 llm.set_sampling(temp=0.7, top_p=0.9)           # omit for greedy
 for chunk in llm.stream_chat("Introduce Beijing in one sentence"):  # streaming, multi-turn
     print(chunk, end="", flush=True)

@@ -224,17 +224,16 @@ sudo /usr/hobot/bin/hb_switch_ion.sh balanced && sudo reboot   # ≤3B；7B 用 
 
 ### 2. 拿一个模型（一分钟）
 
-最快的一条：**下载我们编译好、可直接 `bllm.load()` 的模型包**（文件名已标注
-上下文长度 / 目标板子 / 量化位宽）。Qwen3.5 图文（VLM，S100P，ctx4k/ctx512 两档）发布在
-Hugging Face，附带完整验收数据的 model card：
+最快的一条：**下载我们编译好、可直接 `bllm.load()` 的模型包**。Qwen3.5 图文（VLM）发布在
+Hugging Face，附带完整验收数据的 model card；仓库里按板子分目录（`s100p/` 给 RDK S100P，
+`s100/` 给 RDK S100，4B 只有 `s100p/`），每个下面是 ctx4k / ctx512 两档：
 
 **📦 [ruisv/bllm-qwen3.5-0.8b](https://huggingface.co/ruisv/bllm-qwen3.5-0.8b) ·
 [ruisv/bllm-qwen3.5-2b](https://huggingface.co/ruisv/bllm-qwen3.5-2b) ·
 [ruisv/bllm-qwen3.5-4b](https://huggingface.co/ruisv/bllm-qwen3.5-4b)**
 
 ```bash
-sha256sum -c qwen3.5-4b-ctx512-int8-s100.tar.gz.sha256   # 完整性校验
-tar xzf qwen3.5-4b-ctx512-int8-s100.tar.gz
+hf download ruisv/bllm-qwen3.5-4b --include "s100p/ctx512/*" --local-dir bllm-qwen3.5-4b
 ```
 
 转换方法论、验收协议、被拒绝的构建版本见
@@ -250,7 +249,7 @@ tar xzf qwen3.5-4b-ctx512-int8-s100.tar.gz
 ```python
 import bllm
 
-llm = bllm.load("qwen3.5-4b-ctx512-int8-s100")   # 目录，或 裸 .hbm + tokenizer_dir=
+llm = bllm.load("bllm-qwen3.5-4b/s100p/ctx512")  # 目录，或 裸 .hbm + tokenizer_dir=
 llm.set_sampling(temp=0.7, top_p=0.9)            # 不设即贪心
 for chunk in llm.stream_chat("用一句话介绍北京"):   # 流式、多轮
     print(chunk, end="", flush=True)
