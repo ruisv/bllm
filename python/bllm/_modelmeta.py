@@ -13,6 +13,10 @@ rope live inside the `.hbm`, so a bare `.hbm` + tokenizer is complete. Hybrid (Q
 omni packages additionally need the host embed table (and towers), which the OE-LLM package
 ships as separate files — those still go through `make_model_dir.py`, which knows the arch.
 
+The official **LLM 2.0** packages are the other case handled here (see the section at the end):
+they carry their tokenizer and configs inside the `.hbm`, so a package directory alone is
+complete.
+
 Pure stdlib so it imports on any host. The eos/ChatML resolution is intentionally identical
 to `scripts/make_model_dir.py` (its sibling); the two will be unified once the loader is
 board-proven.
@@ -23,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 
 # Stop-token candidates, most-specific first — only ever matched against tokens the tokenizer
@@ -30,6 +35,7 @@ from pathlib import Path
 # that would make the model never stop). Mirrors make_model_dir.EOS_CANDIDATES.
 EOS_CANDIDATES = ["<|im_end|>", "<|endoftext|>", "<｜end▁of▁sentence｜>", "<|end|>", "<|eot_id|>"]
 CHATML_START, CHATML_END = "<|im_start|>", "<|im_end|>"
+PHI_USER, PHI_ASSISTANT, PHI_SYSTEM, PHI_END = "<|user|>", "<|assistant|>", "<|system|>", "<|end|>"
 SENTENCEPIECE_EOS = ["</s>", "<eos>"]
 
 
@@ -195,3 +201,205 @@ def native_dir_for(hbm_path: "str | Path", tokenizer_dir: "str | Path", *,
     (out / "model.json").write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",
                                     encoding="utf-8")
     return out
+
+
+# ── official D-Robotics LLM 2.0 packages ────────────────────────────────────────────────
+#
+# An official 2.0 package is a directory of `<Model>_language_*.hbm` + `<Model>_embed_tokens.bin`
+# (+ `<Model>_vision_*.hbm` for a VLM) and nothing else: no tokenizer, no config. Everything a
+# runtime needs is a description JSON embedded in the language `.hbm` — every HF config file of
+# the source model under its own key (`config`, `generation_config`, `tokenizer`,
+# `tokenizer_config`, …) plus a `horizon` section the toolchain derives (chunk, cache length,
+# vocab). So the synthesis below reads that once, writes `model.json` + `tokenizer.json` into a
+# cache dir of symlinks, and the native engine takes it from there like any dense model.
+
+_LANG_RE = re.compile(
+    r"^(?P<model>.+?)_language_chunk_(?P<chunk>\d+)_cache_(?P<cache>\d+)_(?P<quant>w\d+)_"
+    r"(?P<march>nash-[a-z])_corenum_(?P<cores>[\d_]+)\.hbm$")
+_BOARD = {"nash-e": "RDK S100", "nash-m": "RDK S100P", "nash-p": "RDK S600"}
+
+
+def find_official_package(pkg_dir: "str | Path") -> "dict | None":
+    """`{'language', 'vision', 'embed'}` paths if `pkg_dir` is an official LLM 2.0 package
+    (vision is None for a text model), else None. A dir with a model.json is ours, not theirs."""
+    d = Path(pkg_dir)
+    if not d.is_dir() or (d / "model.json").exists():
+        return None
+    lang = sorted(d.glob("*_language_*.hbm"))
+    emb = sorted(d.glob("*_embed_tokens.bin"))
+    if not lang or not emb:
+        return None
+    if len(lang) > 1 or len(emb) > 1:
+        raise ValueError(
+            f"{d}: {len(lang)} language .hbm and {len(emb)} embed tables — a package with more "
+            "than one model (e.g. a speculative-decoding base + draft pair) is not supported")
+    vis = sorted(d.glob("*_vision_*.hbm"))
+    return {"language": lang[0], "vision": vis[0] if vis else None, "embed": emb[0]}
+
+
+def _desc_chat_template(desc: dict) -> str:
+    tc = desc.get("tokenizer_config") or {}
+    t = tc.get("chat_template") or desc.get("chat_template") or ""
+    if isinstance(t, dict):                      # chat_template.json: {"chat_template": "..."}
+        t = t.get("chat_template", "")
+    if isinstance(t, list):                      # HF named templates: [{"name", "template"}]
+        named = {x.get("name"): x.get("template", "") for x in t if isinstance(x, dict)}
+        t = named.get("default") or next(iter(named.values()), "")
+    return t if isinstance(t, str) else ""
+
+
+def _desc_specials(desc: dict) -> dict:
+    added = (desc.get("tokenizer") or {}).get("added_tokens", [])
+    flagged = {t["content"]: t["id"] for t in added if t.get("special")}
+    return flagged or {t["content"]: t["id"] for t in added}
+
+
+def _desc_eos(desc: dict, specials: dict) -> list:
+    """HF generates with generation_config's eos_token_id, so that wins; then config (the text
+    sub-config for a VLM); then the tokenizer's declared eos token."""
+    cfg = desc.get("config") or {}
+    for sec in (desc.get("generation_config") or {}, cfg, cfg.get("text_config") or {}):
+        v = sec.get("eos_token_id")
+        if isinstance(v, int):
+            return [v]
+        if isinstance(v, list) and v:
+            return [int(x) for x in v]
+    tok = (desc.get("tokenizer_config") or {}).get("eos_token")
+    content = tok if isinstance(tok, str) else (tok or {}).get("content")
+    ids = [specials[content]] if content in specials else []
+    ids += [specials[c] for c in EOS_CANDIDATES if c in specials and specials[c] not in ids]
+    if not ids:
+        raise ValueError("could not determine a stop token from the package description")
+    return ids
+
+
+def _desc_chat(desc: dict, specials: dict, system: str) -> dict:
+    """The template FAMILY, mapped onto a built-in chat format. The template itself is not
+    rendered: BLLM's formats are what the prefix cache, stop matching and thinking control
+    are built on, and every official package so far is ChatML or Phi-style."""
+    t = _desc_chat_template(desc)
+    if CHATML_START in t and CHATML_START in specials and CHATML_END in specials:
+        chat = {"format": "chatml", "im_start": specials[CHATML_START],
+                "im_end": specials[CHATML_END], "system": system}
+    elif (PHI_USER in t and PHI_END in t and
+          all(m in specials for m in (PHI_USER, PHI_ASSISTANT, PHI_END))):
+        chat = {"format": "phi", "r_user": specials[PHI_USER],
+                "r_assistant": specials[PHI_ASSISTANT], "r_end": specials[PHI_END],
+                "system": system}
+        if PHI_SYSTEM in specials:
+            chat["r_system"] = specials[PHI_SYSTEM]
+    else:
+        raise ValueError(
+            "this package's chat template is neither ChatML nor Phi-style, and BLLM renders "
+            "chats with built-in formats only — write a model.json by hand (chat.format "
+            "\"none\" gives raw completion)")
+    tc = desc.get("tokenizer_config") or {}
+    if tc.get("add_bos_token"):
+        bos = tc.get("bos_token")
+        content = bos if isinstance(bos, str) else (bos or {}).get("content")
+        if content in specials:
+            chat["bos"] = specials[content]
+    return chat
+
+
+def official_model_json(desc: dict, hbm_name: str, *, system: str = "You are a helpful assistant.",
+                        name: "str | None" = None, eos: "list[int] | None" = None) -> dict:
+    """The `model.json` dict for an official LLM 2.0 language graph, from its embedded description
+    and file name. Pure — no file or BPU access — so it is testable anywhere."""
+    h = desc.get("horizon")
+    if not isinstance(h, dict) or not h:
+        raise ValueError(f"{hbm_name}: the description has no `horizon` section — not an "
+                         "LLM 2.0 language graph")
+    if not isinstance(desc.get("tokenizer"), dict):
+        raise ValueError(f"{hbm_name}: the description carries no tokenizer")
+    specials = _desc_specials(desc)
+    m = _LANG_RE.match(hbm_name)
+    ctx = h.get("decode_cache_len") or (int(m["cache"]) if m else 0)
+    if name is None:
+        # Context, quantization and board in the name: two packages of one model differ in
+        # exactly those, and a bare "Qwen3-1.7B" says nothing about which one is loaded.
+        parts = [m["model"] if m else Path(hbm_name).stem,
+                 f"ctx{ctx}" if ctx else None,
+                 m["quant"] if m else None,
+                 _BOARD.get(m["march"]) if m else None]
+        name = " · ".join(p for p in parts if p) + " (official LLM 2.0)"
+    cfg = {
+        "name": name,
+        "arch": "dense",
+        "backend": "native",
+        "hbm": "model.hbm",
+        "embed": "embed_tokens.bin",
+        "tokenizer": "tokenizer.json",
+        "eos": list(eos) if eos else _desc_eos(desc, specials),
+        "chat": _desc_chat(desc, specials, system),
+    }
+    if ctx:
+        cfg["cache_len"] = int(ctx)
+    return cfg
+
+
+def _read_desc_native(path: str) -> str:
+    from ._bllm_native import read_hbm_desc      # board only; imported lazily
+    return read_hbm_desc(path)
+
+
+def write_official_dir(pkg: dict, out: Path, *, system: str = "You are a helpful assistant.",
+                       name: "str | None" = None, eos: "list[int] | None" = None,
+                       read_desc=None, copy: bool = False) -> Path:
+    """Materialise a native model dir for an official package (`find_official_package`'s dict)
+    in `out`. model.json is written LAST, so a dir that has one is complete."""
+    lang = pkg["language"]
+    raw = (read_desc or _read_desc_native)(str(lang))
+    if not raw:
+        raise ValueError(f"{lang.name}: no embedded description — not an LLM 2.0 graph")
+    desc = json.loads(raw)
+    cfg = official_model_json(desc, lang.name, system=system, name=name, eos=eos)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "tokenizer.json").write_text(json.dumps(desc["tokenizer"], ensure_ascii=False),
+                                        encoding="utf-8")
+    for key in ("tokenizer_config", "generation_config"):   # kept for reference, never read
+        if isinstance(desc.get(key), dict):
+            (out / f"{key}.json").write_text(json.dumps(desc[key], indent=2, ensure_ascii=False)
+                                             + "\n", encoding="utf-8")
+    for src, dst in ((lang, out / "model.hbm"), (pkg["embed"], out / "embed_tokens.bin")):
+        if copy:
+            import shutil
+            if dst.exists() or dst.is_symlink():
+                dst.unlink()
+            shutil.copy2(src, dst)
+        else:
+            _link(src, dst)
+    tmp = out / "model.json.tmp"
+    tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(out / "model.json")
+    return out
+
+
+def official_dir_for(pkg_dir: "str | Path", *, vision: bool = True,
+                     system: str = "You are a helpful assistant.", name: "str | None" = None,
+                     eos: "list[int] | None" = None, cache_root: "str | Path | None" = None,
+                     read_desc=None) -> Path:
+    """A ready-to-load native model dir for an official LLM 2.0 package, synthesized on first
+    use and cached: reading the description loads the GB-scale .hbm, a cache hit reads nothing.
+
+    A VLM package loads as its text tower with vision=False; its vision branch is not
+    supported yet."""
+    pkg = find_official_package(pkg_dir)
+    if pkg is None:
+        raise ValueError(f"{pkg_dir}: not an official LLM 2.0 package (expected one "
+                         "*_language_*.hbm and one *_embed_tokens.bin)")
+    if pkg["vision"] is not None and vision:
+        raise NotImplementedError(
+            f"{Path(pkg_dir).name} is a VLM package; its vision branch is not supported yet — "
+            "pass vision=False to load the text tower")
+    lang = pkg["language"]
+    st = lang.stat()
+    raw = "::".join([str(lang.resolve()), str(st.st_size), str(int(st.st_mtime)),
+                     str(pkg["embed"].resolve()), system, name or "", ",".join(map(str, eos or [])),
+                     "official2"])
+    root = Path(cache_root) if cache_root else Path(
+        os.environ.get("BLLM_CACHE", Path.home() / ".cache" / "bllm")) / "native"
+    out = root / hashlib.sha1(raw.encode()).hexdigest()[:16]
+    if (out / "model.json").is_file():
+        return out
+    return write_official_dir(pkg, out, system=system, name=name, eos=eos, read_desc=read_desc)

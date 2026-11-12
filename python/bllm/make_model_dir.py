@@ -31,6 +31,9 @@ Ships with the package, so `conda install bllm` puts it on PATH:
         --mrope-section 11 11 10 --mrope-interleaved \
         --vision-patch 16 --vision-mean 0.5 --vision-std 0.5
 
+    # an official D-Robotics LLM 2.0 package dir: everything is read from the .hbm
+    bllm-make-model-dir official out_dir Qwen3-1.7B_w4/      # board only (reads the .hbm)
+
 For the official D-Robotics Omni release, every input already exists in the SDK —
 note that `embed_tokens.bin` sits in `model/` under a name that does not mention
 Omni, and is a separate download in `resolve_model_nash-m.txt`:
@@ -154,7 +157,41 @@ def link_or_copy(src: Path, dst: Path, copy: bool) -> None:
 SMOLVLA_EXPERT_WIDTH = 720          # the action expert's hidden size; cond_table is [steps, 720]
 
 
+def _main_official(argv: list[str]) -> int:
+    """`bllm-make-model-dir official <out_dir> <package_dir>` — the same synthesis
+    `bllm.load(<package_dir>)` does, written to a dir of your choosing (for C++ users)."""
+    from bllm._modelmeta import find_official_package, write_official_dir
+    ap = argparse.ArgumentParser(
+        prog="bllm-make-model-dir official",
+        description="Build a model dir from an official D-Robotics LLM 2.0 package. Reads "
+                    "the description embedded in its language .hbm, so it runs on the board.")
+    ap.add_argument("out_dir")
+    ap.add_argument("package_dir")
+    ap.add_argument("--name", help="display name (default: model · ctx · quant · board)")
+    ap.add_argument("--eos", type=int, nargs="+", help="override the stop-token ids")
+    ap.add_argument("--system", default="You are a helpful assistant.")
+    ap.add_argument("--copy", action="store_true", help="copy payload instead of symlinking")
+    args = ap.parse_args(argv)
+    pkg = find_official_package(args.package_dir)
+    if pkg is None:
+        print(f"error: {args.package_dir} is not an official LLM 2.0 package (expected one "
+              "*_language_*.hbm and one *_embed_tokens.bin)", file=sys.stderr)
+        return 2
+    if pkg["vision"] is not None:
+        print("[warn] VLM package: writing the text tower only (its vision branch is not "
+              "supported yet)", file=sys.stderr)
+    out = write_official_dir(pkg, Path(args.out_dir), system=args.system, name=args.name,
+                             eos=args.eos, copy=args.copy)
+    cfg = json.loads((out / "model.json").read_text(encoding="utf-8"))
+    print(f"wrote {out / 'model.json'}: {cfg['name']}  chat={cfg['chat']['format']}  "
+          f"eos={cfg['eos']}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "official":
+        return _main_official(argv[1:])
     ap = argparse.ArgumentParser(
         prog="bllm-make-model-dir",
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)

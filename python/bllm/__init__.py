@@ -633,11 +633,16 @@ def load(path: str, *, backend: str = "auto", vision: bool = True, **kwargs):
     Routing:
       * a native package (a directory with model.json) → NativeSession (dense/hybrid) or
         NativeVlmSession (anything carrying a `visual` tower), by its `arch`;
-      * a bare `.hbm` + tokenizer_dir (an OE-LLM package) → NativeSession, by synthesizing a
+      * an official D-Robotics LLM 2.0 package directory (`*_language_*.hbm` +
+        `*_embed_tokens.bin`) → NativeSession, by synthesizing model.json + tokenizer.json from
+        the description embedded in the .hbm (cached; bllm._modelmeta). A VLM package needs
+        vision=False for now (its text tower only);
+      * a bare `.hbm` + tokenizer_dir (an OE-LLM 1.0 package) → NativeSession, by synthesizing a
         dense model.json from the `.hbm` + tokenizer dir (bllm._modelmeta).
     Extra kwargs go to the chosen session's constructor.
 
         s = bllm.load("qwen3.5-0.8b")      # -> NativeSession (hybrid SSM)
+        s = bllm.load("Qwen3-1.7B_w4/")     # official LLM 2.0 package dir -> dense
         s = bllm.load("Qwen2.5_1.5B.hbm", tokenizer_dir="Qwen2.5_1.5B_config/")  # -> dense
         s.chat("你好")
 
@@ -677,7 +682,19 @@ def load(path: str, *, backend: str = "auto", vision: bool = True, **kwargs):
                              "NativeEmbedder C++ API (no Python binding yet)")
         return NativeSession(path, **kwargs)   # dense or hybrid
 
-    # Not a native package → a bare `.hbm` / OE-LLM package (a `.hbm` + a tokenizer dir).
+    # An official D-Robotics LLM 2.0 package dir: everything is inside the language .hbm, so
+    # the dir alone is enough — synthesize (once, cached) and load as a dense model.
+    import os
+    from ._modelmeta import find_official_package
+    if os.path.isdir(path) and find_official_package(path) is not None:
+        from ._modelmeta import official_dir_for
+        system = kwargs.pop("system_prompt", None) or kwargs.pop("system", None)
+        d = official_dir_for(path, vision=vision, name=kwargs.pop("name", None),
+                             eos=kwargs.pop("eos", None),
+                             system=system or "You are a helpful assistant.")
+        return NativeSession(str(d), **kwargs)
+
+    # Not a native package → a bare `.hbm` / OE-LLM 1.0 package (a `.hbm` + a tokenizer dir).
     # Native consumes it directly: synthesize a dense model.json from the `.hbm` + tokenizer
     # dir (bllm._modelmeta) and load that.
     tokenizer_dir = kwargs.pop("tokenizer_dir", "") or kwargs.pop("tokenizer", "")

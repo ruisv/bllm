@@ -17,8 +17,19 @@ All notable changes to BLLM are documented here. The format follows
   and left at zero for text. Point `model.json`'s `embed` at the table and the
   package loads like any dense model. Checked on S100P against the official
   `chat_demo` on Qwen3-0.6B w8: greedy output **identical, token for token**,
-  over 120-token replies in Chinese and English. (Synthesizing `model.json` from
-  the package, and the VLM packages, are next.)
+  over 120-token replies in Chinese and English.
+- **`bllm.load(<official 2.0 package dir>)` loads it as-is.** The package carries
+  no tokenizer or config files: everything is a description JSON embedded in the
+  language `.hbm`. BLLM reads it once (`read_hbm_desc`), writes `model.json` +
+  `tokenizer.json` into a cache dir of symlinks, and a second load reads nothing
+  (2.66 s → 1.35 s for Qwen3-0.6B). Stop tokens come from `generation_config`; the
+  chat format is the template's family, ChatML or Phi-style, mapped onto the
+  built-in formats (anything else is refused rather than guessed); the name
+  carries context, quantization and board. C++ users get the same directory from
+  `bllm-make-model-dir official <out_dir> <package_dir>`. A VLM package loads its
+  text tower with `vision=False` — Qwen3-VL-2B w4's text tower matches the
+  official demo character for character, which also exercises its `[3,1,T]`
+  positions and zeroed deepstack inputs; the vision branch is next.
 - `bllm_selfengine --embed <table>` for embedding-input graphs, and
   `bllm_chat_native --no-think` (the template's `enable_thinking=False`).
 

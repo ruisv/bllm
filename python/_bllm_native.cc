@@ -30,6 +30,10 @@ NB_MODULE(_bllm_native, m) {
 
   m.attr("SEED_RANDOM") = bllm::kSeedRandom;
 
+  m.def("read_hbm_desc", &bllm::readHbmDesc, "path"_a, "index"_a = 0,
+        "The description JSON embedded in an .hbm (\"\" if it has none). Official LLM 2.0 "
+        "language graphs carry their HF configs + tokenizer here. Loads the file, ~1 s.");
+
   nb::class_<bllm::NativeSamplingParams>(m, "SamplingParams")
       .def(nb::init<>())
       .def_rw("temp", &bllm::NativeSamplingParams::temp)

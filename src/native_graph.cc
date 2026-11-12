@@ -291,6 +291,23 @@ void Graph::infer() {
   for (auto& m : outMem) m.inval();
 }
 
+}  // namespace native_detail
+
+std::string readHbmDesc(const std::string& path, int index) {
+  native_detail::PackedHbm packed({path});
+  const char* desc = nullptr;
+  uint32_t size = 0;
+  int32_t type = 0;
+  BLLM_NATIVE_CK(hbDNNGetHBMDesc(&desc, &size, &type, packed, index));
+  if (!desc || size == 0) return {};
+  // `size` may count a trailing NUL; the JSON never contains one.
+  std::string s(desc, size);
+  while (!s.empty() && s.back() == '\0') s.pop_back();
+  return s;
+}
+
+namespace native_detail {
+
 // ---- mrope -----------------------------------------------------------------
 
 std::vector<uint8_t> mropeAxisMap(int half, const std::vector<int>& section, bool interleaved) {

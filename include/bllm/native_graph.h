@@ -239,6 +239,12 @@ std::vector<uint8_t> mropeAxisMap(int half, const std::vector<int>& section, boo
 
 }  // namespace native_detail
 
+// The description JSON a toolchain embedded in an `.hbm` (official LLM 2.0 language
+// graphs carry every HF config file plus a `horizon` section there; most other
+// `.hbm` carry none, which comes back as ""). Loads the file to read it — about a
+// second for a GB-scale model — so callers cache what they derive from it.
+std::string readHbmDesc(const std::string& path, int index = 0);
+
 // An mrope position: (temporal, height, width). Plain-rope tokens set all three
 // equal; image tokens vary h/w across the patch grid. Lives beside
 // `mropeAxisMap` because the two only make sense together.
