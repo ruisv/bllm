@@ -6,6 +6,13 @@ All notable changes to BLLM are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-11-12
+
+Official D-Robotics LLM 2.0 packages load as unzipped — the nine S100P text packages
+and the five image packages — with greedy output token-identical to the official
+runtime and decode at its speed. S600 (`nash-p`) packages, whose I/O is fp16, are
+not supported yet and are refused with a clear error.
+
 ### Added
 - **The native engine drives the official D-Robotics LLM 2.0 graphs.** A 2.0
   language `.hbm` takes `input_embeddings` (int16) + `position_ids` (int32,
@@ -813,7 +820,8 @@ driving compiled `.hbm` graphs natively on the BPU (hbDNN / hbUCP), no extra LLM
 - **Packaging** — conda packages (`bllm`, `libbllm`, `tokenizers-cpp`) for linux-aarch64;
   `find_package(bllm)` for C++ consumers.
 
-[Unreleased]: https://github.com/ruisv/bllm/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/ruisv/bllm/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/ruisv/bllm/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ruisv/bllm/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/ruisv/bllm/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/ruisv/bllm/compare/v0.5.0...v0.5.1
