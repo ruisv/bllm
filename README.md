@@ -217,7 +217,7 @@ conda install -c https://mirrors.ruis.ai/conda -c conda-forge bllm
 carveout 不够时运行时会在 alloc 处直接**段错误**：
 
 ```bash
-sudo /usr/hobot/bin/hb_switch_ion.sh balanced && sudo reboot   # ≤3B；7B 用 bpu_first
+sudo /usr/hobot/bin/hb_switch_ion.sh balanced && sudo reboot   # ≤3B；Qwen3.5-4B 和 7B 用 bpu_first
 ```
 
 性能模式不跨重启保持，每次开机设一遍（见 [`docs/MODELS.zh.md`](docs/MODELS.zh.md)）。
@@ -233,7 +233,7 @@ Hugging Face，附带完整验收数据的 model card；仓库里按板子分目
 [ruisv/bllm-qwen3.5-4b](https://huggingface.co/ruisv/bllm-qwen3.5-4b)**
 
 ```bash
-hf download ruisv/bllm-qwen3.5-4b --include "s100p/ctx512/*" --local-dir bllm-qwen3.5-4b
+hf download ruisv/bllm-qwen3.5-2b --include "s100p/ctx512/*" --local-dir bllm-qwen3.5-2b
 ```
 
 转换方法论、验收协议、被拒绝的构建版本见
@@ -249,7 +249,7 @@ hf download ruisv/bllm-qwen3.5-4b --include "s100p/ctx512/*" --local-dir bllm-qw
 ```python
 import bllm
 
-llm = bllm.load("bllm-qwen3.5-4b/s100p/ctx512")  # 目录，或 裸 .hbm + tokenizer_dir=
+llm = bllm.load("bllm-qwen3.5-2b/s100p/ctx512")  # 目录，或 裸 .hbm + tokenizer_dir=
 llm.set_sampling(temp=0.7, top_p=0.9)            # 不设即贪心
 for chunk in llm.stream_chat("用一句话介绍北京"):   # 流式、多轮
     print(chunk, end="", flush=True)

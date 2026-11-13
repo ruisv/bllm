@@ -17,7 +17,7 @@ conda install -c https://mirrors.ruis.ai/conda -c conda-forge bllm
 
 # Enlarge the ION carveout, then reboot. Model weights live in ION rather than process RSS,
 # and the runtime segfaults on alloc if the carveout is too small — that is not a BLLM bug.
-sudo /usr/hobot/bin/hb_switch_ion.sh balanced && sudo reboot   # <=3B; bpu_first for 7B
+sudo /usr/hobot/bin/hb_switch_ion.sh balanced && sudo reboot   # <=3B; bpu_first for Qwen3.5-4B and 7B
 ```
 
 `balanced` reserves ~7.5 GiB, so a 24 GB board reports ~15.5 GiB to the OS — that is expected.

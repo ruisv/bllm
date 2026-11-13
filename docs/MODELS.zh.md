@@ -16,7 +16,7 @@ conda install -c https://mirrors.ruis.ai/conda -c conda-forge bllm
 
 # 扩大 ION carveout，然后重启。模型权重活在 ION 里而不是进程 RSS,
 # carveout 不够时运行时会在 alloc 处直接段错误 —— 这不是 BLLM 的 bug。
-sudo /usr/hobot/bin/hb_switch_ion.sh balanced && sudo reboot   # ≤3B；7B 用 bpu_first
+sudo /usr/hobot/bin/hb_switch_ion.sh balanced && sudo reboot   # ≤3B；Qwen3.5-4B 和 7B 用 bpu_first
 ```
 
 `balanced` 会保留约 7.5 GiB，所以 24 GB 的板子对 OS 只显示约 15.5 GiB —— 这是正常的。

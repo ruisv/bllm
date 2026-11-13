@@ -234,7 +234,7 @@ You also need a **one-time** ION carveout enlargement plus a reboot — model we
 rather than process RSS, and the runtime **segfaults** on alloc if the carveout is too small:
 
 ```bash
-sudo /usr/hobot/bin/hb_switch_ion.sh balanced && sudo reboot   # <=3B; bpu_first for 7B
+sudo /usr/hobot/bin/hb_switch_ion.sh balanced && sudo reboot   # <=3B; bpu_first for Qwen3.5-4B and 7B
 ```
 
 Performance mode does not survive a reboot; set it once per boot (see
@@ -252,7 +252,7 @@ each repo has a folder per board (`s100p/` for an RDK S100P, `s100/` for an RDK 
 [ruisv/bllm-qwen3.5-4b](https://huggingface.co/ruisv/bllm-qwen3.5-4b)**
 
 ```bash
-hf download ruisv/bllm-qwen3.5-4b --include "s100p/ctx512/*" --local-dir bllm-qwen3.5-4b
+hf download ruisv/bllm-qwen3.5-2b --include "s100p/ctx512/*" --local-dir bllm-qwen3.5-2b
 ```
 
 Conversion methodology, acceptance protocol, and every rejected build are in
@@ -269,7 +269,7 @@ A 1.0 SDK `.hbm` is assembled into a model directory with `bllm-make-model-dir` 
 ```python
 import bllm
 
-llm = bllm.load("bllm-qwen3.5-4b/s100p/ctx512")  # a dir, or a bare .hbm + tokenizer_dir=
+llm = bllm.load("bllm-qwen3.5-2b/s100p/ctx512")  # a dir, or a bare .hbm + tokenizer_dir=
 llm.set_sampling(temp=0.7, top_p=0.9)           # omit for greedy
 for chunk in llm.stream_chat("Introduce Beijing in one sentence"):  # streaming, multi-turn
     print(chunk, end="", flush=True)
