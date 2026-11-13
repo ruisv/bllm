@@ -6,6 +6,12 @@ All notable changes to BLLM are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-11-13
+
+The OpenAI server does tool calls and `reasoning_content` the way each model's own chat
+template does, and on the re-released Qwen3.5 packages a short prompt reaches its first
+token 4–7x sooner.
+
 ### Added
 - **The OpenAI server calls tools and returns reasoning on its own.** On a model whose
   manifest names its chat template family (`chat.dialect`), a request's `tools` reach the
@@ -30,12 +36,13 @@ All notable changes to BLLM are documented here. The format follows
   was a cliff rather than a slope: on 0.8B a 31-token prompt took 1.71 s, a 32-token one
   0.39 s. A prefill graph built to take pads now runs that tail as one padded chunk (the
   pads leave the recurrent state untouched, and the engine takes their K/V back out of the
-  attention window): 7–31 tokens now cost ~0.37 s flat, 37–63 tokens ~0.68 s. Tails under 7
-  tokens are still stepped, where that is faster. Such a graph has the same inputs and
-  outputs as before, so older bllm versions run the re-released packages exactly as they
-  ran the old ones; the package declares it with `prefill_pads: true` in `model.json`
-  (`bllm-make-model-dir --prefill-pads`), and `prefill_min_tail` (`--prefill-min-tail`)
-  moves the threshold. Sessions report `prefill_pads` and take `prefill_min_tail`. Needs
+  attention window): 7–31 tokens now cost ~0.37 s flat, 37–63 tokens ~0.68 s. Tails shorter
+  than the package's `prefill_min_tail` (5–8 tokens, measured per package) are still
+  stepped, where that is faster; a whole chunk costs ~2% more. Such a graph has the same
+  inputs and outputs as before, so older bllm versions run the re-released packages
+  exactly as they ran the old ones; the package declares it with `prefill_pads: true` in
+  `model.json` (`bllm-make-model-dir --prefill-pads`), and `prefill_min_tail`
+  (`--prefill-min-tail`) moves the threshold. Sessions report `prefill_pads` and take `prefill_min_tail`. Needs
   the re-released Qwen3.5 packages; older ones keep stepping the tail.
 
 ### Changed
@@ -859,7 +866,8 @@ driving compiled `.hbm` graphs natively on the BPU (hbDNN / hbUCP), no extra LLM
 - **Packaging** — conda packages (`bllm`, `libbllm`, `tokenizers-cpp`) for linux-aarch64;
   `find_package(bllm)` for C++ consumers.
 
-[Unreleased]: https://github.com/ruisv/bllm/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/ruisv/bllm/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/ruisv/bllm/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/ruisv/bllm/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ruisv/bllm/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/ruisv/bllm/compare/v0.5.1...v0.5.2
