@@ -72,7 +72,8 @@ default.
   and JSON Schema → grammar apply *while decoding*, so `json.loads()` cannot fail.
 - **✅ Serving out of the box** — OpenAI-compatible HTTP (streaming + non-streaming),
   Docker images, and conversation prefix caching (measured on-board: 31.6 s → 1.3 s,
-  ~25×).
+  ~25×); tool calls (`tool_calls`) and thinking (`reasoning_content`) rendered and parsed
+  the way each model's own chat template does.
 - **✅ Official packages load as unzipped, and what they don't ship runs too** — the
   official LLM 2.0 S100P packages (Qwen3, Qwen3-VL, Qwen2.5-VL, MiniCPM5, Phi-4-mini)
   load with `bllm.load()`, output **token-identical** to the official runtime; the
@@ -188,7 +189,7 @@ compares **abstraction level and positioning**, not quality (against the officia
 | Model coverage | the officially released `.hbm`; Qwen3.5 and VLA are S600-only | the official S100P 2.0 packages and 1.0's Qwen2.5-Omni, **plus** Qwen3.5 hybrid SSM and GLM-Edge on S100 / S100P |
 | Sessions | chat templates, multi-turn history, prefix reuse | built-in C++ tokenizer, ChatML / Phi templating, multi-turn, streaming, prompt-cache snapshots |
 | Generation control | sampling parameters (top-k / top-p / temperature / repetition penalty) | full sampling + `logit_bias` + `logprobs` + GBNF grammar constraints / JSON Schema |
-| Serving | a sample OpenAI server (with tool calls) | OpenAI-compatible HTTP + Docker + prefix cache + `/metrics` |
+| Serving | a sample OpenAI server (with tool calls) | OpenAI-compatible HTTP + tool calls / `reasoning_content` (per the model's own template) + Docker + prefix cache + `/metrics` |
 | Coexisting with vision | per-core assignment | BPU priority / time-slice control alongside [bcdl](https://github.com/ruisv/bcdl) |
 | Embodied policies (VLA) | S600 only | π0.5 / SmolVLA on both S100P and S600, one line to an action chunk ([above](#embodied-policies-π05-on-the-bpu)) |
 
@@ -300,7 +301,7 @@ REPL: `bllm_chat_native --model <dir>` (see [`examples/chat_native.cc`](examples
 | **Text / image / audio / video** | Qwen2.5-Omni, file paths or raw arrays (zero-copy camera/mic) | [`vlm_native.cc`](examples/vlm_native.cc) |
 | **Text embeddings** | `NativeEmbedder` (Qwen3-VL-Embedding; C++ API, no Python binding yet) | [`embed_native.cc`](examples/embed_native.cc) |
 | **Embodied policy (VLA)** | `bllm.load_policy(...).act(scene, wrist, "instruction")` → action chunk | [above](#embodied-policies-π05-on-the-bpu) · [π0.5 doc](docs/PI05.md) · [`pi05_policy.cc`](examples/pi05_policy.cc) · [`smolvla_policy.cc`](examples/smolvla_policy.cc) |
-| **Serving** | OpenAI-compatible HTTP + Docker | [`docker/README.md`](docker/README.md) |
+| **Serving** | OpenAI-compatible HTTP + Docker, with tool calls | [`docker/README.md`](docker/README.md) |
 | **Sharing the BPU** | `llm.set_bpu_priority(0)` | [Sharing the BPU](#sharing-the-bpu-with-a-vision-pipeline) |
 
 ## Making a model directory
@@ -370,6 +371,16 @@ token-prefix comparison, so an edited history simply misses and falls back to a 
 — it cannot return a wrong answer. Measured on-board: hybrid (Qwen3.5) 31.6 s → 1.3 s (~25x),
 dense TTFT 274 → 141 ms. One generation runs at a time (single BPU graph); requests beyond
 `BLLM_MAX_QUEUE` get a 429. See [`docker/README.md`](docker/README.md).
+
+**Tool calls and thinking** (since 0.8.0): on a model whose manifest names its chat template
+family (`chat.dialect`) — the official 2.0 Qwen3, Qwen3-2507, Qwen2.5 and Qwen3-VL packages, and
+our Qwen3.5 packages — a request's `tools` reach the model in that template's **own** format
+(Hermes-style `<tool_call>{json}`, or Qwen3.5's XML), a call comes back as OpenAI `tool_calls`
+with `finish_reason: "tool_calls"`, and `role: "tool"` results go back into the prompt the
+same way, so the whole call → result → answer loop works, streamed or not. Thinking is split
+into `message.reasoning_content` and kept out of `content`. The whole conversation renders
+byte-identical to the original HF template. `tool_choice` takes `"auto"` and `"none"`; `tools`
+sent to a model without a family get a 400 instead of being silently ignored.
 
 ## Multimodal
 
@@ -548,6 +559,30 @@ First token (including image encode, measured on S100P): Qwen3.5-0.8B VLM **1.23
 server-side prefix-cache hit, hybrid goes **31.6 s → 1.3 s** and dense TTFT
 **274 → 141 ms**.
 
+**A short prompt's first token (0.8.0 + the Qwen3.5 packages re-released 2026-11).** A Qwen3.5
+prompt goes through the prefill graph 32 tokens at a time. The part that does not fill a whole
+chunk — all of a typical question — used to be fed to the decode graph **one token per step**,
+and every step reads the whole model's weights from memory once. So time to first token was a
+cliff, not a slope: on 0.8B a 31-token prompt took 1.65 s and a 32-token one 0.39 s. Now that
+tail is padded to a whole chunk and goes through the prefill graph: the pad rows leave the
+recurrent state untouched and the runtime takes the K/V they wrote back out of the attention
+window, so it is the same computation as stepping; run on two different int8 graphs (prefill
+and decode), it moves next-token perplexity by −0.36% to +0.56%, with top-1 agreeing on 63–64
+of 64. A 31-token text prompt, fed up to its first token (S100P):
+
+| model | ctx4096 | ctx512 |
+|---|---|---|
+| Qwen3.5-0.8B | 1.65 s → **0.34 s** (4.9×) | 1.33 s → **0.31 s** (4.3×) |
+| Qwen3.5-2B | 2.37 s → **0.36 s** (6.5×) | 2.05 s → **0.34 s** (6.0×) |
+| Qwen3.5-4B | 5.09 s → **0.75 s** (6.8×) | 4.24 s → **0.78 s** (5.5×) |
+
+A tail too short for that to pay off (under 5–8 tokens, measured per package) is still
+stepped. A whole chunk costs ~2% more (+6–8 ms on 0.8B), and wherever a chunk is full the new
+prefill graph's caches and logits are **bit-identical** to the old one's. An older bllm runs the
+new packages exactly as it ran the old ones (just without the speed-up), and the new bllm still
+steps the tail of an old package. The image TTFTs above were measured before this; the question
+text after an image gains the same way.
+
 ## Supported models
 
 These run through one config-free path (auto model-type, auto chat template, per-model
@@ -597,7 +632,9 @@ repo consumes a finished `.hbm` + tokenizer config. Prebuilt packages: see
 - **Text embeddings** — `NativeEmbedder` (Qwen3-VL-Embedding, C++ API) for retrieval and
   similarity.
 - **Chunked prefill** — hybrid models ingest prompts and images through a seq_len=N prefill
-  graph, ~76× faster than token-by-token (a model without one falls back gracefully).
+  graph, ~76× faster than token-by-token (a model without one falls back gracefully); the tail
+  that does not fill a chunk is padded into one too (Qwen3.5, re-released packages), so a short
+  prompt's first token comes 4–7× sooner.
 - **Production features** — perplexity, async submit, prompt cache (KV+SSM state save/restore,
   bit-identical), stop strings (stops early), and BPU priority / time-slice control to share
   the BPU with a vision pipeline.

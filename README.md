@@ -65,7 +65,8 @@ BLLM 把这些做成默认行为。
 - **✅ 结构化输出是保证，不是请求** —— GBNF 语法约束 + JSON Schema → 语法，
   **解码期**就只允许仍能满足语法的 token，所以 `json.loads()` 不会失败。
 - **✅ 开箱即用的服务化** —— OpenAI 兼容 HTTP（流式 + 非流式）+ Docker 镜像 +
-  对话前缀缓存（板上实测 31.6s → 1.3s，约 25×）。
+  对话前缀缓存（板上实测 31.6s → 1.3s，约 25×）；工具调用（`tool_calls`）和思考内容
+  （`reasoning_content`）按模型自己的对话模板渲染与解析。
 - **✅ 官方包解压即用，官方没发的也能跑** —— 官方 LLM 2.0 的 S100P 包（Qwen3、Qwen3-VL、
   Qwen2.5-VL、MiniCPM5、Phi-4-mini）`bllm.load()` 直接加载，输出与官方运行时**逐 token 相同**；
   官方只为 S600 发了 Qwen3.5，BLLM 在 S100 / S100P 上把 Qwen3.5 混合 Gated-DeltaNet/SSM
@@ -173,7 +174,7 @@ BLLM 的算力同样来自 D-Robotics 官方 BPU 运行时（`hbDNN` / `hbUCP`�
 | 模型覆盖 | 官方发布的 `.hbm`；Qwen3.5 与 VLA 只有 S600 版 | 官方 S100P 的 2.0 包与 1.0 的 Qwen2.5-Omni，**加上** S100 / S100P 上的 Qwen3.5 混合 SSM、GLM-Edge |
 | 会话 | 对话模板、多轮历史、前缀复用 | 内置 C++ tokenizer、ChatML / Phi 模板、多轮、流式、提示缓存快照 |
 | 生成控制 | 采样参数（top-k / top-p / 温度 / 重复惩罚） | 全套采样 + `logit_bias` + `logprobs` + GBNF 语法约束 / JSON Schema |
-| 服务化 | 示例级 OpenAI 服务（含 tool calls） | OpenAI 兼容 HTTP + Docker + 前缀缓存 + `/metrics` |
+| 服务化 | 示例级 OpenAI 服务（含 tool calls） | OpenAI 兼容 HTTP + 工具调用 / `reasoning_content`（按模型自身模板）+ Docker + 前缀缓存 + `/metrics` |
 | 与视觉共存 | 按核分配 | BPU 优先级 / 时间片控制，与 [bcdl](https://github.com/ruisv/bcdl) 协同 |
 | 具身策略（VLA） | 仅 S600 | S100P 与 S600 都能跑 π0.5 / SmolVLA，一行加载出动作块（[上一节](#具身策略π05-跑在-bpu-上)） |
 
@@ -280,7 +281,7 @@ REPL：`bllm_chat_native --model <dir>`（见 [`examples/chat_native.cc`](exampl
 | **文 / 图 / 音 / 视频** | Qwen2.5-Omni，路径或原始数组（相机/麦克风零拷贝） | [`vlm_native.cc`](examples/vlm_native.cc) |
 | **文本嵌入** | `NativeEmbedder`（Qwen3-VL-Embedding；C++ API，暂无 Python 绑定） | [`embed_native.cc`](examples/embed_native.cc) |
 | **具身策略（VLA）** | `bllm.load_policy(...).act(图, 腕部图, "指令")` → 动作块 | [上文](#具身策略π05-跑在-bpu-上) · [π0.5 文档](docs/PI05.md) · [`pi05_policy.cc`](examples/pi05_policy.cc) · [`smolvla_policy.cc`](examples/smolvla_policy.cc) |
-| **服务化** | OpenAI 兼容 HTTP + Docker | [`docker/README.md`](docker/README.md) |
+| **服务化** | OpenAI 兼容 HTTP + Docker，含工具调用 | [`docker/README.md`](docker/README.md) |
 | **与视觉共享 BPU** | `llm.set_bpu_priority(0)` | [与视觉流水线共享 BPU](#与视觉流水线共享-bpu) |
 
 ## 制作模型目录
@@ -343,6 +344,14 @@ curl localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
 板上实测：hybrid（Qwen3.5）31.6s → 1.3s（~25×），dense TTFT 274 → 141 ms。
 一次只跑一个生成（单 BPU 图），排队超过 `BLLM_MAX_QUEUE` 返回 429。
 详见 [`docker/README.md`](docker/README.md)。
+
+**工具调用与思考内容**（0.8.0 起）：模型清单里写明了对话模板家族（`chat.dialect`）的模型
+—— 官方 2.0 的 Qwen3、Qwen3-2507、Qwen2.5、Qwen3-VL 包，以及我们发布的 Qwen3.5 包 ——
+请求里的 `tools` 按该模板**自己的格式**交给模型（Hermes 式 `<tool_call>{json}` 或 Qwen3.5 的
+XML），模型发起的调用以 OpenAI `tool_calls` 返回（`finish_reason: "tool_calls"`），`role: "tool"`
+的结果再按模板拼回提示，"调用 → 拿到结果 → 回答"整轮走通，流式同样。思考内容拆到
+`message.reasoning_content`，不混进 `content`。整段对话的渲染与 HF 原版模板逐字节一致。
+`tool_choice` 支持 `"auto"` / `"none"`；没有声明家族的模型收到 `tools` 会返回 400，而不是静默忽略。
 
 ## 多模态
 
@@ -505,6 +514,25 @@ Qwen3.5-2B VLM **1.51 s**（ctx512）/ **1.65 s**（ctx4096）；
 Qwen3.5-4B VLM **2.93 s**（ctx512）/ **3.29 s**（ctx4096）。
 服务端命中对话前缀缓存后 hybrid **31.6 s → 1.3 s**、dense TTFT **274 → 141 ms**。
 
+**短提示的首字延迟（0.8.0 + 2026-11 重新发布的 Qwen3.5 包）**。Qwen3.5 的提示按 32 token 一块
+走 prefill 图；凑不满一块的尾部 —— 一句普通的问题全都在这里 —— 以前只能交给 decode 图**逐
+token 一步一步喂**，每一步都要把整个模型的权重从内存读一遍。所以首字延迟随长度不是平滑上升，
+而是一道悬崖：0.8B 上 31 个 token 要 1.65 s，32 个 token 反而只要 0.39 s。现在尾部补齐成一整块
+走 prefill 图：补齐的行不改动递推状态，它们写进注意力窗口的 K/V 由运行时挪走，所以数学上和
+逐 token 喂等价；实际跑在两张不同的 int8 图上（prefill 图与 decode 图），下一 token 困惑度相差
+−0.36% ~ +0.56%，top-1 一致 63–64/64。纯文本、31 token 提示喂到第一个 token（S100P 实测）：
+
+| 模型 | ctx4096 | ctx512 |
+|---|---|---|
+| Qwen3.5-0.8B | 1.65 s → **0.34 s**（4.9×） | 1.33 s → **0.31 s**（4.3×） |
+| Qwen3.5-2B | 2.37 s → **0.36 s**（6.5×） | 2.05 s → **0.34 s**（6.0×） |
+| Qwen3.5-4B | 5.09 s → **0.75 s**（6.8×） | 4.24 s → **0.78 s**（5.5×） |
+
+尾部太短（各包实测 5–8 个 token 以下）时逐 token 仍更快，就照旧逐 token；一整块的 prefill
+多花约 2%（0.8B 每块 +6–8 ms）。凡是满块，新 prefill 图的缓存和 logits 与旧图**逐位相同**。
+旧版 bllm 加载新包行为与以前完全一样（只是没有提速）；旧包配新版 bllm 也照旧逐 token。
+上面图像那几行首字延迟测于这之前，图后问题文字的尾部同样受益。
+
 ## 支持的模型
 
 下列模型走同一条免配置路径（自动识别类型、发现对话模板、处理各家差异如 int8 KV），
@@ -544,7 +572,8 @@ Qwen3.5-4B VLM **2.93 s**（ctx512）/ **3.29 s**（ctx4096）。
   token，所以 `json.loads()` 不会失败——是保证，不是提示词里的请求。
 - **文本嵌入**：`NativeEmbedder`（Qwen3-VL-Embedding，C++ API）—— 检索 / 相似度场景可直接用。
 - **分块 prefill**：混合模型的 prompt / 图像摄入走 seq_len=N 的 prefill 图，
-  比逐 token 摄入约快 76×（无 prefill 图的模型自动退回逐 token 路径）。
+  比逐 token 摄入约快 76×（无 prefill 图的模型自动退回逐 token 路径）；凑不满一块的尾部
+  补齐后也走一块 prefill（Qwen3.5，需重新发布的包），短提示的首字延迟快 4–7×。
 - **生产特性**：困惑度、异步提交、提示缓存（KV+SSM 状态存取，逐位一致）、停止串（命中即停）、
   与视觉流水线共享 BPU 的优先级/时间片控制。
 
