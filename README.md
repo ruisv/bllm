@@ -69,6 +69,7 @@ BLLM 把这些做成默认行为。
   （`reasoning_content`）按模型自己的对话模板渲染与解析。
 - **✅ 官方包解压即用，官方没发的也能跑** —— 官方 LLM 2.0 的 S100P 包（Qwen3、Qwen3-VL、
   Qwen2.5-VL、MiniCPM5、Phi-4-mini）`bllm.load()` 直接加载，输出与官方运行时**逐 token 相同**；
+  **Qwen3-ASR 语音识别包**同样解压即用，准确率与官方持平（[语音](#语音说给-qwen35-听)）；
   官方只为 S600 发了 Qwen3.5，BLLM 在 S100 / S100P 上把 Qwen3.5 混合 Gated-DeltaNet/SSM
   严格 100% 落 BPU，另有 GLM-Edge。
 - **✅ 能和视觉共存** —— 单 BPU 核上把 LLM 优先级压低，同驻检测器的 p99 从 41 ms
@@ -171,7 +172,7 @@ BLLM 的算力同样来自 D-Robotics 官方 BPU 运行时（`hbDNN` / `hbUCP`�
 | 形态 | 闭源运行时库 + 示例程序 | 开源框架，直接跑在通用 hbDNN / hbUCP 上，**无需额外大模型 SDK** |
 | 接口 | C++ API | C++17 库 + Python 绑定，任务式会话 API |
 | 加载模型 | 按 JSON 配置组织路径 | `bllm.load(dir)` 一行，官方 2.0 包解压即用；`bllm-make-model-dir` 生成清单 |
-| 模型覆盖 | 官方发布的 `.hbm`；Qwen3.5 与 VLA 只有 S600 版 | 官方 S100P 的 2.0 包与 1.0 的 Qwen2.5-Omni，**加上** S100 / S100P 上的 Qwen3.5 混合 SSM、GLM-Edge |
+| 模型覆盖 | 官方发布的 `.hbm`；Qwen3.5 与 VLA 只有 S600 版 | 官方 S100P 的 2.0 包（含 Qwen3-ASR）与 1.0 的 Qwen2.5-Omni，**加上** S100 / S100P 上的 Qwen3.5 混合 SSM、GLM-Edge |
 | 会话 | 对话模板、多轮历史、前缀复用 | 内置 C++ tokenizer、ChatML / Phi 模板、多轮、流式、提示缓存快照 |
 | 生成控制 | 采样参数（top-k / top-p / 温度 / 重复惩罚） | 全套采样 + `logit_bias` + `logprobs` + GBNF 语法约束 / JSON Schema |
 | 服务化 | 示例级 OpenAI 服务（含 tool calls） | OpenAI 兼容 HTTP + 工具调用 / `reasoning_content`（按模型自身模板）+ Docker + 前缀缓存 + `/metrics` |
@@ -248,7 +249,7 @@ hf download ruisv/bllm-qwen3.5-2b --include "s100p/ctx512/*" --local-dir bllm-qw
 转换方法论、验收协议、被拒绝的构建版本见
 [bllm-model-zoo](https://github.com/ruisv/bllm-model-zoo)。
 
-**官方 LLM 2.0 的模型包**（Qwen3、Qwen3-VL、Qwen2.5-VL、MiniCPM5、Phi-4-mini，S100P）解压后
+**官方 LLM 2.0 的模型包**（Qwen3、Qwen3-VL、Qwen2.5-VL、MiniCPM5、Phi-4-mini、Qwen3-ASR，S100P）解压后
 直接 `bllm.load("Qwen3-1.7B_w4/")`，不用任何配置，见
 [部署手册第二节](docs/MODELS.zh.md#二官方-llm-20-包解压即用s100p)。1.0 SDK 的 `.hbm` 用
 `bllm-make-model-dir` 拼成模型目录，见[制作模型目录](#制作模型目录)。
@@ -287,6 +288,7 @@ REPL：`bllm_chat_native --model <dir>`（见 [`examples/chat_native.cc`](exampl
 | **结构化输出** | `llm.set_grammar("root ::= …")` / JSON Schema | [`docs/API.zh.md`](docs/API.zh.md) |
 | **图文（VLM）** | `vlm.chat("描述这张图", images=["a.jpg"])` | [`vlm_native.py`](examples/vlm_native.py) · [`qwen35_native.cc`](examples/qwen35_native.cc) |
 | **文 / 图 / 音 / 视频** | Qwen2.5-Omni，路径或原始数组（相机/麦克风零拷贝） | [`vlm_native.cc`](examples/vlm_native.cc) |
+| **语音识别** | `asr.transcribe("a.wav")` → 文字 + 语言（官方 Qwen3-ASR 包），可接 Qwen3.5 做语音对话 | [`voice_chat.py`](examples/voice_chat.py) · [`asr_native.cc`](examples/asr_native.cc) |
 | **文本嵌入** | `NativeEmbedder`（Qwen3-VL-Embedding；C++ API，暂无 Python 绑定） | [`embed_native.cc`](examples/embed_native.cc) |
 | **具身策略（VLA）** | `bllm.load_policy(...).act(图, 腕部图, "指令")` → 动作块 | [上文](#具身策略π05-跑在-bpu-上) · [π0.5 文档](docs/PI05.md) · [`pi05_policy.cc`](examples/pi05_policy.cc) · [`smolvla_policy.cc`](examples/smolvla_policy.cc) |
 | **服务化** | OpenAI 兼容 HTTP + Docker，含工具调用 | [`docker/README.md`](docker/README.md) |
@@ -478,6 +480,60 @@ KV 窗口**就是**上下文，也是硬约束（`vlm.context_left` 跟踪剩余
 完整部署步骤（dense 模型、ION 设置、官方包结构）见
 [`docs/MODELS.zh.md`](docs/MODELS.zh.md)，更多用法见 [API 文档](docs/API.zh.md)。
 
+## 语音：说给 Qwen3.5 听
+
+官方 LLM 2.0 的 **Qwen3-ASR** 语音识别包（S100P）`bllm.load()` 解压即用；接上 Qwen3.5，就是一条
+全在 BPU 上跑的语音对话：
+
+```python
+import bllm
+asr = bllm.load("Qwen3-ASR-0.6B_w8/")                         # 官方 2.0 包，解压即用
+llm = bllm.load("bllm-qwen3.5-2b/s100p/ctx512", vision=False)  # 只要文本塔，省 ION
+r = asr.transcribe("question.wav")       # {'text': '...', 'language': 'Chinese', 'rtf': ...}
+for piece in llm.stream_chat(r["text"]):
+    print(piece, end="", flush=True)
+```
+
+[`examples/voice_chat.py`](examples/voice_chat.py) 把这条链做成了命令行：可以 `--record 5` 从麦克风录，
+装了 [bcdl](https://github.com/ruisv/bcdl) 的话 `--tts-dir` 用它的 Matcha-TTS 把回答念出来。
+服务端的 OpenAI 兼容 `/v1/audio/transcriptions` 见 [`docker/USAGE.zh.md`](docker/USAGE.zh.md)。
+
+- **语言**可以强制（`language="zh"` / `"Chinese"`），也可以不填，让模型自己说出是什么语言（`r["language"]`）。
+  `context` 传人名、术语等模型可以参考的文字。
+- **长录音**：解码器缓存一次只放得下约 40 s，更长的按上游 qwen-asr 的规则在安静处切开，逐段转写后拼接。
+- **输入**：文件（WAV 进程内解码，其他格式经 ffmpeg），或原始数组（16 kHz float32 / int16，
+  其他采样率自动重采样）——麦克风管线不必落盘。
+
+**准确率**——AISHELL-1 测试集，干净与带噪各 600 句，字错率（CER），所有系统同一套归一化：
+
+| AISHELL-1 | 官方 2.0 运行时 | BLLM | 参照：Paraformer（bcdl） |
+|---|---|---|---|
+| 干净，强制中文 | 4.63% | **4.11%** | 3.78% |
+| 带噪，强制中文 | 7.62% | **7.48%** | 5.58% |
+| 干净，不指定语言 | 10.04% | **4.57%** | — |
+| 带噪，不指定语言 | 15.90% | **7.76%** | — |
+
+同一个官方包，转写却不与官方逐字相同，原因在包本身：它的音频编码器对输入极其敏感——**任意一个输入值
+差 1 LSB，几乎全部输出都会变**（逐行余弦低至 0.81）。BLLM 的 log-mel 用双精度算、STFT 两端反射填充，
+送进编码器的特征与官方只在万分之一量级的个别值上差 1 LSB，可这已足以让两边的标点、个别字不同。所以该比的
+是准确率——它与官方持平，强制中文时还略好一些。
+
+**不指定语言**是默认用法，也是差得最多的地方。这个编译出来的模型让它自己说语言时，大约每六句普通话里就有一句
+回答"没有语音"（`language None`）然后什么也不输出；官方运行时塞一个空的语言名，也有一成句子落空，而且不知道说
+的是什么语言。BLLM 只让模型从它认识的 30 种语言里挑一个名字（"没有语音"不在其中），再按这门语言转写：字错率
+回到强制中文的水平，普通话也认对了 574/600（干净）、588/600（带噪）；静音和噪声照样返回空。
+
+**速度**（S100P，11.4 s 英文样例，同一块板上与官方 `asr_demo` 前后脚测）：
+
+| | 端到端 | 首字 | 解码 | RTF |
+|---|---|---|---|---|
+| 0.6B · 官方 | 1537 ms | 409 ms | 33.7 tok/s | 0.135 |
+| 0.6B · BLLM | **1499 ms** | **365 ms** | 32.7 tok/s | **0.131** |
+| 1.7B · 官方 | 2853 ms | 580 ms | 18.9 tok/s | 0.250 |
+| 1.7B · BLLM | **2658 ms** | **535 ms** | 18.4 tok/s | **0.233** |
+
+官方只发了 S100P（nash-m）的 Qwen3-ASR 包，RDK S100（nash-e）暂无。
+
 ## 与视觉流水线共享 BPU
 
 S100/S100P 单 BPU 核，LLM 与视觉（bcdl）会争用。一次解码是一个大图，默认会挡住同驻的检测器。
@@ -551,6 +607,7 @@ token 一步一步喂**，每一步都要把整个模型的权重从内存读一
 - **Qwen3** 0.6B / 1.7B / 4B / 8B，**Qwen3-4B-Instruct-2507**，**Qwen3-4B-Thinking-2507**
 - **Qwen2.5-3B** · **MiniCPM5-2B** · **Phi-4-mini**
 - **Qwen3-VL** 2B / 4B / 8B · **Qwen2.5-VL** 3B / 7B（图文）
+- **Qwen3-ASR** 0.6B / 1.7B（语音识别；转写不逐字对拍，准确率与官方持平，见[语音](#语音说给-qwen35-听)）
 
 **D-Robotics 官方 1.0 SDK 的 `.hbm`**：
 
@@ -573,6 +630,8 @@ token 一步一步喂**，每一步都要把整个模型的权重从内存读一
 - **稠密 + 混合架构**：Qwen2.5 / DeepSeek-R1-Distill / InternLM2 / GLM-Edge / Phi-4-mini 等稠密文本模型，
   以及 **Qwen3.5 混合 Gated-DeltaNet/SSM**（严格 100% 落 BPU）。
 - **多模态**：Qwen2.5-Omni 的 文本 + 图像 + 音频 + 视频，以及 **Qwen3.5 图文**（自编视觉塔）；支持文件路径或原始数组（相机/麦克风零拷贝）。
+- **语音识别**：官方 Qwen3-ASR 包——强制或自动识别语言、长录音在安静处切段、流式输出，
+  服务端提供 OpenAI 兼容的 `/v1/audio/transcriptions`。
 - **一行式会话**：`bllm.load(...)` / `NativeSession`，内置 C++ tokenizer、ChatML 模板、流式、多轮、采样。
 - **完整采样**：贪心 / 温度 / top-k / top-p / min-p / typical-p / 重复·频率·存在惩罚，可复现；
   另有 `logit_bias`（强推/封禁 token）与 `logprobs`（全词表精确对数概率）。

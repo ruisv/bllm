@@ -77,7 +77,9 @@ default.
 - **✅ Official packages load as unzipped, and what they don't ship runs too** — the
   official LLM 2.0 S100P packages (Qwen3, Qwen3-VL, Qwen2.5-VL, MiniCPM5, Phi-4-mini)
   load with `bllm.load()`, output **token-identical** to the official runtime; the
-  official Qwen3.5 is S600-only, while BLLM runs the Qwen3.5 hybrid Gated-DeltaNet/SSM
+  **Qwen3-ASR** speech recognition packages load the same way and are as accurate
+  ([Speech](#speech-talk-to-qwen35)); the official Qwen3.5 is S600-only, while BLLM runs
+  the Qwen3.5 hybrid Gated-DeltaNet/SSM
   strictly 100% on the BPU on S100 / S100P, plus GLM-Edge.
 - **✅ Coexists with vision** — on a single BPU core, lowering the LLM's priority
   takes a co-resident detector's p99 from 41 ms down to **2.95 ms** — not "run both
@@ -186,7 +188,7 @@ compares **abstraction level and positioning**, not quality (against the officia
 | Shape | a closed-source runtime library + sample programs | an open-source framework running directly on the generic hbDNN / hbUCP — **no extra LLM SDK** |
 | Interface | C++ API | C++17 library + Python bindings, task-style session API |
 | Loading a model | paths organised in a JSON config | `bllm.load(dir)`, official 2.0 packages as unzipped; `bllm-make-model-dir` writes manifests |
-| Model coverage | the officially released `.hbm`; Qwen3.5 and VLA are S600-only | the official S100P 2.0 packages and 1.0's Qwen2.5-Omni, **plus** Qwen3.5 hybrid SSM and GLM-Edge on S100 / S100P |
+| Model coverage | the officially released `.hbm`; Qwen3.5 and VLA are S600-only | the official S100P 2.0 packages (Qwen3-ASR included) and 1.0's Qwen2.5-Omni, **plus** Qwen3.5 hybrid SSM and GLM-Edge on S100 / S100P |
 | Sessions | chat templates, multi-turn history, prefix reuse | built-in C++ tokenizer, ChatML / Phi templating, multi-turn, streaming, prompt-cache snapshots |
 | Generation control | sampling parameters (top-k / top-p / temperature / repetition penalty) | full sampling + `logit_bias` + `logprobs` + GBNF grammar constraints / JSON Schema |
 | Serving | a sample OpenAI server (with tool calls) | OpenAI-compatible HTTP + tool calls / `reasoning_content` (per the model's own template) + Docker + prefix cache + `/metrics` |
@@ -269,7 +271,7 @@ hf download ruisv/bllm-qwen3.5-2b --include "s100p/ctx512/*" --local-dir bllm-qw
 Conversion methodology, acceptance protocol, and every rejected build are in
 [bllm-model-zoo](https://github.com/ruisv/bllm-model-zoo).
 
-**An official LLM 2.0 package** (Qwen3, Qwen3-VL, Qwen2.5-VL, MiniCPM5, Phi-4-mini — S100P)
+**An official LLM 2.0 package** (Qwen3, Qwen3-VL, Qwen2.5-VL, MiniCPM5, Phi-4-mini, Qwen3-ASR — S100P)
 loads as unzipped, no configuration: `bllm.load("Qwen3-1.7B_w4/")` — see
 [section 2 of the deployment guide](docs/MODELS.en.md#2-official-llm-20-packages-unzip-and-load-s100p).
 A 1.0 SDK `.hbm` is assembled into a model directory with `bllm-make-model-dir` — see
@@ -309,6 +311,7 @@ REPL: `bllm_chat_native --model <dir>` (see [`examples/chat_native.cc`](examples
 | **Structured output** | `llm.set_grammar("root ::= …")` / JSON Schema | [`docs/API.en.md`](docs/API.en.md) |
 | **Image + text (VLM)** | `vlm.chat("describe this", images=["a.jpg"])` | [`vlm_native.py`](examples/vlm_native.py) · [`qwen35_native.cc`](examples/qwen35_native.cc) |
 | **Text / image / audio / video** | Qwen2.5-Omni, file paths or raw arrays (zero-copy camera/mic) | [`vlm_native.cc`](examples/vlm_native.cc) |
+| **Speech recognition** | `asr.transcribe("a.wav")` → text + language (official Qwen3-ASR), and on into Qwen3.5 for a voice conversation | [`voice_chat.py`](examples/voice_chat.py) · [`asr_native.cc`](examples/asr_native.cc) |
 | **Text embeddings** | `NativeEmbedder` (Qwen3-VL-Embedding; C++ API, no Python binding yet) | [`embed_native.cc`](examples/embed_native.cc) |
 | **Embodied policy (VLA)** | `bllm.load_policy(...).act(scene, wrist, "instruction")` → action chunk | [above](#embodied-policies-π05-on-the-bpu) · [π0.5 doc](docs/PI05.md) · [`pi05_policy.cc`](examples/pi05_policy.cc) · [`smolvla_policy.cc`](examples/smolvla_policy.cc) |
 | **Serving** | OpenAI-compatible HTTP + Docker, with tool calls | [`docker/README.md`](docker/README.md) |
@@ -521,6 +524,71 @@ an x86 host with `leap_llm` — outside this repo, and the official release ship
 Full deployment steps are in [`docs/MODELS.en.md`](docs/MODELS.en.md); see the
 [API docs](docs/API.en.md) for more.
 
+## Speech: talk to Qwen3.5
+
+The official LLM 2.0 **Qwen3-ASR** speech recognition packages (S100P) load with `bllm.load()`
+as unzipped; put Qwen3.5 behind one and you have a voice conversation running entirely on the
+BPU:
+
+```python
+import bllm
+asr = bllm.load("Qwen3-ASR-0.6B_w8/")                         # official 2.0 package, as unzipped
+llm = bllm.load("bllm-qwen3.5-2b/s100p/ctx512", vision=False)  # the text tower only: less ION
+r = asr.transcribe("question.wav")       # {'text': '...', 'language': 'Chinese', 'rtf': ...}
+for piece in llm.stream_chat(r["text"]):
+    print(piece, end="", flush=True)
+```
+
+[`examples/voice_chat.py`](examples/voice_chat.py) is that chain as a command line: `--record 5`
+takes the question from the microphone, and with [bcdl](https://github.com/ruisv/bcdl) installed
+`--tts-dir` speaks the answer with its Matcha-TTS. The server's OpenAI-compatible
+`/v1/audio/transcriptions` is in [`docker/USAGE.en.md`](docker/USAGE.en.md).
+
+- **Language**: force it (`language="zh"` / `"Chinese"`) or leave it out and the model names it
+  (`r["language"]`). `context` passes names and terms the model may lean on.
+- **Long recordings**: the decoder's cache holds about 40 s per pass; anything longer is cut at
+  quiet points, as upstream qwen-asr does, and the pieces are transcribed and joined.
+- **Input**: a file (WAV decoded in-process, anything else through ffmpeg) or a raw array
+  (16 kHz float32 / int16, other rates resampled) — a microphone pipeline need not touch disk.
+
+**Accuracy** — AISHELL-1 test, 600 utterances clean and 600 noisy, character error rate, one
+normalisation for every system:
+
+| AISHELL-1 | Official 2.0 runtime | BLLM | For reference: Paraformer (bcdl) |
+|---|---|---|---|
+| clean, Chinese forced | 4.63% | **4.11%** | 3.78% |
+| noisy, Chinese forced | 7.62% | **7.48%** | 5.58% |
+| clean, language not given | 10.04% | **4.57%** | — |
+| noisy, language not given | 15.90% | **7.76%** | — |
+
+Same official package, yet the transcripts are not identical to the official runtime's, and the
+reason is in the package: its audio encoder is extraordinarily sensitive — **a 1-LSB change in
+any single input value changes nearly every output value** (row cosine down to 0.81). BLLM's
+log-mel is computed in double with the STFT reflected at both ends, and what reaches the encoder
+differs from the official runtime's by 1 LSB in a handful of values per ten thousand — already
+enough to move a comma or a character. So the comparison that means something is accuracy, and
+there they are level — with the language forced, BLLM is slightly ahead.
+
+**No language given** is the default, and where the difference is largest. Asked to name the
+language itself, this compiled model answers "no speech" (`language None`) for about one
+Mandarin utterance in six and then writes nothing; the official runtime, which fills in an empty
+language name, loses one in ten and never learns what was spoken. BLLM has the model pick a
+name from the 30 languages it knows ("no speech" is not one of them) and then transcribes in
+that language: the error rate is back to the forced-Chinese level, Mandarin is named for
+574/600 clean and 588/600 noisy utterances, and silence and noise still come back empty.
+
+**Speed** (S100P, an 11.4 s English clip, measured back to back with the official `asr_demo` on
+the same board):
+
+| | end to end | first token | decode | RTF |
+|---|---|---|---|---|
+| 0.6B · official | 1537 ms | 409 ms | 33.7 tok/s | 0.135 |
+| 0.6B · BLLM | **1499 ms** | **365 ms** | 32.7 tok/s | **0.131** |
+| 1.7B · official | 2853 ms | 580 ms | 18.9 tok/s | 0.250 |
+| 1.7B · BLLM | **2658 ms** | **535 ms** | 18.4 tok/s | **0.233** |
+
+Qwen3-ASR is published for the S100P (nash-m) only; there is none for the RDK S100 (nash-e) yet.
+
 ## Sharing the BPU with a vision pipeline
 
 S100/S100P have a single BPU core, so an LLM and a vision pipeline (bcdl) contend for it. A
@@ -605,6 +673,8 @@ to the official `chat_demo`):
 - **Qwen3** 0.6B / 1.7B / 4B / 8B, **Qwen3-4B-Instruct-2507**, **Qwen3-4B-Thinking-2507**
 - **Qwen2.5-3B** · **MiniCPM5-2B** · **Phi-4-mini**
 - **Qwen3-VL** 2B / 4B / 8B · **Qwen2.5-VL** 3B / 7B (image + text)
+- **Qwen3-ASR** 0.6B / 1.7B (speech recognition; transcripts are not compared word for word —
+  accuracy is level with the official runtime, see [Speech](#speech-talk-to-qwen35))
 
 **Official D-Robotics 1.0 SDK `.hbm`**:
 
@@ -631,6 +701,9 @@ repo consumes a finished `.hbm` + tokenizer config. Prebuilt packages: see
   dense text models, plus **Qwen3.5 hybrid Gated-DeltaNet/SSM** (strict 100% on the BPU).
 - **Multimodal** — Qwen2.5-Omni text + image + audio + video, and **Qwen3.5 image+text**
   (self-built vision tower), from file paths or raw arrays (zero-copy camera/microphone).
+- **Speech recognition** — the official Qwen3-ASR packages: language forced or detected, long
+  recordings cut at quiet points, streaming, and an OpenAI-compatible
+  `/v1/audio/transcriptions` on the server.
 - **One-line sessions** — `bllm.load(...)` / `NativeSession`, with a built-in C++ tokenizer,
   ChatML templating, streaming, multi-turn, sampling.
 - **Full sampling** — greedy / temperature / top-k / top-p / min-p / typical-p / repeat,
