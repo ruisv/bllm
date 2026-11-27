@@ -15,7 +15,8 @@ Python 包 `bllm`。C++ 对应类型见每节末尾。English: [API.en.md](API.e
   返回 `NativeSession`。
 - `path` 为**官方 LLM 2.0 包目录**（`*_language_*.hbm` + `*_embed_tokens.bin`，图文包另有
   `*_vision_*.hbm`）→ 从 `.hbm` 内嵌的描述合成清单（缓存在 `$BLLM_CACHE`），文本包返回
-  `NativeSession`，图文包返回 `NativeVlmSession`。`vision=False` 只加载文本塔；`system="..."`
+  `NativeSession`，图文包返回 `NativeVlmSession`，**Qwen3-ASR** 语音识别包（带
+  `*_audio_*.hbm`）返回 `NativeAsrSession`。`vision=False` 只加载文本塔；`system="..."`
   覆盖模板自带的默认 system。
 - `path` 为**裸 `.hbm`** 且传 `tokenizer_dir=<目录>` → 运行时合成清单并返回 `NativeSession`。
 - 多余的关键字参数透传给会话构造函数。
@@ -24,6 +25,7 @@ Python 包 `bllm`。C++ 对应类型见每节末尾。English: [API.en.md](API.e
 llm = bllm.load("/models/qwen2.5-1.5b")
 llm = bllm.load("Qwen3-1.7B_w4/")                      # 官方 2.0 包，解压即用
 vlm = bllm.load("Qwen3-VL-2B_w4/")                     # 官方 2.0 图文包
+asr = bllm.load("Qwen3-ASR-0.6B_w8/")                  # 官方 2.0 语音识别包
 llm = bllm.load("Qwen2.5_1.5B.hbm", tokenizer_dir="Qwen2.5_1.5B_config/")
 ```
 
@@ -193,6 +195,34 @@ vlm = bllm.NativeVlmSession(model_dir)        # 或 bllm.load(...)
 > 在离线导出时定死，决定视频预算。
 
 C++：`bllm::NativeVlm`（`bllm/native_vlm.h`，见 [CPP_API.zh.md](CPP_API.zh.md)）。
+
+## `bllm.NativeAsrSession` — 语音识别（官方 Qwen3-ASR）
+
+```python
+asr = bllm.load("Qwen3-ASR-0.6B_w8/")         # 官方 S100P 包，解压即用
+r = asr.transcribe("meeting.wav")             # {'text': '...', 'language': 'Chinese', ...}
+r = asr.transcribe(pcm, language="zh")        # 16 kHz float32 数组，强制语言
+for piece in asr.stream_transcribe("clip.flac"):
+    print(piece, end="", flush=True)
+```
+
+音频可以是文件路径（WAV 在进程内解码，其他格式经 `ffmpeg`），也可以是数组：float32 或
+int16，单声道或 `[n, channels]`，采样率由 `sample_rate` 指定（默认 16000，其他会重采样）。
+
+| 方法 | 说明 |
+|---|---|
+| `transcribe(audio, language=None, context="", *, sample_rate=16000, max_new=0, chunk_seconds=0, on_text=None) -> dict` | 转写。`language` 是名称（`"Chinese"`）或代码（`"zh"`）；`None` 由模型自己说出语言。`context` 是模型可以参考的文字——人名、术语。`on_text(str)` 流式输出。 |
+| `stream_transcribe(audio, language=None, context="", ...) -> Iterator[str]` | 边解码边输出转写；完整结果在 `last_result`。 |
+
+返回值：`text`、`language`（强制的、模型识别出的——长音频跨块时如 `"Chinese,English"`——或模型
+没说时为 `""`）、`raw`（模型原文，含 `language X<asr_text>` 头）、`chunks`、`ntok`、
+`audio_seconds`、`e2e_ms`、`ttft_ms`、`decode_tps`、`rtf`。**属性**：`name`、
+`default_chunk_seconds`、`last_result`。
+
+一次放不进解码器缓存的长音频（`default_chunk_seconds`，1024 token 的包为 40 s）会在安静处切开
+——每个切点 ±5 s 内能量最低的 100 ms，与上游 qwen-asr 相同——逐块独立转写后拼接。
+
+C++：`bllm::NativeAsr`（`bllm/native_asr.h`，见 [CPP_API.zh.md](CPP_API.zh.md)）。
 
 ## 采样参数速览
 

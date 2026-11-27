@@ -101,13 +101,15 @@ def _desc(*, template="{{ '<|im_start|>' }}", gen_eos=(151645, 151643), extra_ad
     return d
 
 
-def _package(tmp_path, *, vision=False, name=_Q3):
+def _package(tmp_path, *, vision=False, audio=False, name=_Q3):
     p = tmp_path / "Qwen3-0.6B_w8"
     p.mkdir()
     (p / name).write_bytes(b"\x00")
     (p / "Qwen3-0.6B_embed_tokens.bin").write_bytes(b"\x00")
     if vision:
         (p / "Qwen3-0.6B_vision_448x448_w8_nash-m_corenum_1.hbm").write_bytes(b"\x00")
+    if audio:
+        (p / "Qwen3-ASR-0.6B_audio_chunk_800_w8_nash-m_corenum_1.hbm").write_bytes(b"\x00")
     return p
 
 
@@ -293,3 +295,67 @@ def test_official_s600_package_is_refused_before_the_hbm_is_read(tmp_path):
 def test_official_vlm_refuses_a_non_square_tower():
     with pytest.raises(ValueError, match="square"):
         mm.official_model_json(_vl_desc(width=640, height=448), _Q3, vision=True)
+
+
+# ── official Qwen3-ASR packages ──────────────────────────────────────────────────────────
+
+# The Qwen3-ASR template, as its 2.0 package embeds it: ChatML with the audio in the user turn.
+_ASR_TEMPLATE = ("{{- '<|im_start|>system\\n' + (ns.system_text if ns.system_text is string else "
+                 "'') + '<|im_end|>\\n' -}}{{- '<|im_start|>user\\n' + ns2.audio_tokens + "
+                 "'<|im_end|>\\n' -}}{%- if add_generation_prompt -%}{{- '<|im_start|>assistant"
+                 "\\n' -}}{%- endif -%}")
+
+
+def _asr_desc(model_type="qwen3_asr"):
+    d = _desc(template=_ASR_TEMPLATE, extra_added=(("<|audio_start|>", 151669),
+                                                   ("<|audio_end|>", 151670),
+                                                   ("<asr_text>", 151704)))
+    d["config"] = {"architectures": ["Qwen3ASRForConditionalGeneration"], "model_type": model_type}
+    d["horizon"]["decode_cache_len"] = 1024
+    return d
+
+
+def test_find_official_package_sees_an_audio_tower(tmp_path):
+    p = _package(tmp_path, audio=True)
+    pkg = mm.find_official_package(p)
+    assert pkg["audio"].name.endswith("_audio_chunk_800_w8_nash-m_corenum_1.hbm")
+    assert pkg["vision"] is None
+    (tmp_path / "x").mkdir()
+    q = _package(tmp_path / "x", audio=False)
+    assert mm.find_official_package(q)["audio"] is None
+
+
+def test_official_asr_dir_is_arch_asr_with_its_encoder(tmp_path):
+    p = _package(tmp_path, audio=True)
+    read = lambda path: json.dumps(_asr_desc())
+    d = mm.official_dir_for(p, cache_root=tmp_path / "cache", read_desc=read)
+    cfg = json.loads((d / "model.json").read_text())
+    assert cfg["arch"] == "asr" and cfg["audio"] == "audio.hbm"
+    assert cfg["cache_len"] == 1024 and cfg["chat"]["format"] == "chatml"
+    assert cfg["chat"]["system"] == ""                    # the template's system is the context
+    assert "visual" not in cfg
+    assert (d / "audio.hbm").resolve() == next(p.glob("*_audio_*.hbm")).resolve()
+
+
+def test_official_text_package_cache_dir_is_unchanged_by_asr_support(tmp_path):
+    """The audio field joins the cache key only when there is one, so a text package
+    synthesized by 0.9.0 is still a cache hit."""
+    p = _package(tmp_path)
+    read = lambda path: json.dumps(_desc())
+    d = mm.official_dir_for(p, cache_root=tmp_path / "cache", read_desc=read)
+    (tmp_path / "a").mkdir()
+    a = _package(tmp_path / "a", audio=True)
+    da = mm.official_dir_for(a, cache_root=tmp_path / "cache", read_desc=lambda _: json.dumps(_asr_desc()))
+    assert d != da
+
+
+def test_official_audio_tower_on_another_model_is_refused():
+    with pytest.raises(ValueError, match="only Qwen3-ASR"):
+        mm.official_model_json(_asr_desc(model_type="whisper"), _Q3, audio=True)
+
+
+def test_official_package_with_both_towers_is_refused(tmp_path):
+    p = _package(tmp_path, vision=True, audio=True)
+    with pytest.raises(ValueError, match="omni"):
+        mm.find_official_package(p)
+

@@ -40,6 +40,9 @@ class NativeLlm {
     if (cfg_.is_embed())
       throw std::runtime_error("[bllm] '" + cfg_.name + "' is arch=\"embed\" (an encoder, not a "
                                "generator); load it with bllm::NativeEmbedder");
+    if (cfg_.is_asr())
+      throw std::runtime_error("[bllm] '" + cfg_.name + "' is arch=\"asr\" (speech recognition); "
+                               "load it with bllm::NativeAsr / bllm.NativeAsrSession");
     if (cfg_.is_hybrid()) {
       hybrid_ = std::make_unique<NativeHybridEngine>(cfg_.hbm, cfg_.embed, cfg_.graph,
                                                      cfg_.rope_theta, cfg_.hbm_prefill);

@@ -12,6 +12,7 @@ the names map 1:1 (Python `snake_case` ⇄ the same C++ method names).
 - Model: [ModelConfig](#modelconfig) · [Tokenizer](#tokenizer)
 - Sessions: [NativeLlm — text chat](#nativellm--text-chat) ·
   [NativeVlm — multimodal](#nativevlm--multimodal) ·
+  [NativeAsr — speech recognition](#nativeasr--speech-recognition) ·
   [NativeEmbedder — text embeddings](#nativeembedder--text-embeddings)
 - Generation control: [Sampling parameters](#sampling-parameters) ·
   [GBNF grammar constraints](#gbnf-grammar-constraints)
@@ -353,6 +354,39 @@ bool live = vlm.streaming();
 > producing a plausible-looking, mis-ordered answer. Still images are unaffected:
 > their 3-D layout IS shared, and it is checked against the HF reference.
 
+## NativeAsr — speech recognition
+
+`bllm/native_asr.h` — an official D-Robotics Qwen3-ASR package (S100P). The model dir is the
+one `bllm.load()` synthesizes from the unzipped package (`arch: "asr"`, its encoder linked as
+`audio.hbm`); `bllm-make-model-dir official <out> <package>` writes it too.
+
+```cpp
+#include "bllm/native_asr.h"
+#include "bllm/audio_io.h"     // loadAudio16k: WAV -> 16 kHz mono float
+
+bllm::NativeAsr asr("/path/to/model_dir");
+bllm::OwnedAudio a = bllm::loadAudio16k("question.wav");
+bllm::AsrOptions opt;           // language "" = the model names it; "Chinese" / "zh" forces it
+bllm::AsrResult r = asr.transcribe(a.samples.data(), a.samples.size(), opt,
+                                   [](const std::string& s) { std::cout << s << std::flush; });
+std::printf("\n[%s] %.0f ms for %.1f s (RTF %.2f)\n", r.language.c_str(), r.e2e_ms,
+            r.audio_seconds, r.rtf());
+```
+
+| Member | Meaning |
+|---|---|
+| `AsrOptions::language` | `""` detects; a name or code forces (`language X<asr_text>` is then in the prompt) |
+| `AsrOptions::context` | text the model may lean on (names, terms) — the template's system turn |
+| `AsrOptions::max_new` / `chunk_seconds` | per-chunk budget (0: what the cache has left) / longest piece of a long clip (0: `default_chunk_seconds()`) |
+| `AsrResult` | `text`, `language`, `raw`, `chunks`, `ntok`, `audio_seconds`, `e2e_ms`, `ttft_ms`, `decode_tps`, `rtf()` |
+
+The front end is Whisper's log-mel (128 Slaney bins, computed — the package ships no filter
+file), in double precision with the STFT reflecting at both ends, which is what the official
+runtime feeds its encoder to within 1 LSB on a handful of values. A clip longer than one pass
+of the 1024-token cache is cut at quiet points (upstream qwen-asr's rule) and the pieces
+transcribed independently. `bllm/asr_util.h` holds the pure parts (token count, splitting,
+the repetition fix) and builds anywhere.
+
 ## NativeEmbedder — text embeddings
 
 `bllm/native_embedder.h` — text embeddings on the BPU. An embedding model is far
@@ -556,6 +590,7 @@ REPL), `qwen35_native.cc`, `vlm_native.cc` (image / audio / video),
 |---|---|
 | `bllm::NativeLlm` | `bllm.NativeSession` |
 | `bllm::NativeVlm` | `bllm.NativeVlmSession` |
+| `bllm::NativeAsr` | `bllm.NativeAsrSession` (`transcribe` / `stream_transcribe`) |
 | `bllm::NativeEmbedder` | no binding yet (C++ API only) |
 | `bllm::loadModelConfig(dir)` | done inside `bllm.load(dir)` |
 | `llm.chat(msg, max_new, on_text)` | `llm.chat(msg, max_new, on_text)` / `llm.stream_chat(msg)` |

@@ -19,6 +19,7 @@
 #include "bllm/image_io.h"     // stb-backed decode, for image paths
 #include "bllm/native_llm.h"   // unified string-in/out session (needs the C++ tokenizer)
 #include "bllm/native_vlm.h"   // multimodal session (Qwen2.5-Omni)
+#include "bllm/native_asr.h"   // speech recognition (official Qwen3-ASR)
 #include "bllm/native_pi05_policy.h"  // pi0.5 VLA policy (openpi)
 #include "bllm/native_smolvla_policy.h"  // SmolVLA policy (LeRobot)
 #endif
@@ -504,6 +505,55 @@ NB_MODULE(_bllm_native, m) {
            "Plain tokenizer encode (no ChatML wrapping) — a token count for usage "
            "accounting, not a way to feed text.")
       .def_prop_ro("name", [](bllm::NativeVlm& v) { return v.config().name; });
+
+  // ── speech recognition (official Qwen3-ASR packages) ───────────────────────
+  nb::class_<bllm::NativeAsr>(m, "NativeAsr")
+      .def(nb::init<const std::string&>(), "model_dir"_a,
+           "Load an arch=\"asr\" model dir (an official Qwen3-ASR package's synthesized dir).")
+      .def(
+          "transcribe",
+          [](bllm::NativeAsr& asr, nb::handle audio, const std::string& language,
+             const std::string& context, int max_new, double chunk_seconds, nb::object on_text) {
+            bllm::OwnedAudio owned;
+            if (nb::isinstance<nb::str>(audio)) {
+              owned = bllm::loadAudio16k(nb::cast<std::string>(audio));
+            } else {
+              PcmArray a = nb::cast<PcmArray>(audio);
+              owned.samples.assign(a.data(), a.data() + a.shape(0));   // owned: GIL is released
+            }
+            bllm::AsrOptions o;
+            o.language = language;
+            o.context = context;
+            o.max_new = max_new;
+            o.chunk_seconds = chunk_seconds;
+            std::function<void(const std::string&)> cb;
+            if (!on_text.is_none())
+              cb = [&on_text](const std::string& s) { nb::gil_scoped_acquire g; on_text(s); };
+            bllm::AsrResult r;
+            {
+              nb::gil_scoped_release rel;
+              r = asr.transcribe(owned.samples.data(), owned.samples.size(), o, cb);
+            }
+            nb::dict d;
+            d["text"] = r.text;
+            d["language"] = r.language;
+            d["raw"] = r.raw;
+            d["chunks"] = r.chunks;
+            d["ntok"] = r.ntok;
+            d["audio_seconds"] = r.audio_seconds;
+            d["e2e_ms"] = r.e2e_ms;
+            d["ttft_ms"] = r.ttft_ms;
+            d["decode_tps"] = r.decode_tps;
+            d["rtf"] = r.rtf();
+            return d;
+          },
+          "audio"_a, "language"_a = "", "context"_a = "", "max_new"_a = 0,
+          "chunk_seconds"_a = 0.0, "on_text"_a = nb::none(),
+          "Transcribe a wav path or 16 kHz mono float32 PCM. language='' lets the model "
+          "name it; on_text(str) streams the transcript. Returns a dict (text, language, "
+          "chunks, ntok, audio_seconds, e2e_ms, ttft_ms, decode_tps, rtf).")
+      .def_prop_ro("default_chunk_seconds", &bllm::NativeAsr::default_chunk_seconds)
+      .def_prop_ro("name", [](bllm::NativeAsr& a) { return a.config().name; });
 #endif
 
 #ifdef BLLM_HAVE_TOKENIZERS

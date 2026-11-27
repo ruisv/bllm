@@ -10,7 +10,8 @@ English: [CPP_API.en.md](CPP_API.en.md)。
 - [链接与构建](#链接与构建) · [约定](#约定)
 - 模型：[ModelConfig](#modelconfig) · [Tokenizer](#tokenizer)
 - 会话：[NativeLlm 文本对话](#nativellm-文本对话) ·
-  [NativeVlm 多模态](#nativevlm-多模态) · [NativeEmbedder 文本嵌入](#nativeembedder-文本嵌入)
+  [NativeVlm 多模态](#nativevlm-多模态) · [NativeAsr 语音识别](#nativeasr-语音识别) ·
+  [NativeEmbedder 文本嵌入](#nativeembedder-文本嵌入)
 - 生成控制：[采样参数](#采样参数) · [GBNF 语法约束](#gbnf-语法约束)
 - 底层：[引擎 NativeEngine 与 NativeHybridEngine](#引擎-nativeengine-与-nativehybridengine) ·
   [媒体读取辅助](#媒体读取辅助)
@@ -326,6 +327,37 @@ bool live = vlm.streaming();
 > `stream_begin(fps>0)` 会**明确报错**，而不是悄悄编出一个看着通顺、其实顺序
 > 错乱的答案。静止图不受影响：两者的静止图布局是同一套，且已对 HF 参考逐位核过。
 
+## NativeAsr 语音识别
+
+`bllm/native_asr.h` —— 官方 D-Robotics Qwen3-ASR 包（S100P）。模型目录就是 `bllm.load()` 从解压后的
+官方包合成的那个（`arch: "asr"`，编码器链接为 `audio.hbm`）；`bllm-make-model-dir official <out> <包>`
+也能生成。
+
+```cpp
+#include "bllm/native_asr.h"
+#include "bllm/audio_io.h"     // loadAudio16k：WAV -> 16 kHz 单声道 float
+
+bllm::NativeAsr asr("/path/to/model_dir");
+bllm::OwnedAudio a = bllm::loadAudio16k("question.wav");
+bllm::AsrOptions opt;           // language 为空 = 由模型说出语言；"Chinese" / "zh" 则强制
+bllm::AsrResult r = asr.transcribe(a.samples.data(), a.samples.size(), opt,
+                                   [](const std::string& s) { std::cout << s << std::flush; });
+std::printf("\n[%s] %.0f ms / %.1f s 音频（RTF %.2f）\n", r.language.c_str(), r.e2e_ms,
+            r.audio_seconds, r.rtf());
+```
+
+| 成员 | 含义 |
+|---|---|
+| `AsrOptions::language` | `""` 自动识别；名称或代码则强制（提示里带上 `language X<asr_text>`） |
+| `AsrOptions::context` | 模型可以参考的文字（人名、术语），即模板的 system 轮 |
+| `AsrOptions::max_new` / `chunk_seconds` | 每块的生成预算（0：缓存剩多少用多少）/ 长音频切块的最长长度（0：`default_chunk_seconds()`） |
+| `AsrResult` | `text`、`language`、`raw`、`chunks`、`ntok`、`audio_seconds`、`e2e_ms`、`ttft_ms`、`decode_tps`、`rtf()` |
+
+前端是 Whisper 的 log-mel（128 个 Slaney 频带，由代码算出——官方包不带滤波器文件），双精度计算、
+STFT 两端都做反射填充，送进编码器的特征与官方运行时只在个别值上差 1 LSB。一次放不进 1024 token
+缓存的长音频按上游 qwen-asr 的规则在安静处切开，逐块独立转写。`bllm/asr_util.h` 是其中的纯逻辑
+部分（token 数、切分、去重复），在任何机器上都能编译。
+
 ## NativeEmbedder 文本嵌入
 
 `bllm/native_embedder.h` —— BPU 上的文本嵌入。嵌入模型比对话模型简单得多：
@@ -515,6 +547,7 @@ int main(int argc, char** argv) {
 |---|---|
 | `bllm::NativeLlm` | `bllm.NativeSession` |
 | `bllm::NativeVlm` | `bllm.NativeVlmSession` |
+| `bllm::NativeAsr` | `bllm.NativeAsrSession`（`transcribe` / `stream_transcribe`） |
 | `bllm::NativeEmbedder` | 暂无绑定（C++ API only） |
 | `bllm::loadModelConfig(dir)` | `bllm.load(dir)` 内部完成 |
 | `llm.chat(msg, max_new, on_text)` | `llm.chat(msg, max_new, on_text)` / `llm.stream_chat(msg)` |

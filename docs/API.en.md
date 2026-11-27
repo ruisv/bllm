@@ -17,8 +17,9 @@ Load a model and return the right session object.
 - `path` is an **official LLM 2.0 package directory** (`*_language_*.hbm` +
   `*_embed_tokens.bin`, plus `*_vision_*.hbm` for an image model) → the manifest is synthesized
   from the description embedded in the `.hbm` (cached under `$BLLM_CACHE`); a text package
-  returns `NativeSession`, an image package `NativeVlmSession`. `vision=False` loads the text
-  tower alone; `system="..."` overrides the template's default system prompt.
+  returns `NativeSession`, an image package `NativeVlmSession`, a **Qwen3-ASR** package (with
+  an `*_audio_*.hbm`) `NativeAsrSession`. `vision=False` loads the text tower alone;
+  `system="..."` overrides the template's default system prompt.
 - `path` is a **bare `.hbm`** and you pass `tokenizer_dir=<dir>` → the runtime synthesizes the
   manifest and returns a `NativeSession`.
 - Extra keyword args are forwarded to the session constructor.
@@ -27,6 +28,7 @@ Load a model and return the right session object.
 llm = bllm.load("/models/qwen2.5-1.5b")
 llm = bllm.load("Qwen3-1.7B_w4/")                      # official 2.0 package, as unzipped
 vlm = bllm.load("Qwen3-VL-2B_w4/")                     # official 2.0 image package
+asr = bllm.load("Qwen3-ASR-0.6B_w8/")                  # official 2.0 speech recognition package
 llm = bllm.load("Qwen2.5_1.5B.hbm", tokenizer_dir="Qwen2.5_1.5B_config/")
 ```
 
@@ -190,6 +192,36 @@ installed — the input reaching the BPU is byte-identical to the official runti
 > into gibberish). A vision tower's compiled resolution sets the video budget.
 
 C++: `bllm::NativeVlm` (`bllm/native_vlm.h`, see [CPP_API.en.md](CPP_API.en.md)).
+
+## `bllm.NativeAsrSession` — speech recognition (official Qwen3-ASR)
+
+```python
+asr = bllm.load("Qwen3-ASR-0.6B_w8/")         # the unzipped official S100P package
+r = asr.transcribe("meeting.wav")             # {'text': '...', 'language': 'Chinese', ...}
+r = asr.transcribe(pcm, language="zh")        # 16 kHz float32 array, language forced
+for piece in asr.stream_transcribe("clip.flac"):
+    print(piece, end="", flush=True)
+```
+
+Audio is a file path (WAV is decoded in-process, anything else through `ffmpeg`) or an array:
+float32 or int16, mono or `[n, channels]`, at `sample_rate` (default 16000; others are
+resampled).
+
+| Method | Description |
+|---|---|
+| `transcribe(audio, language=None, context="", *, sample_rate=16000, max_new=0, chunk_seconds=0, on_text=None) -> dict` | Transcribe. `language` is a name (`"Chinese"`) or code (`"zh"`); `None` lets the model name it. `context` is text the model may lean on — names, terms. `on_text(str)` streams. |
+| `stream_transcribe(audio, language=None, context="", ...) -> Iterator[str]` | The transcript as it is decoded; the full result lands in `last_result`. |
+
+The result: `text`, `language` (forced, detected — `"Chinese,English"` across chunks of a
+long clip — or `""` when the model named none), `raw` (what the model wrote, including its
+`language X<asr_text>` header), `chunks`, `ntok`, `audio_seconds`, `e2e_ms`, `ttft_ms`,
+`decode_tps`, `rtf`. **Properties**: `name`, `default_chunk_seconds`, `last_result`.
+
+A clip longer than the decoder's cache allows in one pass (`default_chunk_seconds`, 40 s on
+the 1024-token packages) is cut at quiet points — the quietest 100 ms within ±5 s of each
+cut, as upstream qwen-asr does — and the pieces are transcribed independently and joined.
+
+C++: `bllm::NativeAsr` (`bllm/native_asr.h`, see [CPP_API.en.md](CPP_API.en.md)).
 
 ## Sampling parameters at a glance
 

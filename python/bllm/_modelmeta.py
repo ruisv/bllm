@@ -220,8 +220,9 @@ _BOARD = {"nash-e": "RDK S100", "nash-m": "RDK S100P", "nash-p": "RDK S600"}
 
 
 def find_official_package(pkg_dir: "str | Path") -> "dict | None":
-    """`{'language', 'vision', 'embed'}` paths if `pkg_dir` is an official LLM 2.0 package
-    (vision is None for a text model), else None. A dir with a model.json is ours, not theirs."""
+    """`{'language', 'vision', 'audio', 'embed'}` paths if `pkg_dir` is an official LLM 2.0
+    package (vision / audio None when it has no such tower), else None. A dir with a
+    model.json is ours, not theirs. An audio tower makes it a Qwen3-ASR package."""
     d = Path(pkg_dir)
     if not d.is_dir() or (d / "model.json").exists():
         return None
@@ -234,7 +235,12 @@ def find_official_package(pkg_dir: "str | Path") -> "dict | None":
             f"{d}: {len(lang)} language .hbm and {len(emb)} embed tables — a package with more "
             "than one model (e.g. a speculative-decoding base + draft pair) is not supported")
     vis = sorted(d.glob("*_vision_*.hbm"))
-    return {"language": lang[0], "vision": vis[0] if vis else None, "embed": emb[0]}
+    aud = sorted(d.glob("*_audio_*.hbm"))
+    if vis and aud:
+        raise ValueError(f"{d}: both a vision and an audio tower — an omni package, which "
+                         "BLLM does not load from the official 2.0 layout")
+    return {"language": lang[0], "vision": vis[0] if vis else None,
+            "audio": aud[0] if aud else None, "embed": emb[0]}
 
 
 def _desc_chat_template(desc: dict) -> str:
@@ -404,10 +410,11 @@ def _desc_mrope(desc: dict) -> "tuple[list[int], bool]":
 
 def official_model_json(desc: dict, hbm_name: str, *, system: "str | None" = None,
                         name: "str | None" = None, eos: "list[int] | None" = None,
-                        vision: bool = False) -> dict:
+                        vision: bool = False, audio: bool = False) -> dict:
     """The `model.json` dict for an official LLM 2.0 language graph, from its embedded description
     and file name. Pure — no file or BPU access — so it is testable anywhere. `vision` adds the
-    package's vision tower (linked as `visual.hbm`)."""
+    package's vision tower (linked as `visual.hbm`); `audio` makes it a speech recogniser
+    (arch "asr", the encoder linked as `audio.hbm`)."""
     h = desc.get("horizon")
     if not isinstance(h, dict) or not h:
         raise ValueError(f"{hbm_name}: the description has no `horizon` section — not an "
@@ -437,6 +444,13 @@ def official_model_json(desc: dict, hbm_name: str, *, system: "str | None" = Non
     }
     if ctx:
         cfg["cache_len"] = int(ctx)
+    if audio:
+        mt = (desc.get("config") or {}).get("model_type", "")
+        if mt != "qwen3_asr":
+            raise ValueError(f"{hbm_name}: an audio tower on a {mt or 'unnamed'} model — only "
+                             "Qwen3-ASR packages are supported (whisper is not yet)")
+        cfg["arch"] = "asr"
+        cfg["audio"] = "audio.hbm"
     if vision:
         cfg["visual"] = "visual.hbm"
         cfg["vision"] = _desc_vision(desc)
@@ -464,8 +478,9 @@ def write_official_dir(pkg: dict, out: Path, *, system: "str | None" = None,
         raise ValueError(f"{lang.name}: no embedded description — not an LLM 2.0 graph")
     desc = json.loads(raw)
     with_vision = vision and pkg.get("vision") is not None
+    with_audio = pkg.get("audio") is not None
     cfg = official_model_json(desc, lang.name, system=system, name=name, eos=eos,
-                              vision=with_vision)
+                              vision=with_vision, audio=with_audio)
     out.mkdir(parents=True, exist_ok=True)
     (out / "tokenizer.json").write_text(json.dumps(desc["tokenizer"], ensure_ascii=False),
                                         encoding="utf-8")
@@ -476,6 +491,8 @@ def write_official_dir(pkg: dict, out: Path, *, system: "str | None" = None,
     files = [(lang, out / "model.hbm"), (pkg["embed"], out / "embed_tokens.bin")]
     if with_vision:
         files.append((pkg["vision"], out / "visual.hbm"))
+    if with_audio:
+        files.append((pkg["audio"], out / "audio.hbm"))
     for src, dst in files:
         if copy:
             import shutil
@@ -516,7 +533,9 @@ def official_dir_for(pkg_dir: "str | Path", *, vision: bool = True,
     raw = "::".join([str(lang.resolve()), str(st.st_size), str(int(st.st_mtime)),
                      str(pkg["embed"].resolve()), str(vis.resolve()) if vis else "",
                      "\x00" if system is None else system, name or "",
-                     ",".join(map(str, eos or [])), "official2.3"])
+                     ",".join(map(str, eos or [])), "official2.3"]
+                    # appended only when present, so a text/VLM package keeps its cache dir
+                    + ([str(pkg["audio"].resolve())] if pkg.get("audio") else []))
     root = Path(cache_root) if cache_root else Path(
         os.environ.get("BLLM_CACHE", Path.home() / ".cache" / "bllm")) / "native"
     out = root / hashlib.sha1(raw.encode()).hexdigest()[:16]

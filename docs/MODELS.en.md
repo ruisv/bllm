@@ -74,6 +74,13 @@ decode at 97% or more of the official speed.
 |---|---|
 | text | Qwen3-0.6B w8 · Qwen3-1.7B w4 · Qwen3-4B w4 · Qwen3-4B-Instruct-2507 w4 · Qwen3-4B-Thinking-2507 w4 · Qwen3-8B w4 · Qwen2.5-3B w4 · MiniCPM5-2B w4 · Phi-4-mini w8 |
 | image + text | Qwen3-VL-2B / 4B / 8B w4 · Qwen2.5-VL-3B / 7B w4 |
+| speech recognition | Qwen3-ASR-0.6B w8 · Qwen3-ASR-1.7B w8 (`bllm.load()` → `NativeAsrSession`) |
+
+A speech recognition package adds an `*_audio_*.hbm` (the audio encoder). Its transcripts are
+**not word-for-word the official runtime's**: the encoder is so sensitive that a 1-LSB change in
+any single input value moves nearly every output value, and the two log-mel front ends differ
+in the last bit of a handful of values. So its acceptance test is accuracy: on AISHELL-1 BLLM
+and the official runtime have the same character error rate — see the README's Speech section.
 
 All of this matches the official runtime, but is worth knowing:
 
@@ -88,7 +95,7 @@ All of this matches the official runtime, but is worth knowing:
 - **ION `balanced` is enough up to 8B w4** — Qwen3-8B, Qwen3-VL-8B and Qwen2.5-VL-7B were all
   checked on it.
 - **Not supported yet**: S600 packages (`nash-p`, fp16 I/O — refused with a clear error),
-  speculative-decoding packages (`*_eagle3`, `*_dflash`), speech-recognition packages, and video
+  speculative-decoding packages (`*_eagle3`, `*_dflash`), the whisper speech-recognition package, and video
   input to the official image models. There are no official S100 (nash-e) packages.
 
 BLLM's own features work on official packages as on any other: GBNF grammars, logprobs,

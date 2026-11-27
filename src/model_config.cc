@@ -182,6 +182,9 @@ ModelConfig loadModelConfig(const std::string& dir) {
     throw std::runtime_error("[bllm] " + c.arch + " model.json missing 'embed' (host embed table)");
   if (c.is_omni() && c.visual.empty())
     throw std::runtime_error("[bllm] omni model.json missing 'visual' (vision tower .hbm)");
+  if (c.is_asr() && (c.audio.empty() || c.embed.empty()))
+    throw std::runtime_error("[bllm] asr model.json needs 'audio' (the encoder .hbm) and "
+                             "'embed' (the decoder's embedding table)");
   if (c.is_omni() && c.mrope_section.empty()) c.mrope_section = {16, 24, 24};
   if (c.has_vision() && c.mrope_section.empty())
     throw std::runtime_error("[bllm] a model.json with 'visual' needs 'mrope_section' — "

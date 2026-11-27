@@ -71,6 +71,11 @@ BLLM 不转发、也不镜像这些包，请从官方地址下载。
 |---|---|
 | 文本 | Qwen3-0.6B w8 · Qwen3-1.7B w4 · Qwen3-4B w4 · Qwen3-4B-Instruct-2507 w4 · Qwen3-4B-Thinking-2507 w4 · Qwen3-8B w4 · Qwen2.5-3B w4 · MiniCPM5-2B w4 · Phi-4-mini w8 |
 | 图文 | Qwen3-VL-2B / 4B / 8B w4 · Qwen2.5-VL-3B / 7B w4 |
+| 语音识别 | Qwen3-ASR-0.6B w8 · Qwen3-ASR-1.7B w8（`bllm.load()` → `NativeAsrSession`） |
+
+语音识别包另有一个 `*_audio_*.hbm`（音频编码器）。它的转写**不与官方逐字相同**：这个编码器对输入极其敏感，
+任意一个输入值差 1 LSB 几乎所有输出都会变，而送进去的 log-mel 两边只差在个别值的最后一位上。所以它的验收
+标准是准确率：AISHELL-1 上 BLLM 与官方运行时的字错率持平，见 README 的"语音"一节。
 
 这些行为都和官方运行时一致，但值得知道：
 
@@ -82,7 +87,7 @@ BLLM 不转发、也不镜像这些包，请从官方地址下载。
   像素与官方逐位一致；也可以直接传 HxWx3 的 uint8 数组。
 - **ION 用 `balanced` 就够跑到 8B w4**：Qwen3-8B、Qwen3-VL-8B、Qwen2.5-VL-7B 都在这一档上验证过。
 - **还不支持**：S600 的包（`nash-p`，输入输出是 fp16，加载时会明确报错）、投机解码包
-  （`*_eagle3`、`*_dflash`）、语音识别包、官方图文模型的视频输入。官方没有发布 S100（nash-e）的包。
+  （`*_eagle3`、`*_dflash`）、whisper 语音识别包、官方图文模型的视频输入。官方没有发布 S100（nash-e）的包。
 
 BLLM 自己的功能在官方包上照常可用：GBNF 语法约束、logprobs、提示缓存快照、OpenAI 兼容服务。
 

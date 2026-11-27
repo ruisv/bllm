@@ -95,11 +95,12 @@ struct ModelConfig {
   std::string name;
   std::string backend = "auto";                  // "native" | "libxlm" | "auto"
   std::string arch;                              // "dense" | "hybrid" (SSM) | "omni" (VLM) | "embed" (encoder)
+                                                 // | "asr" (speech recognition, official Qwen3-ASR)
   std::string hbm;                               // resolved absolute path to the .hbm (text tower for omni)
   std::string tokenizer;                         // resolved path to tokenizer.json
   std::string embed;                             // resolved path to the host embed table (hybrid + omni)
   std::string visual;                            // resolved path to the vision-tower .hbm (omni)
-  std::string audio;                             // resolved path to the audio-tower .hbm (omni)
+  std::string audio;                             // resolved path to the audio-tower .hbm (omni, asr)
   std::string mel_filters;                       // resolved path to mel_filters_t.txt (omni audio)
   std::string graph = "qwen35";                  // graph name inside the .hbm (hybrid)
   std::string hbm_prefill;                       // optional seq_len=N prefill graph (hybrid).
@@ -134,6 +135,7 @@ struct ModelConfig {
   bool is_embed() const { return arch == "embed"; }
   bool is_pi05() const { return arch == "pi05"; }
   bool is_smolvla() const { return arch == "smolvla"; }
+  bool is_asr() const { return arch == "asr"; }
   // Multimodality is a property of the PACKAGE, not of the decoder family: "omni"
   // is a dense text tower with vision+audio, Qwen3.5 is a hybrid one with vision.
   // Anything carrying a vision tower can answer about images.

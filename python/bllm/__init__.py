@@ -36,6 +36,11 @@ try:
     _HAVE_NATIVE = True
 except ImportError:
     _HAVE_NATIVE = False
+try:
+    from ._bllm_native import NativeAsr as _NativeAsr  # noqa: F401
+    _HAVE_ASR = True
+except ImportError:
+    _HAVE_ASR = False
 
 # `seed` sentinel: draw a fresh seed for every generation. Mirrors llama.cpp's
 # LLAMA_DEFAULT_SEED, and is the default — a fixed default seed makes temperature
@@ -666,6 +671,87 @@ if _HAVE_NATIVE:
             return self._vlm.video_tokens_per_second
 
 
+if _HAVE_ASR:
+
+    def _asr_audio(audio, sample_rate: int = 16000, ffmpeg: str = "ffmpeg"):
+        """What NativeAsr takes: a .wav path as is, any other file decoded by ffmpeg, an
+        array as 16 kHz mono float32 (int16 rescaled, channels averaged, resampled)."""
+        import numpy as np
+        if isinstance(audio, (str, os.PathLike)):
+            path = os.fspath(audio)
+            if path.lower().endswith(".wav"):
+                return path
+            import subprocess
+            out = subprocess.run([ffmpeg, "-v", "error", "-i", path, "-ac", "1", "-ar", "16000",
+                                  "-f", "f32le", "-"], check=True, capture_output=True).stdout
+            return np.frombuffer(out, dtype=np.float32).copy()
+        a = np.asarray(audio)
+        if a.dtype == np.int16:
+            a = a.astype(np.float32) / 32768.0
+        a = a.astype(np.float32, copy=False)
+        if a.ndim == 2:                                   # [n, channels] or [channels, n]
+            a = a.mean(axis=1 if a.shape[0] > a.shape[1] else 0)
+        if a.ndim != 1:
+            raise ValueError("audio array must be 1-D (mono) or 2-D (channels)")
+        if sample_rate != 16000:
+            n = int(round(len(a) * 16000 / sample_rate))
+            a = np.interp(np.linspace(0, len(a) - 1, n), np.arange(len(a)), a).astype(np.float32)
+        return np.ascontiguousarray(a)
+
+    class NativeAsrSession:
+        """Speech recognition with an official D-Robotics Qwen3-ASR package.
+
+            import bllm
+            asr = bllm.load("Qwen3-ASR-0.6B_w8/")          # the unzipped official package
+            r = asr.transcribe("meeting.wav")              # {'text': ..., 'language': ...}
+            r = asr.transcribe(pcm, language="Chinese")    # 16 kHz float32, language forced
+            for piece in asr.stream_transcribe("clip.flac"):
+                print(piece, end="", flush=True)
+
+        With no language the model names it (``r["language"]``); forcing one skips that.
+        ``context`` is text the model may lean on — names, terms. A clip longer than the
+        decoder's cache allows (about 40 s) is cut at quiet points and transcribed piece by
+        piece. Files other than .wav are decoded with ffmpeg.
+        """
+
+        def __init__(self, model_dir: str) -> None:
+            self._asr = _NativeAsr(model_dir)
+            self.last_result: "Optional[dict]" = None
+
+        @property
+        def name(self) -> str:
+            return self._asr.name
+
+        @property
+        def default_chunk_seconds(self) -> float:
+            """Longest piece a long clip is cut into, set by the decoder's cache."""
+            return self._asr.default_chunk_seconds
+
+        def transcribe(self, audio, language: "Optional[str]" = None, context: str = "",
+                       *, sample_rate: int = 16000, max_new: int = 0,
+                       chunk_seconds: float = 0.0,
+                       on_text: "Optional[Callable[[str], None]]" = None) -> dict:
+            """Transcribe a file path or an array (16 kHz unless ``sample_rate`` says
+            otherwise). Returns ``{'text', 'language', 'chunks', 'ntok', 'audio_seconds',
+            'e2e_ms', 'ttft_ms', 'decode_tps', 'rtf'}``; ``on_text`` streams the text."""
+            r = self._asr.transcribe(_asr_audio(audio, sample_rate), language or "", context,
+                                     max_new, chunk_seconds, on_text)
+            self.last_result = r
+            return r
+
+        def stream_transcribe(self, audio, language: "Optional[str]" = None, context: str = "",
+                              *, sample_rate: int = 16000, max_new: int = 0,
+                              chunk_seconds: float = 0.0) -> "Iterator[str]":
+            """The transcript as it is decoded; the full result lands in ``last_result``."""
+            pcm = _asr_audio(audio, sample_rate)
+
+            def run(cb):
+                self.last_result = self._asr.transcribe(pcm, language or "", context, max_new,
+                                                        chunk_seconds, cb)
+                return self.last_result["text"]
+            return _stream(run)
+
+
 def _reject_libxlm(backend_field: str) -> None:
     """The libxlm backend is gone (tag v-libxlm-final); everything runs
     native. A leftover backend="libxlm" pin — in a call or a model.json — is a hard error
@@ -699,9 +785,10 @@ def load(path: str, *, backend: str = "auto", vision: bool = True, **kwargs):
       * a native package (a directory with model.json) → NativeSession (dense/hybrid) or
         NativeVlmSession (anything carrying a `visual` tower), by its `arch`;
       * an official D-Robotics LLM 2.0 package directory (`*_language_*.hbm` +
-        `*_embed_tokens.bin`) → NativeSession, or NativeVlmSession when it also carries a
-        `*_vision_*.hbm`, by synthesizing model.json + tokenizer.json from the description
-        embedded in the .hbm (cached; bllm._modelmeta);
+        `*_embed_tokens.bin`) → NativeSession, NativeVlmSession when it also carries a
+        `*_vision_*.hbm`, or NativeAsrSession when it carries an `*_audio_*.hbm` (Qwen3-ASR),
+        by synthesizing model.json + tokenizer.json from the description embedded in the
+        .hbm (cached; bllm._modelmeta);
       * a bare `.hbm` + tokenizer_dir (an OE-LLM 1.0 package) → NativeSession, by synthesizing a
         dense model.json from the `.hbm` + tokenizer dir (bllm._modelmeta).
     Extra kwargs go to the chosen session's constructor.
@@ -709,6 +796,7 @@ def load(path: str, *, backend: str = "auto", vision: bool = True, **kwargs):
         s = bllm.load("qwen3.5-0.8b")      # -> NativeSession (hybrid SSM)
         s = bllm.load("Qwen3-1.7B_w4/")     # official LLM 2.0 package dir -> dense
         v = bllm.load("Qwen3-VL-2B_w4/")    # official VLM package -> NativeVlmSession
+        a = bllm.load("Qwen3-ASR-0.6B_w8/") # official ASR package -> NativeAsrSession
         s = bllm.load("Qwen2.5_1.5B.hbm", tokenizer_dir="Qwen2.5_1.5B_config/")  # -> dense
         s.chat("你好")
 
@@ -746,6 +834,8 @@ def load(path: str, *, backend: str = "auto", vision: bool = True, **kwargs):
         if arch == "embed":
             raise ValueError("arch='embed' is an encoder, not a chat session; use the "
                              "NativeEmbedder C++ API (no Python binding yet)")
+        if arch == "asr":
+            return NativeAsrSession(path, **kwargs)
         return NativeSession(path, **kwargs)   # dense or hybrid
 
     # An official D-Robotics LLM 2.0 package dir: everything is inside the language .hbm, so
@@ -759,6 +849,8 @@ def load(path: str, *, backend: str = "auto", vision: bool = True, **kwargs):
         # Qwen2.5), which is what the official runtime renders too.
         d = official_dir_for(path, vision=vision, name=kwargs.pop("name", None),
                              eos=kwargs.pop("eos", None), system=system)
+        if (d / "audio.hbm").exists():
+            return NativeAsrSession(str(d), **kwargs)
         if (d / "visual.hbm").exists():
             return NativeVlmSession(str(d), **kwargs)
         return NativeSession(str(d), **kwargs)
@@ -830,6 +922,8 @@ __all__ += ["load", "load_policy", "available_backends", "runtime_info", "json_g
             "json_object_grammar", "gbnf_literal"]
 if _HAVE_NATIVE:
     __all__ += ["NativeSession", "NativeVlmSession", "load_video"]
+if _HAVE_ASR:
+    __all__ += ["NativeAsrSession"]
 
 
 def available_backends() -> "tuple[str, ...]":
