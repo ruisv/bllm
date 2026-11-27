@@ -159,9 +159,29 @@ A working implementation lives in `docker/serving/` (`cache.py` for the cache,
 vlm = bllm.NativeVlmSession(model_dir)        # or bllm.load(...) on anything with a vision tower
 ```
 
+`bllm.load()` routes on **whether the package carries a `visual` tower**, not on `arch`. All of
+these use this class:
+
+| Package | Text tower | Modalities | Vision tokens |
+|---|---|---|---|
+| `arch="omni"` (Qwen2.5-Omni) | dense KV, two graphs | image / audio / video | 448px → 256 |
+| `arch="hybrid"` + `visual` (Qwen3.5) | Gated-DeltaNet, one graph | **images only** | 448px → 196 |
+| official LLM 2.0 image package (Qwen3-VL / Qwen2.5-VL) | dense KV, two graphs (RoPE inside the graph) | **images only** | 448px → 196 / 256 |
+
 An official LLM 2.0 image package stretches the image to 448×448 (as the official runtime
 does; the aspect ratio is not kept), and image paths are decoded with Pillow when it is
 installed — the input reaching the BPU is byte-identical to the official runtime's.
+
+Multimodality is a property of the **package**, not of the decoder family: the same hybrid text
+`.hbm` plus a vision tower is an image-text model. Both use the **same** still-image layout
+(`<vision_start>` + vision rows + `<vision_end>`, the image rows at 3-D mrope positions
+`(t, t+row, t+col)`), checked bit-for-bit against the HF reference.
+
+> **Video works on Omni packages only.** The video path here is Qwen2.5-Omni's TMRoPE (a time
+> position of `seconds*25` per grid cell, audio and video interleaved in 2-second blocks);
+> Qwen3.5 separates frames with **timestamp tokens**, a different position assignment. Passing
+> `videos=` / `stream_begin(fps>0)` to a hybrid package **raises a clear error** rather than
+> quietly encoding it the Omni way into an answer that reads fluently and has the order wrong.
 
 **Properties**: `name`, `vision_tokens`, `vision_image_size`, `has_audio`, `last_decode_tps`,
 `last_ttft_ms` (first-token latency, includes media encode), `last_ntok` (tokens the last turn generated), `streaming`, `tokens_used`,

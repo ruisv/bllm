@@ -1,3 +1,5 @@
+<!-- English; 中文: CONTRIBUTING.zh.md -->
+
 # Contributing to BLLM
 
 Thanks for your interest — contributions are welcome, whether a bug report, a fix, a new

@@ -295,8 +295,9 @@ prefill 新增部分。命中情况在返回的 `usage.prompt_tokens_details.cac
 | dense | Qwen2.5-1.5B | 271ms → 138ms | ~2× |
 | hybrid | Qwen3.5-0.8B | 31.6s → 1.3s | ~25× |
 
-hybrid(Qwen3.5)没有批量 prefill 图,逐 token 喂 ~68ms/token,512 token 的 prompt
-要 35 秒 —— **对 hybrid 模型这不是优化,是能不能用的问题,别关**。
+hybrid 一行是在不带分块 prefill 图的 Qwen3.5 包上测的:逐 token 喂 ~68ms/token,
+512 token 的 prompt 要 35 秒。现在发布的 Qwen3.5 包走 prefill 图摄入,未命中代价小得多,
+收益也比表里小;但命中仍省掉整段重新 prefill,**别关**。
 
 **什么时候没有收益**(属正常退化,不是故障):
 

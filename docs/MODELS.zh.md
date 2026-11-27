@@ -75,7 +75,7 @@ BLLM 不转发、也不镜像这些包，请从官方地址下载。
 
 语音识别包另有一个 `*_audio_*.hbm`（音频编码器）。它的转写**不与官方逐字相同**：这个编码器对输入极其敏感，
 任意一个输入值差 1 LSB 几乎所有输出都会变，而送进去的 log-mel 两边只差在个别值的最后一位上。所以它的验收
-标准是准确率：AISHELL-1 上 BLLM 与官方运行时的字错率持平，见 README 的"语音"一节。
+标准是准确率：AISHELL-1 上 BLLM 的字错率不高于官方运行时（干净集 3.92% 对 4.63%），见 README 的"语音"一节。
 
 这些行为都和官方运行时一致，但值得知道：
 
@@ -152,7 +152,14 @@ mel 滤波器组）。工具默认用符号链接，所以目录几乎不占空�
 纯文本的包只是编译时把视觉半边丢掉了。同一个文本 `.hbm` 配上视觉塔就是图文包：
 
 ```bash
-bllm-make-model-dir hybrid ~/models/qwen3.5-0.8b-vlm     --hbm       qwen35_0.8b_ctx4k.hbm     --embed     embed_fp16.bin     --tokenizer qwen35_tok/tokenizer.json     --visual    qwen35_visual_448.hbm     --mrope-section 11 11 10 --mrope-interleaved     --vision-patch 16 --vision-mean 0.5 --vision-std 0.5     --cache-len 4096
+bllm-make-model-dir hybrid ~/models/qwen3.5-0.8b-vlm \
+    --hbm       qwen35_0.8b_ctx4k.hbm \
+    --embed     embed_fp16.bin \
+    --tokenizer qwen35_tok/tokenizer.json \
+    --visual    qwen35_visual_448.hbm \
+    --mrope-section 11 11 10 --mrope-interleaved \
+    --vision-patch 16 --vision-mean 0.5 --vision-std 0.5 \
+    --cache-len 4096
 ```
 
 后四个参数**必填、且不能照抄 Omni**，因为编译好的 `.hbm` 里看不出这些，配错只会得到

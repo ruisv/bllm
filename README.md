@@ -6,7 +6,7 @@
 [![C++](https://img.shields.io/badge/C%2B%2B-17-00599C.svg)](CMakeLists.txt)
 [![Python](https://img.shields.io/badge/python-3.9%E2%80%933.14-3776AB.svg)](python/CMakeLists.txt)
 [![Platform](https://img.shields.io/badge/platform-RDK%20S100%20%2F%20S100P%20%2F%20S600%20(aarch64)-0A7BBB.svg)](#快速上手)
-[![Version](https://img.shields.io/badge/version-0.10.1-informational.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.10.1-informational.svg)](CHANGELOG.zh.md)
 
 **简体中文** | [English](README.en.md)
 
@@ -69,7 +69,7 @@ BLLM 把这些做成默认行为。
   （`reasoning_content`）按模型自己的对话模板渲染与解析。
 - **✅ 官方包解压即用，官方没发的也能跑** —— 官方 LLM 2.0 的 S100P 包（Qwen3、Qwen3-VL、
   Qwen2.5-VL、MiniCPM5、Phi-4-mini）`bllm.load()` 直接加载，输出与官方运行时**逐 token 相同**；
-  **Qwen3-ASR 语音识别包**同样解压即用，准确率与官方持平（[语音](#语音说给-qwen35-听)）；
+  **Qwen3-ASR 语音识别包**同样解压即用，字错率比官方还低（AISHELL-1 3.92% 对 4.63%，[语音](#语音说给-qwen35-听)）；
   官方只为 S600 发了 Qwen3.5，BLLM 在 S100 / S100P 上把 Qwen3.5 混合 Gated-DeltaNet/SSM
   严格 100% 落 BPU，另有 GLM-Edge。
 - **✅ 能和视觉共存** —— 单 BPU 核上把 LLM 优先级压低，同驻检测器的 p99 从 41 ms
@@ -102,7 +102,7 @@ actions = policy.act(scene_rgb, wrist_rgb, "pick up the black bowl")  # 10×7 �
 三个 suite 板上成绩：`libero_spatial` **99/100**（x86 参考 99/100）、`libero_goal`
 97/100、`libero_object` 95/100。其中 spatial 那一行是**用模型包本身**（`bllm.load_policy()`
 直连 openpi harness、不经它的任何 transform）打的分——也就是你装上以后会走的同一条路径。
-另两个 suite 的回放与板上实测数据见 [π0.5 文档](docs/PI05.md)。
+另两个 suite 的回放与板上实测数据见 [π0.5 文档](docs/PI05.zh.md)。
 
 **📦 [ruisv/bllm-pi05-libero-224-s100p](https://huggingface.co/ruisv/bllm-pi05-libero-224-s100p)** —
 下载即可 `bllm.load_policy()`（5.3 GB，三张 `.hbm` + embedding 表 + tokenizer + 清单）。
@@ -290,8 +290,8 @@ REPL：`bllm_chat_native --model <dir>`（见 [`examples/chat_native.cc`](exampl
 | **文 / 图 / 音 / 视频** | Qwen2.5-Omni，路径或原始数组（相机/麦克风零拷贝） | [`vlm_native.cc`](examples/vlm_native.cc) |
 | **语音识别** | `asr.transcribe("a.wav")` → 文字 + 语言（官方 Qwen3-ASR 包），可接 Qwen3.5 做语音对话 | [`voice_chat.py`](examples/voice_chat.py) · [`asr_native.cc`](examples/asr_native.cc) |
 | **文本嵌入** | `NativeEmbedder`（Qwen3-VL-Embedding；C++ API，暂无 Python 绑定） | [`embed_native.cc`](examples/embed_native.cc) |
-| **具身策略（VLA）** | `bllm.load_policy(...).act(图, 腕部图, "指令")` → 动作块 | [上文](#具身策略π05-跑在-bpu-上) · [π0.5 文档](docs/PI05.md) · [`pi05_policy.cc`](examples/pi05_policy.cc) · [`smolvla_policy.cc`](examples/smolvla_policy.cc) |
-| **服务化** | OpenAI 兼容 HTTP + Docker，含工具调用 | [`docker/README.md`](docker/README.md) |
+| **具身策略（VLA）** | `bllm.load_policy(...).act(图, 腕部图, "指令")` → 动作块 | [上文](#具身策略π05-跑在-bpu-上) · [π0.5 文档](docs/PI05.zh.md) · [`pi05_policy.cc`](examples/pi05_policy.cc) · [`smolvla_policy.cc`](examples/smolvla_policy.cc) |
+| **服务化** | OpenAI 兼容 HTTP + Docker，含工具调用 | [`docker/README.zh.md`](docker/README.zh.md) |
 | **与视觉共享 BPU** | `llm.set_bpu_priority(0)` | [与视觉流水线共享 BPU](#与视觉流水线共享-bpu) |
 
 ## 制作模型目录
@@ -320,7 +320,7 @@ Qwen2.5 的词表里就有一个 id 128247 的字面量 `</s>`，它并不是停
 ## 服务化部署（OpenAI 兼容 HTTP）
 
 把运行时打包成 OpenAI 兼容的推理服务（`/v1/chat/completions`，流式 + 非流式），容器化部署在板上。
-完整说明见 [`docker/README.md`](docker/README.md)。
+完整说明见 [`docker/README.zh.md`](docker/README.zh.md)。
 
 **自包含镜像（模型烤进去，开箱即用）** —— `docker run` 直接对话，无需挂载模型：
 
@@ -353,7 +353,7 @@ curl localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
 匹配是逐 token 精确前缀比对，改了历史只会不命中并退化为全量 prefill，不会给出错答案。
 板上实测：hybrid（Qwen3.5）31.6s → 1.3s（~25×），dense TTFT 274 → 141 ms。
 一次只跑一个生成（单 BPU 图），排队超过 `BLLM_MAX_QUEUE` 返回 429。
-详见 [`docker/README.md`](docker/README.md)。
+详见 [`docker/README.zh.md`](docker/README.zh.md)。
 
 **工具调用与思考内容**（0.8.0 起）：模型清单里写明了对话模板家族（`chat.dialect`）的模型
 —— 官方 2.0 的 Qwen3、Qwen3-2507、Qwen2.5、Qwen3-VL 包，以及我们发布的 Qwen3.5 包 ——
@@ -612,7 +612,7 @@ token 一步一步喂**，每一步都要把整个模型的权重从内存读一
 - **Qwen3** 0.6B / 1.7B / 4B / 8B，**Qwen3-4B-Instruct-2507**，**Qwen3-4B-Thinking-2507**
 - **Qwen2.5-3B** · **MiniCPM5-2B** · **Phi-4-mini**
 - **Qwen3-VL** 2B / 4B / 8B · **Qwen2.5-VL** 3B / 7B（图文）
-- **Qwen3-ASR** 0.6B / 1.7B（语音识别；转写不逐字对拍，准确率与官方持平，见[语音](#语音说给-qwen35-听)）
+- **Qwen3-ASR** 0.6B / 1.7B（语音识别；转写不逐字对拍，字错率比官方还低，见[语音](#语音说给-qwen35-听)）
 
 **D-Robotics 官方 1.0 SDK 的 `.hbm`**：
 
@@ -683,9 +683,11 @@ Python 里 `import bllm` 在有无扩展时都能导入；`bllm.available_backen
 | [`docs/API.zh.md`](docs/API.zh.md) · [`docs/API.en.md`](docs/API.en.md) | **Python API 参考** —— 会话、多模态、采样参数、服务化原语。 |
 | [`docs/CPP_API.zh.md`](docs/CPP_API.zh.md) · [`docs/CPP_API.en.md`](docs/CPP_API.en.md) | **C++ API 参考** —— `NativeLlm` / `NativeVlm` / `NativeEmbedder`、语法约束、引擎层。 |
 | [`docs/MODELS.zh.md`](docs/MODELS.zh.md) · [`docs/MODELS.en.md`](docs/MODELS.en.md) | **部署手册** —— 官方包结构、模型目录、ION 与性能模式。 |
-| [`docker/README.md`](docker/README.md) | **服务化** —— OpenAI 兼容服务、镜像构建、前缀缓存与指标。 |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | 如何搭建、构建（在板上）、测试并提交改动。 |
-| [`CHANGELOG.md`](CHANGELOG.md) | 发布说明（Keep a Changelog / SemVer）。 |
+| [`docs/PI05.zh.md`](docs/PI05.zh.md) · [`docs/PI05.md`](docs/PI05.md) | **具身策略 π0.5** —— 包结构、`load_policy` / `act`、LIBERO 回放与板上实测。 |
+| [`docker/README.zh.md`](docker/README.zh.md) · [`docker/README.md`](docker/README.md) | **服务化** —— OpenAI 兼容服务、镜像构建、前缀缓存与指标。 |
+| [`docker/USAGE.zh.md`](docker/USAGE.zh.md) · [`docker/USAGE.en.md`](docker/USAGE.en.md) | **容器使用指南** —— 拿到镜像后怎么跑、环境变量、排障。 |
+| [`CONTRIBUTING.zh.md`](CONTRIBUTING.zh.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) | 如何搭建、构建（在板上）、测试并提交改动。 |
+| [`CHANGELOG.zh.md`](CHANGELOG.zh.md) · [`CHANGELOG.md`](CHANGELOG.md) | 发布说明（Keep a Changelog / SemVer）。 |
 
 ## 社区交流
 
@@ -699,7 +701,7 @@ Python 里 `import bllm` 在有无扩展时都能导入；`bllm.available_backen
 
 ## 参与贡献
 
-欢迎贡献 —— issue 与 pull request 皆可。完整指南见 [`CONTRIBUTING.md`](CONTRIBUTING.md)；要点：
+欢迎贡献 —— issue 与 pull request 皆可。完整指南见 [`CONTRIBUTING.zh.md`](CONTRIBUTING.zh.md)；要点：
 
 - **在任意机器开发，在板上构建与运行。** hobot 运行时只存在于 RDK 硬件上，所以 C++
   库、Python 扩展和板端测试必须在 S100 / S100P / S600 上构建执行；纯元数据的单测

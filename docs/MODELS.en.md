@@ -79,8 +79,9 @@ decode at 97% or more of the official speed.
 A speech recognition package adds an `*_audio_*.hbm` (the audio encoder). Its transcripts are
 **not word-for-word the official runtime's**: the encoder is so sensitive that a 1-LSB change in
 any single input value moves nearly every output value, and the two log-mel front ends differ
-in the last bit of a handful of values. So its acceptance test is accuracy: on AISHELL-1 BLLM
-and the official runtime have the same character error rate — see the README's Speech section.
+in the last bit of a handful of values. So its acceptance test is accuracy: on AISHELL-1
+BLLM's character error rate is no higher than the official runtime's (3.92% vs 4.63% on
+the clean set) — see the README's Speech section.
 
 All of this matches the official runtime, but is worth knowing:
 
@@ -162,6 +163,36 @@ bllm-make-model-dir omni ~/models/qwen2.5-omni-3b \
 Drop `--audio` + `--mel-filters` for a vision-only Omni (they go together — the audio tower
 needs its mel filter bank). The tool symlinks the payload by default, so the directory costs
 nothing; pass `--copy` to make it self-contained.
+
+**Qwen3.5 image-text** (hybrid text tower + vision tower): Qwen3.5 is image-text-to-text
+upstream; a text-only package is just one compiled without its vision half. The same text
+`.hbm` plus a vision tower makes the image-text package:
+
+```bash
+bllm-make-model-dir hybrid ~/models/qwen3.5-0.8b-vlm \
+    --hbm       qwen35_0.8b_ctx4k.hbm \
+    --embed     embed_fp16.bin \
+    --tokenizer qwen35_tok/tokenizer.json \
+    --visual    qwen35_visual_448.hbm \
+    --mrope-section 11 11 10 --mrope-interleaved \
+    --vision-patch 16 --vision-mean 0.5 --vision-std 0.5 \
+    --cache-len 4096
+```
+
+The last four flags are **required and must not be copied from Omni**: none of them can be
+read from the compiled `.hbm`, and a wrong value gives **correctly shaped garbage** that no
+check catches:
+
+| Flag | Qwen3.5 | Omni | If wrong |
+|---|---|---|---|
+| `--vision-patch` | **16** | 14 | patch geometry is wrong throughout |
+| `--vision-mean/std` | **0.5** | CLIP constants | pixel normalization is off |
+| `--mrope-section` | **11 11 10** | 16 24 24 | rope dimensions are split wrongly |
+| `--mrope-interleaved` | **required** | absent | frequencies are laid out `[THWTHW…]`, not in contiguous sections |
+
+The last one is the nastiest: with `t==h==w` the two layouts are **identical**, so text alone
+works perfectly and positions only go wrong once an image is fed. The tool therefore requires
+all four for hybrid + `--visual` and gives them no defaults.
 
 ## 5. Run it
 

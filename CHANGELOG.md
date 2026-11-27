@@ -1,5 +1,7 @@
 # Changelog
 
+<!-- English; 中文: CHANGELOG.zh.md -->
+
 All notable changes to BLLM are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
@@ -770,7 +772,7 @@ of correctness fixes.
   being served: a 428-token turn reusing 256 cached tokens reports 138 ms against 274 ms
   for the same prompt uncached, matching the documented 2x.
 
-## [0.1.6]
+## [0.1.6] — 2026-07-20
 
 ### Added
 
@@ -801,7 +803,7 @@ of correctness fixes.
   `save_state()` files are rejected with a clear error rather than misread. In-memory
   snapshots do not cross versions, so a running server is unaffected.
 
-## [0.1.5]
+## [0.1.5] — 2026-07-20
 
 ### Added
 
@@ -864,7 +866,7 @@ degrades to full re-prefill and says so at startup, rather than failing — the 
 applies either way, and the cache switches itself on under a new enough runtime.
 `GET /metrics` reports `supports_prefix_cache`.
 
-## [0.1.4]
+## [0.1.4] — 2026-07-16
 
 ### Added
 
@@ -905,7 +907,7 @@ applies either way, and the cache switches itself on under a new enough runtime.
 - **`__version__` was stuck at 0.1.2** — so the published 0.1.3 package reported the wrong
   version from `bllm.__version__`. It now tracks `CMakeLists.txt`.
 
-## [0.1.3]
+## [0.1.3] — 2026-07-15
 
 ### Fixed
 
@@ -937,7 +939,7 @@ applies either way, and the cache switches itself on under a new enough runtime.
   recorded via `make_model_dir.py --bpu-cores N` (`model.json` `bpu_cores`). A large model
   saturates 4 cores (Qwen3.5-4B, 27 tok/s on S600); small models stay single-core.
 
-## [0.1.1]
+## [0.1.1] — 2026-07-13
 
 ### Added
 
@@ -946,6 +948,8 @@ applies either way, and the cache switches itself on under a new enough runtime.
   tokens instead of ChatML. `make_model_dir.py` auto-detects the markers and emits it, so
   **Phi-4-mini** now ships as a first-class multi-turn chat package (previously it only ran
   as raw completion). Existing ChatML models are unaffected.
+
+## [0.1.0] — 2026-07-12
 
 First public release — an on-board LLM / VLM runtime for D-Robotics RDK S100 / S100P / S600,
 driving compiled `.hbm` graphs natively on the BPU (hbDNN / hbUCP), no extra LLM SDK.
@@ -979,6 +983,13 @@ driving compiled `.hbm` graphs natively on the BPU (hbDNN / hbUCP), no extra LLM
 [0.5.0]: https://github.com/ruisv/bllm/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/ruisv/bllm/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/ruisv/bllm/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/ruisv/bllm/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/ruisv/bllm/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/ruisv/bllm/compare/v0.1.6...v0.2.0
+[0.1.6]: https://github.com/ruisv/bllm/compare/v0.1.5...v0.1.6
+[0.1.5]: https://github.com/ruisv/bllm/compare/v0.1.4...v0.1.5
+[0.1.4]: https://github.com/ruisv/bllm/compare/v0.1.3...v0.1.4
+[0.1.3]: https://github.com/ruisv/bllm/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/ruisv/bllm/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/ruisv/bllm/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ruisv/bllm/releases/tag/v0.1.0

@@ -335,9 +335,10 @@ shorter entry or misses entirely and falls back to a full prefill.
 | dense | Qwen2.5-1.5B | 271ms → 138ms | ~2x |
 | hybrid | Qwen3.5-0.8B | 31.6s → 1.3s | ~25x |
 
-The hybrid engine has no batch prefill graph — it ingests ~68ms/token, so a
-512-token prompt costs 35 s. **For hybrid (Qwen3.5) models this is not an
-optimization but the difference between usable and not; do not disable it.**
+The hybrid row was measured on a Qwen3.5 package without the chunked prefill graph,
+which ingests ~68ms/token, so a 512-token prompt costs 35 s. Today's Qwen3.5 packages
+ingest through the prefill graph, so a miss costs far less and the gain is smaller
+than shown; a hit still skips the whole re-prefill, so **leave the cache on**.
 
 **When it does not help** (normal degradation, not a fault):
 

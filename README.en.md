@@ -77,8 +77,8 @@ default.
 - **✅ Official packages load as unzipped, and what they don't ship runs too** — the
   official LLM 2.0 S100P packages (Qwen3, Qwen3-VL, Qwen2.5-VL, MiniCPM5, Phi-4-mini)
   load with `bllm.load()`, output **token-identical** to the official runtime; the
-  **Qwen3-ASR** speech recognition packages load the same way and are as accurate
-  ([Speech](#speech-talk-to-qwen35)); the official Qwen3.5 is S600-only, while BLLM runs
+  **Qwen3-ASR** speech recognition packages load the same way, with a lower error rate
+  (AISHELL-1 CER 3.92% vs 4.63%, [Speech](#speech-talk-to-qwen35)); the official Qwen3.5 is S600-only, while BLLM runs
   the Qwen3.5 hybrid Gated-DeltaNet/SSM
   strictly 100% on the BPU on S100 / S100P, plus GLM-Edge.
 - **✅ Coexists with vision** — on a single BPU core, lowering the LLM's priority
@@ -168,6 +168,11 @@ tasks, not the board. Scored without the reference column, the 51 would read as
 One substantive difference from π0.5: **SmolVLA reads proprioception.** The state
 is projected into a prefix token, so omitting it is a different observation
 (measured at 2.0 in action space — a full gripper unit).
+
+The S600 package **mixes BPU core counts per graph**: the vision tower runs on 4 cores (59.0 →
+29.8 ms per camera, 1.98×), the prefix and the expert on one. The engine binds each graph to the
+core count it was compiled for, so one package can mix them. The output is **bit-identical** to
+the all-single-core build — more cores change the schedule, not the arithmetic.
 
 **📦 [ruisv/bllm-smolvla-libero-512](https://huggingface.co/ruisv/bllm-smolvla-libero-512)** —
 one repo, both boards (`s100p/` and `s600/`). The whole conversion pipeline is
@@ -682,7 +687,7 @@ to the official `chat_demo`):
 - **Qwen2.5-3B** · **MiniCPM5-2B** · **Phi-4-mini**
 - **Qwen3-VL** 2B / 4B / 8B · **Qwen2.5-VL** 3B / 7B (image + text)
 - **Qwen3-ASR** 0.6B / 1.7B (speech recognition; transcripts are not compared word for word —
-  accuracy is level with the official runtime, see [Speech](#speech-talk-to-qwen35))
+  the error rate is lower than the official runtime's, see [Speech](#speech-talk-to-qwen35))
 
 **Official D-Robotics 1.0 SDK `.hbm`**:
 
@@ -766,9 +771,11 @@ In Python, `import bllm` works whether or not the extension is built;
 | [`docs/API.en.md`](docs/API.en.md) · [`docs/API.zh.md`](docs/API.zh.md) | **Python API reference** — sessions, multimodal, sampling, serving primitives. |
 | [`docs/CPP_API.en.md`](docs/CPP_API.en.md) · [`docs/CPP_API.zh.md`](docs/CPP_API.zh.md) | **C++ API reference** — `NativeLlm` / `NativeVlm` / `NativeEmbedder`, grammars, the engine layer. |
 | [`docs/MODELS.en.md`](docs/MODELS.en.md) · [`docs/MODELS.zh.md`](docs/MODELS.zh.md) | **Deployment guide** — official package layout, model directories, ION and performance mode. |
-| [`docker/README.md`](docker/README.md) | **Serving** — the OpenAI-compatible server, images, prefix cache and metrics. |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to set up, build (on the board), test, and submit changes. |
-| [`CHANGELOG.md`](CHANGELOG.md) | Release notes (Keep a Changelog / SemVer). |
+| [`docs/PI05.md`](docs/PI05.md) · [`docs/PI05.zh.md`](docs/PI05.zh.md) | **Embodied policy π0.5** — the package, `load_policy` / `act`, LIBERO rollouts and on-board numbers. |
+| [`docker/README.md`](docker/README.md) · [`docker/README.zh.md`](docker/README.zh.md) | **Serving** — the OpenAI-compatible server, images, prefix cache and metrics. |
+| [`docker/USAGE.en.md`](docker/USAGE.en.md) · [`docker/USAGE.zh.md`](docker/USAGE.zh.md) | **Container usage guide** — running the image, environment variables, troubleshooting. |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`CONTRIBUTING.zh.md`](CONTRIBUTING.zh.md) | How to set up, build (on the board), test, and submit changes. |
+| [`CHANGELOG.md`](CHANGELOG.md) · [`CHANGELOG.zh.md`](CHANGELOG.zh.md) | Release notes (Keep a Changelog / SemVer). |
 
 ## Community
 
