@@ -556,10 +556,10 @@ normalisation for every system:
 
 | AISHELL-1 | Official 2.0 runtime | BLLM | For reference: Paraformer (bcdl) |
 |---|---|---|---|
-| clean, Chinese forced | 4.63% | **4.11%** | 3.78% |
-| noisy, Chinese forced | 7.62% | **7.48%** | 5.58% |
+| clean, Chinese forced | 4.63% | **3.92%** | 3.78% |
+| noisy, Chinese forced | 7.62% | **7.41%** | 5.58% |
 | clean, language not given | 10.04% | **4.57%** | — |
-| noisy, language not given | 15.90% | **7.76%** | — |
+| noisy, language not given | 15.90% | **7.32%** | — |
 
 Same official package, yet the transcripts are not identical to the official runtime's, and the
 reason is in the package: its audio encoder is extraordinarily sensitive — **a 1-LSB change in
@@ -575,7 +575,15 @@ Mandarin utterance in six and then writes nothing; the official runtime, which f
 language name, loses one in ten and never learns what was spoken. BLLM has the model pick a
 name from the 30 languages it knows ("no speech" is not one of them) and then transcribes in
 that language: the error rate is back to the forced-Chinese level, Mandarin is named for
-574/600 clean and 588/600 noisy utterances, and silence and noise still come back empty.
+574/600 clean and 591/600 noisy utterances, and silence and noise still come back empty.
+
+**An empty reply to plain speech** is the other way this model fails: now and then it stops
+before the first word (5 of the 2400 decodes above; the official runtime does the same — 1 to 3
+per 600 with the language forced). Past that stop, a skipped sentence comes back whole and with
+confidence, while silence, noise, hum or a tone yield only a filler ("嗯。", "The."). So on an
+empty reply BLLM decodes once more and keeps the result only if it is a confident sentence:
+all 5 came back, the other 2395 transcripts are unchanged, and of 96 decodes with no speech in
+them (silence, noise, room tone, hum, tones) not one gained text (`rescue_empty=False` turns it off).
 
 **Speed** (S100P, an 11.4 s English clip, measured back to back with the official `asr_demo` on
 the same board):
