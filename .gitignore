@@ -33,6 +33,7 @@ docs/S600_RESULTS.md
 docs/KV_CACHE_QUANT_PLAN.md
 docs/BEING_H05_PLAN.md
 docs/LLM2_COMPAT_PLAN.md
+docs/ASR_PLAN.md
 # architecture decision records — internal, only results are published (private)
 docs/adr/
 # any *.local override files
