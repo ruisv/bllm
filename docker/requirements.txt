@@ -2,3 +2,4 @@
 # channel (see docker/Dockerfile); these are the pure-python server deps.
 fastapi>=0.110
 uvicorn[standard]>=0.29
+python-multipart>=0.0.9   # /v1/audio/transcriptions reads a multipart upload

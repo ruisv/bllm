@@ -13,7 +13,9 @@ wrong (see ``serving/cache.py``): a mismatch just means a shorter match or a ful
 prefill.
 
 Config via env:
-    BLLM_MODEL          model directory (with model.json) OR a bare .hbm     [required]
+    BLLM_MODEL          model directory (with model.json) OR a bare .hbm     [chat]
+    BLLM_ASR_MODEL      an official Qwen3-ASR package dir: serves /v1/audio/transcriptions
+                        (at least one of BLLM_MODEL / BLLM_ASR_MODEL must be set)
     BLLM_TOKENIZER_DIR  tokenizer dir, only when BLLM_MODEL is a bare .hbm
     BLLM_BACKEND        load backend, default "auto"
     BLLM_MAX_NEW        default max_new tokens when a request omits it (1024)
@@ -47,6 +49,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from serving.engine import Cancelled, Engine, QueueFull
+
+try:  # speech recognition (bllm >= 0.10); an older runtime just has no ASR endpoint
+    from serving.asr import AsrEngine
+except ImportError:
+    AsrEngine = None
 
 # --- ChatML rendering -------------------------------------------------------
 IM_END = "<|im_end|>"
@@ -136,7 +143,8 @@ def _vlm_turns_from(messages: list[dict]) -> list[dict]:
     return turns
 
 
-engine: Engine  # set on startup
+engine: Optional[Engine] = None  # set on startup; None on an ASR-only server
+asr_engine = None  # serving.asr.AsrEngine when BLLM_ASR_MODEL is set
 CHAT_FMT = None  # bllm._chatfmt.ChatFormat for a text model, set on startup
 
 
@@ -179,17 +187,28 @@ app.add_middleware(
 
 @app.on_event("startup")
 def _startup() -> None:
-    global engine, CHAT_FMT
-    engine = Engine()
-    # How this model's conversations are rendered and its replies split (bllm._chatfmt).
-    # A manifest without a chat.dialect gets plain ChatML: what this server always did.
-    CHAT_FMT = (chatfmt.ChatFormat.from_config(engine.chat_config)
-                if chatfmt is not None and not engine.is_vlm else None)
+    global engine, CHAT_FMT, asr_engine
+    asr_model = os.environ.get("BLLM_ASR_MODEL")
+    if not os.environ.get("BLLM_MODEL") and not asr_model:
+        raise RuntimeError("set BLLM_MODEL (a chat model) and/or BLLM_ASR_MODEL "
+                           "(a Qwen3-ASR package)")
+    if asr_model:
+        if AsrEngine is None:
+            raise RuntimeError("BLLM_ASR_MODEL is set but this bllm has no speech "
+                               "recognition (needs bllm >= 0.10)")
+        asr_engine = AsrEngine(asr_model)
+    if os.environ.get("BLLM_MODEL"):
+        engine = Engine()
+        # How this model's conversations are rendered and its replies split (bllm._chatfmt).
+        # A manifest without a chat.dialect gets plain ChatML: what this server always did.
+        CHAT_FMT = (chatfmt.ChatFormat.from_config(engine.chat_config)
+                    if chatfmt is not None and not engine.is_vlm else None)
 
 
 @app.on_event("shutdown")
 def _shutdown() -> None:
-    engine.shutdown()
+    if engine is not None:
+        engine.shutdown()
 
 
 def _check_auth(authorization: Optional[str]) -> None:
@@ -202,7 +221,11 @@ def _check_auth(authorization: Optional[str]) -> None:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "model": engine.name, "queue_depth": engine.queue_depth}
+    h = {"status": "ok", "model": engine.name if engine else None,
+         "queue_depth": engine.queue_depth if engine else 0}
+    if asr_engine is not None:
+        h["asr_model"] = asr_engine.name
+    return h
 
 
 @app.get("/metrics")
@@ -210,7 +233,9 @@ def metrics(authorization: Optional[str] = Header(None)) -> dict:
     """Cache hit rate, token reuse, queue depth — the numbers that say whether the
     prefix cache is actually earning its memory on this workload."""
     _check_auth(authorization)
-    m = engine.metrics()
+    m = engine.metrics() if engine is not None else {"model": None}
+    if asr_engine is not None:
+        m["asr"] = asr_engine.metrics()
     # what this model's conversations can carry (bllm._chatfmt): its template family, and
     # with it whether tool calls and a separate reasoning_content are available
     m["chat_dialect"] = CHAT_FMT.dialect if CHAT_FMT is not None else ""
@@ -225,11 +250,11 @@ def metrics(authorization: Optional[str] = Header(None)) -> dict:
 @app.get("/v1/models")
 def models(authorization: Optional[str] = Header(None)) -> dict:
     _check_auth(authorization)
-    return {
-        "object": "list",
-        "data": [{"id": engine.name, "object": "model", "created": int(time.time()),
-                  "owned_by": "bllm"}],
-    }
+    now = int(time.time())
+    names = [e.name for e in (engine, asr_engine) if e is not None]
+    return {"object": "list",
+            "data": [{"id": n, "object": "model", "created": now, "owned_by": "bllm"}
+                     for n in names]}
 
 
 def _num(body: dict, key: str, default: float):
@@ -369,6 +394,9 @@ def _grammar_from(body: dict) -> str:
 async def chat_completions(request: Request,
                            authorization: Optional[str] = Header(None)) -> Any:
     _check_auth(authorization)
+    if engine is None:
+        raise HTTPException(status_code=404, detail="this server has no chat model "
+                                                    "(BLLM_MODEL is not set)")
     body = await request.json()
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages:
@@ -484,6 +512,86 @@ async def chat_completions(request: Request,
         "choices": [choice],
         "usage": _usage(res),
     })
+
+
+# --- speech recognition -------------------------------------------------------
+@app.post("/v1/audio/transcriptions")
+async def audio_transcriptions(request: Request,
+                               authorization: Optional[str] = Header(None)) -> Any:
+    """OpenAI's transcription endpoint: multipart `file` (+ `model`, `language`, `prompt`,
+    `response_format` json|text|verbose_json, `stream`). `prompt` becomes the context the
+    model may lean on (names, terms); `language` is a name or an ISO code, and when it is
+    omitted the model names it (verbose_json reports it)."""
+    _check_auth(authorization)
+    if asr_engine is None:
+        raise HTTPException(status_code=404, detail="this server has no speech recognition "
+                                                    "model (BLLM_ASR_MODEL is not set)")
+    try:
+        form = await request.form()
+    except AssertionError as exc:   # starlette without python-multipart
+        raise HTTPException(status_code=501, detail=f"multipart parsing unavailable: {exc}")
+    up = form.get("file")
+    if up is None or not hasattr(up, "read"):
+        raise HTTPException(status_code=400, detail="multipart field `file` is required")
+    fmt = str(form.get("response_format") or "json")
+    if fmt not in ("json", "text", "verbose_json"):
+        raise HTTPException(status_code=400, detail=f"response_format {fmt!r} is not supported "
+                                                    "(json, text or verbose_json)")
+    language = str(form.get("language") or "")
+    context = str(form.get("prompt") or "")
+    stream = str(form.get("stream") or "").lower() in ("1", "true", "yes")
+    data = await up.read()
+    loop = asyncio.get_running_loop()
+    try:
+        audio = await loop.run_in_executor(None, asr_engine.decode, data, getattr(up, "filename", ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=415, detail=str(exc))
+
+    if not stream:
+        try:
+            r = await loop.run_in_executor(None, asr_engine.transcribe, audio, language, context)
+        except Exception as exc:  # noqa: BLE001
+            status, err = _error_payload(exc)
+            return JSONResponse(err, status_code=status)
+        if fmt == "text":
+            from fastapi.responses import PlainTextResponse
+            return PlainTextResponse(r["text"])
+        if fmt == "json":
+            return {"text": r["text"]}
+        return {"task": "transcribe", "language": r["language"], "duration": r["audio_seconds"],
+                "text": r["text"], "usage": {"type": "duration", "seconds": r["audio_seconds"]},
+                "bllm": {k: r[k] for k in ("chunks", "ntok", "e2e_ms", "ttft_ms", "decode_tps", "rtf")}}
+
+    import queue as _q
+    pieces: "_q.Queue[object]" = _q.Queue()
+    done = object()
+
+    def run() -> None:
+        try:
+            pieces.put(("done", asr_engine.transcribe(audio, language, context,
+                                                     on_text=lambda s: pieces.put(("delta", s)))))
+        except BaseException as exc:  # noqa: BLE001 — reported in the stream
+            pieces.put(("error", exc))
+        finally:
+            pieces.put(done)
+
+    async def events():
+        fut = loop.run_in_executor(None, run)
+        while True:
+            item = await loop.run_in_executor(None, pieces.get)
+            if item is done:
+                break
+            kind, val = item
+            if kind == "delta":
+                yield f"data: {json.dumps({'type': 'transcript.text.delta', 'delta': val}, ensure_ascii=False)}\n\n"
+            elif kind == "done":
+                yield f"data: {json.dumps({'type': 'transcript.text.done', 'text': val['text'], 'language': val['language']}, ensure_ascii=False)}\n\n"
+            else:
+                yield _error_event(val)
+        await fut
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream")
 
 
 def _usage(res) -> dict:

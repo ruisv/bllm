@@ -257,6 +257,27 @@ r = client.chat.completions.create(
 print(r.choices[0].message.content)
 ```
 
+### Speech recognition
+
+Point `BLLM_ASR_MODEL` at an unzipped official Qwen3-ASR package (alongside `BLLM_MODEL`, or
+on its own for a transcription-only server) and the server answers OpenAI's transcription API:
+
+```bash
+curl localhost:8866/v1/audio/transcriptions -F file=@question.wav -F language=zh
+# -> {"text": "增强农业公益性服务能力。"}
+curl localhost:8866/v1/audio/transcriptions -F file=@question.wav -F response_format=verbose_json
+# -> {"task": "transcribe", "language": "Chinese", "duration": 3.9, "text": "...", ...}
+curl -N localhost:8866/v1/audio/transcriptions -F file=@question.wav -F stream=true
+# -> data: {"type": "transcript.text.delta", "delta": "增强"} ... transcript.text.done
+```
+
+`language` takes a name (`Chinese`) or a code (`zh`); without it the model names the
+language (`verbose_json` reports it). `prompt` is passed as context — names and terms the
+model may lean on. `response_format` is `json`, `text` or `verbose_json`. WAV is decoded
+in-process; other formats need `ffmpeg` in the image (415 otherwise). Long recordings are
+cut at quiet points and transcribed piece by piece. With the OpenAI SDK:
+`client.audio.transcriptions.create(model="asr", file=open("q.wav", "rb"))`.
+
 ### GUI clients (browser / desktop)
 
 No UI is bundled, but the API is OpenAI-compatible with CORS enabled — point any
@@ -276,7 +297,8 @@ existing client at `http://<board-ip>:8866/v1`:
 
 | Var | Default | Meaning |
 |---|---|---|
-| `BLLM_MODEL` | preset in delivery images | model dir (with `model.json`) or a bare `.hbm`, path inside the container |
+| `BLLM_MODEL` | preset in delivery images | the chat model: a dir (with `model.json`), an official package, or a bare `.hbm` |
+| `BLLM_ASR_MODEL` | — | an official Qwen3-ASR package: serves `/v1/audio/transcriptions` (set this, `BLLM_MODEL`, or both) |
 | `BLLM_TOKENIZER_DIR` | — | only when `BLLM_MODEL` is a bare `.hbm` |
 | `BLLM_MAX_QUEUE` | `8` | queued requests before the server returns 429 (one BPU graph = one generation at a time) |
 | `BLLM_CACHE_MAX_MB` | `auto` | prefix-cache budget in MB, or `auto` (40% of `MemAvailable`, 256 MB–4 GB); `0` disables |

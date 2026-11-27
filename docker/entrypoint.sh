@@ -16,8 +16,9 @@ if [ "${BLLM_PERF_MODE:-0}" = "1" ]; then
     fi
 fi
 
-if [ -z "${BLLM_MODEL:-}" ]; then
-    echo "[entrypoint] ERROR: BLLM_MODEL is not set (mount a model and point BLLM_MODEL at it)" >&2
+if [ -z "${BLLM_MODEL:-}" ] && [ -z "${BLLM_ASR_MODEL:-}" ]; then
+    echo "[entrypoint] ERROR: neither BLLM_MODEL (a chat model) nor BLLM_ASR_MODEL (a Qwen3-ASR" \
+         "package) is set — mount a model and point one of them at it" >&2
     exit 1
 fi
 

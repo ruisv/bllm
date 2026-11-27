@@ -226,6 +226,25 @@ r = client.chat.completions.create(
 print(r.choices[0].message.content)
 ```
 
+### 语音识别
+
+把 `BLLM_ASR_MODEL` 指向解压后的官方 Qwen3-ASR 包(可以与 `BLLM_MODEL` 同时设,也可以只设它,做纯转写服务),
+服务端就按 OpenAI 的转写接口应答:
+
+```bash
+curl localhost:8866/v1/audio/transcriptions -F file=@question.wav -F language=zh
+# -> {"text": "增强农业公益性服务能力。"}
+curl localhost:8866/v1/audio/transcriptions -F file=@question.wav -F response_format=verbose_json
+# -> {"task": "transcribe", "language": "Chinese", "duration": 3.9, "text": "...", ...}
+curl -N localhost:8866/v1/audio/transcriptions -F file=@question.wav -F stream=true
+# -> data: {"type": "transcript.text.delta", "delta": "增强"} ... transcript.text.done
+```
+
+`language` 可以是名称(`Chinese`)或代码(`zh`);不填则由模型说出语言(`verbose_json` 里有)。`prompt`
+作为上下文传入——模型可以参考的人名、术语。`response_format` 为 `json`、`text` 或 `verbose_json`。WAV
+在进程内解码,其他格式需要镜像里有 `ffmpeg`(否则返回 415)。长录音在安静处切开逐段转写。
+OpenAI SDK:`client.audio.transcriptions.create(model="asr", file=open("q.wav", "rb"))`。
+
 ### 图形客户端(浏览器/桌面)
 
 镜像不带 UI,但接口是 OpenAI 兼容且已开 CORS,任意现成客户端指向
@@ -244,7 +263,8 @@ print(r.choices[0].message.content)
 
 | 变量 | 默认 | 含义 |
 |---|---|---|
-| `BLLM_MODEL` | 交付镜像已内置 | 模型目录(含 `model.json`)或裸 `.hbm` 的容器内路径 |
+| `BLLM_MODEL` | 交付镜像已内置 | 对话模型:目录(含 `model.json`)、官方包或裸 `.hbm` 的容器内路径 |
+| `BLLM_ASR_MODEL` | — | 官方 Qwen3-ASR 包:提供 `/v1/audio/transcriptions`(它和 `BLLM_MODEL` 至少设一个) |
 | `BLLM_TOKENIZER_DIR` | — | 仅当 `BLLM_MODEL` 是裸 `.hbm` 时需要 |
 | `BLLM_MAX_NEW` | `1024` | 请求没给 `max_tokens` 时的默认生成上限 |
 | `BLLM_API_KEY` | — | 设了就强制 `Authorization: Bearer <key>` |

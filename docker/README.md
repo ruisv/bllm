@@ -83,10 +83,14 @@ curl localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"你好"}]}'
 curl -N localhost:8866/v1/chat/completions -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"数到5"}],"stream":true}'
+# speech recognition, when BLLM_ASR_MODEL is set (OpenAI's transcription API)
+curl localhost:8866/v1/audio/transcriptions -F file=@question.wav -F language=zh
 ```
 
 OpenAI-compatible `/v1/chat/completions` (streaming + non-streaming, tool calls and
-`reasoning_content` on models with a chat dialect — see USAGE), `/v1/models`, `/health`. The engine is a **singleton** — one generation in
+`reasoning_content` on models with a chat dialect — see USAGE), `/v1/audio/transcriptions`
+(an official Qwen3-ASR package next to — or instead of — the chat model), `/v1/models`,
+`/health`. The engine is a **singleton** — one generation in
 flight at a time (BPU = single prefill/decode graph); requests serialize. Run a
 **single** uvicorn worker.
 
@@ -94,7 +98,8 @@ flight at a time (BPU = single prefill/decode graph); requests serialize. Run a
 
 | Var | Default | Meaning |
 |-----|---------|---------|
-| `BLLM_MODEL` | — (required) | model dir (with `model.json`) or a bare `.hbm`, path inside the container |
+| `BLLM_MODEL` | — | the chat model: a dir (with `model.json`), an official package, or a bare `.hbm` |
+| `BLLM_ASR_MODEL` | — | an official Qwen3-ASR package: serves `/v1/audio/transcriptions` (at least one of the two must be set) |
 | `BLLM_TOKENIZER_DIR` | — | tokenizer dir, only when `BLLM_MODEL` is a bare `.hbm` |
 | `BLLM_BACKEND` | `auto` | `bllm.load` backend |
 | `BLLM_MAX_NEW` | `1024` | default `max_tokens` when a request omits it |
