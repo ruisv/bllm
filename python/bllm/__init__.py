@@ -826,8 +826,8 @@ def load_policy(path: str):
 
 
 # ── public surface ───────────────────────────────────────────────────────────
-__all__ += ["load", "load_policy", "available_backends", "json_grammar", "json_object_grammar",
-            "gbnf_literal"]
+__all__ += ["load", "load_policy", "available_backends", "runtime_info", "json_grammar",
+            "json_object_grammar", "gbnf_literal"]
 if _HAVE_NATIVE:
     __all__ += ["NativeSession", "NativeVlmSession", "load_video"]
 
@@ -835,3 +835,19 @@ if _HAVE_NATIVE:
 def available_backends() -> "tuple[str, ...]":
     """Which runtimes this install can drive. Native-only now (libxlm was removed)."""
     return ("native",) if _HAVE_NATIVE else ()
+
+
+def runtime_info() -> "dict[str, str]":
+    """The hobot runtime this process actually loaded.
+
+    BLLM links against the hobot SDK that ships with the board's OS image rather than
+    bundling one, so the runtime always matches the board's firmware. Keys:
+    ``dnn_version``, ``ucp_version``, ``soc_name`` and ``dnn_library`` -- the file libdnn
+    was resolved from, normally under ``/usr/hobot/lib``. A path anywhere else means
+    another copy of the SDK is shadowing the board's; include this dict in bug reports.
+    """
+    if not _HAVE_NATIVE:
+        raise RuntimeError("bllm: the native extension is not built here, so no hobot "
+                           "runtime is loaded (build on the board)")
+    from ._bllm_native import runtime_info as _runtime_info
+    return dict(_runtime_info())

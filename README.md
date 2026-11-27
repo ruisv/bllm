@@ -211,8 +211,16 @@ BLLM 的算力同样来自 D-Robotics 官方 BPU 运行时（`hbDNN` / `hbUCP`�
 conda install -c https://mirrors.ruis.ai/conda -c conda-forge bllm
 ```
 
-装上 `bllm`（Python 绑定）、`libbllm`（C++ 库 + 头文件 + cmake 配置）及其运行时依赖
-（`hobot-dnn`、`tokenizers-cpp`）。RDK 平台运行库随板系统提供。
+装上 `bllm`（Python 绑定）、`libbllm`（C++ 库 + 头文件 + cmake 配置）和 `tokenizers-cpp`
+（分词）。D-Robotics hobot 运行时**不在包里**：BLLM 链接的是板子系统镜像自带的那一份
+（`/usr/hobot/lib`），所以运行时永远与板子的固件和 BPU 匹配，同一个包在 S100 / S100P / S600
+上通用。
+
+> hobot 运行时（`libdnn`、`libhbucp`、`libhbrt4`…）和它依赖的设备平台库（`libbpu`、
+> `libhbmem`…）都随 RDK 系统镜像提供，必须与板子的固件版本一致，所以刻意不随包分发。
+> 0.9.0 之前的包依赖 `hobot-dnn`，带了一份 S100 SDK 的运行时，它会挡住板上的那份；从旧版本
+> 升级时 conda 会把 `hobot-dnn` 一并移除。想确认实际加载的是哪一份，运行
+> `python -c "import bllm; print(bllm.runtime_info())"`，`dnn_library` 应当位于 `/usr/hobot/lib` 下。
 
 还需要**一次性**把 ION carveout 调大，然后重启 —— 模型权重活在 ION 里而不是进程 RSS，
 carveout 不够时运行时会在 alloc 处直接**段错误**：
@@ -586,9 +594,10 @@ token 一步一步喂**，每一步都要把整个模型的权重从内存读一
 # 在 RDK S100 / S100P / S600 板上
 git clone https://github.com/ruisv/bllm.git && cd bllm
 
-# 构建依赖（示例，从我们的 conda 源）
+# 构建依赖（示例，从我们的 conda 源）；hobot SDK 用板子系统镜像自带的
+# （/usr/include/hobot + /usr/hobot/lib），不需要另装
 conda install -c https://mirrors.ruis.ai/conda -c conda-forge \
-    cmake ninja cxx-compiler nlohmann_json hobot-dnn tokenizers-cpp nanobind numpy
+    cmake ninja cxx-compiler nlohmann_json tokenizers-cpp nanobind numpy
 
 scripts/build.sh --python          # cmake + ninja；产物在 build/
 export PYTHONPATH="$PWD/python"     # 就地 import；或 scripts/build.sh --python --install

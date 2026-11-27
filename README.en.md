@@ -228,8 +228,18 @@ On the board (aarch64, a conda env), install from our conda channel:
 conda install -c https://mirrors.ruis.ai/conda -c conda-forge bllm
 ```
 
-This pulls `bllm` (Python bindings), `libbllm` (C++ lib + headers + cmake config) and their
-runtime deps (`hobot-dnn`, `tokenizers-cpp`). RDK platform libraries come with the board OS.
+This pulls `bllm` (Python bindings), `libbllm` (C++ lib + headers + cmake config) and
+`tokenizers-cpp` (tokenization). The D-Robotics hobot runtime is **not** in the packages: BLLM
+links against the copy that ships with the board's OS image (`/usr/hobot/lib`), so the runtime
+always matches the board's firmware and BPU, and one package serves S100, S100P and S600.
+
+> The hobot runtime (`libdnn`, `libhbucp`, `libhbrt4`, …) and the device platform libraries it
+> uses (`libbpu`, `libhbmem`, …) come with the RDK OS image and must match the board's firmware,
+> so they are deliberately not redistributed. Packages before 0.9.0 depended on `hobot-dnn`,
+> which brought an S100 SDK build of the runtime that shadowed the board's; upgrading removes
+> `hobot-dnn` from the environment. To see which runtime a process actually loaded, run
+> `python -c "import bllm; print(bllm.runtime_info())"` — `dnn_library` should be under
+> `/usr/hobot/lib`.
 
 You also need a **one-time** ION carveout enlargement plus a reboot — model weights live in ION
 rather than process RSS, and the runtime **segfaults** on alloc if the carveout is too small:
@@ -648,9 +658,10 @@ source, clone and build **on the board** (the runtime lives only there):
 # on an RDK S100 / S100P / S600 board
 git clone https://github.com/ruisv/bllm.git && cd bllm
 
-# build dependencies (example, from our conda channel)
+# build dependencies (example, from our conda channel); the hobot SDK is the one in the
+# board's OS image (/usr/include/hobot + /usr/hobot/lib), nothing to install
 conda install -c https://mirrors.ruis.ai/conda -c conda-forge \
-    cmake ninja cxx-compiler nlohmann_json hobot-dnn tokenizers-cpp nanobind numpy
+    cmake ninja cxx-compiler nlohmann_json tokenizers-cpp nanobind numpy
 
 scripts/build.sh --python          # cmake + ninja; artifacts in build/
 export PYTHONPATH="$PWD/python"     # import in-tree; or scripts/build.sh --python --install

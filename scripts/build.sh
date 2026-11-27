@@ -9,7 +9,10 @@
 # Prerequisites on the board — the build/runtime dependencies, e.g. from our conda channel:
 #
 #   conda install -c https://mirrors.ruis.ai/conda -c conda-forge \
-#       cmake ninja cxx-compiler nlohmann_json hobot-dnn tokenizers-cpp nanobind numpy
+#       cmake ninja cxx-compiler nlohmann_json tokenizers-cpp nanobind numpy
+#
+# The hobot SDK is the board's own (/usr/include/hobot + /usr/hobot/lib, from the OS image);
+# do not install a second copy into the env, it would shadow the board's.
 #
 # then activate that environment and run this from the repository root. (Most users can skip
 # building and just `conda install bllm` — see the README. Build from source to hack on it.)
@@ -21,7 +24,7 @@ for a in "$@"; do
     --clean)   CLEAN=1 ;;
     --python)  PYTHON=ON ;;
     --install) INSTALL=1 ;;
-    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $a" >&2; exit 1 ;;
   esac
 done

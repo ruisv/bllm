@@ -42,12 +42,14 @@ if(Hobot_FOUND)
   if(NOT NLOHMANN_JSON_INCLUDE_DIR)
     message(STATUS "BLLM: nlohmann/json.hpp not found — native backend skipped")
   else()
-    add_library(bllm_native src/model_config.cc src/native_graph.cc)
+    add_library(bllm_native src/model_config.cc src/native_graph.cc src/runtime.cc)
     target_include_directories(bllm_native PUBLIC
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
       $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
     target_include_directories(bllm_native PRIVATE ${NLOHMANN_JSON_INCLUDE_DIR})
     target_link_libraries(bllm_native PUBLIC hobot::dnn)
+    # dladdr() for runtimeInfo(); a separate libdl on glibc < 2.34.
+    target_link_libraries(bllm_native PRIVATE ${CMAKE_DL_LIBS})
     # NativeHybridEngine embeds an fp16 embedding table and converts with __fp16.
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
       target_compile_options(bllm_native PUBLIC -march=armv8.2-a+fp16)

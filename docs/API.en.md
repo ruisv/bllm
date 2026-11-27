@@ -35,6 +35,19 @@ llm = bllm.load("Qwen2.5_1.5B.hbm", tokenizer_dir="Qwen2.5_1.5B_config/")
 Which runtimes are available — `("native",)` in a normal build (`()` on a dev host with no
 extension).
 
+### `bllm.runtime_info() -> dict[str, str]`
+
+Which hobot runtime this process actually loaded: `dnn_version`, `ucp_version`, `soc_name`
+and `dnn_library` — the file libdnn was resolved from. BLLM links against the SDK that ships
+with the board's OS image, so that path is normally under `/usr/hobot/lib`; anywhere else
+means another copy of the SDK is shadowing the board's, which is invisible from the results
+alone. Include it in bug reports. Raises `RuntimeError` on a dev host with no extension.
+
+```python
+>>> bllm.runtime_info()["dnn_library"]
+'/usr/hobot/lib/libdnn.so'
+```
+
 ### `bllm.load_video(path, fps=2.0, size=448, max_frames=10, with_audio=True, ffmpeg="ffmpeg") -> dict`
 
 Sample a video file into the dict `NativeVlmSession.chat(videos=...)` expects (shells out to

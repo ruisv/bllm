@@ -41,6 +41,18 @@ RDK S100 / S100P / S600 board** — the hobot runtime and the BPU are board-only
 The ION carveout must be enlarged (and the board rebooted) first, or the runtime
 segfaults where it allocates the weights — see [`MODELS.en.md`](MODELS.en.md).
 
+The hobot runtime is **not** shipped with BLLM: `libbllm` links against the copy in the
+board's OS image (`/usr/hobot/lib`), which always matches the board's firmware. To see which
+copy a process actually loaded:
+
+```cpp
+#include "bllm/runtime.h"
+
+const bllm::RuntimeInfo r = bllm::runtimeInfo();
+// r.dnn_version, r.ucp_version, r.soc_name ("D-Robotics RDK S100P V1P0"), and
+// r.dnn_library — the file libdnn was resolved from, normally under /usr/hobot/lib
+```
+
 ## Conventions
 
 - **Namespace** `bllm`; headers are `.h`, split by area, with no umbrella header.

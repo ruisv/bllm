@@ -13,6 +13,7 @@
 #include <deque>
 
 #include "bllm/native_engine.h"
+#include "bllm/runtime.h"
 #ifdef BLLM_HAVE_TOKENIZERS
 #include "bllm/audio_io.h"     // dr_wav-backed decode, for wav paths
 #include "bllm/image_io.h"     // stb-backed decode, for image paths
@@ -29,6 +30,20 @@ NB_MODULE(_bllm_native, m) {
   m.doc() = "BLLM native hbDNN LLM engine (no libxlm)";
 
   m.attr("SEED_RANDOM") = bllm::kSeedRandom;
+
+  m.def(
+      "runtime_info",
+      []() {
+        const bllm::RuntimeInfo r = bllm::runtimeInfo();
+        nb::dict d;
+        d["dnn_version"] = r.dnn_version;
+        d["ucp_version"] = r.ucp_version;
+        d["soc_name"] = r.soc_name;
+        d["dnn_library"] = r.dnn_library;
+        return d;
+      },
+      "The hobot runtime this process loaded: dnn_version, ucp_version, soc_name, and "
+      "dnn_library (the file libdnn was resolved from; normally under /usr/hobot/lib).");
 
   m.def("read_hbm_desc", &bllm::readHbmDesc, "path"_a, "index"_a = 0,
         "The description JSON embedded in an .hbm (\"\" if it has none). Official LLM 2.0 "

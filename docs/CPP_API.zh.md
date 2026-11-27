@@ -37,6 +37,17 @@ RDK S100 / S100P / S600 板子上运行** —— hobot 运行时与 BPU 只存�
 还需要先把 ION carveout 调大并重启，否则运行时会在分配权重处直接段错误
 （见 [`MODELS.zh.md`](MODELS.zh.md)）。
 
+hobot 运行时**不随 BLLM 分发**：`libbllm` 链接板子系统镜像里的那一份（`/usr/hobot/lib`），
+它永远与板子的固件匹配。想看某个进程实际加载的是哪一份：
+
+```cpp
+#include "bllm/runtime.h"
+
+const bllm::RuntimeInfo r = bllm::runtimeInfo();
+// r.dnn_version、r.ucp_version、r.soc_name（"D-Robotics RDK S100P V1P0"），以及
+// r.dnn_library —— libdnn 是从哪个文件解析来的，通常位于 /usr/hobot/lib 下
+```
+
 ## 约定
 
 - **命名空间** `bllm`；头文件后缀 `.h`，按功能分文件，没有总头文件。

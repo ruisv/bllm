@@ -7,7 +7,8 @@ licensed under the project's [Apache License 2.0](LICENSE).
 ## The one hard constraint: build on the board
 
 BLLM links the D-Robotics **hobot runtime** (`hbDNN` / `hbUCP` / `HBRT`), which exists **only
-on RDK S100 / S100P / S600 hardware** (via the board OS, or the `hobot-dnn` conda package).
+on RDK S100 / S100P / S600 hardware**: it ships with the board's OS image
+(`/usr/include/hobot`, `/usr/hobot/lib`), and BLLM links that copy rather than bundling one.
 Therefore:
 
 - The **C++ library, the Python extension, and the board tests must be built and run on an

@@ -31,6 +31,18 @@ llm = bllm.load("Qwen2.5_1.5B.hbm", tokenizer_dir="Qwen2.5_1.5B_config/")
 
 返回可用运行时，原生构建下为 `("native",)`（无扩展的开发机上为 `()`）。
 
+### `bllm.runtime_info() -> dict[str, str]`
+
+本进程实际加载的是哪一份 hobot 运行时：`dnn_version`、`ucp_version`、`soc_name`，以及
+`dnn_library` —— libdnn 是从哪个文件解析来的。BLLM 链接板子系统镜像自带的 SDK，所以这个
+路径通常位于 `/usr/hobot/lib` 下；在别处就说明另有一份 SDK 挡住了板上的那份，而这单从结果上
+看不出来。提 issue 时请附上它。开发机上没有扩展时抛 `RuntimeError`。
+
+```python
+>>> bllm.runtime_info()["dnn_library"]
+'/usr/hobot/lib/libdnn.so'
+```
+
 ### `bllm.load_video(path, fps=2.0, size=448, max_frames=10, with_audio=True, ffmpeg="ffmpeg") -> dict`
 
 把视频文件采样成 `NativeVlmSession.chat(videos=...)` 所需的字典（内部调用 ffmpeg 抽帧+抽音）。
