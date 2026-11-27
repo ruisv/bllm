@@ -6,6 +6,10 @@ All notable changes to BLLM are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-11-27
+
+Speech: a sentence the model skipped no longer comes back empty; silence still does.
+
 ### Fixed
 - **Speech: an empty reply to plain speech is recovered.** Now and then Qwen3-ASR stops before
   the first word of a clearly spoken sentence and returns nothing (5 of 2400 AISHELL-1 decodes;
@@ -963,7 +967,8 @@ driving compiled `.hbm` graphs natively on the BPU (hbDNN / hbUCP), no extra LLM
 - **Packaging** — conda packages (`bllm`, `libbllm`, `tokenizers-cpp`) for linux-aarch64;
   `find_package(bllm)` for C++ consumers.
 
-[Unreleased]: https://github.com/ruisv/bllm/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/ruisv/bllm/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/ruisv/bllm/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/ruisv/bllm/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/ruisv/bllm/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/ruisv/bllm/compare/v0.7.0...v0.8.0
