@@ -6,6 +6,46 @@ All notable changes to BLLM are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-11-26
+
+One conda package for the whole S-series: the packages stop bundling the hobot runtime and
+use the board's own.
+
+### Changed
+- **The conda packages no longer bundle the hobot SDK.** `libbllm` used to depend on
+  `hobot-dnn`, which put an S100 SDK build of the runtime (`libdnn`, `libhbucp`, `libhbrt4`,
+  `libhbtl`) into the environment, ahead of the board's own in `/usr/hobot/lib` — on an
+  S100P too, where `libdnn`, `libhbucp` and `libhbtl` are not the files the board's OS
+  image ships. That runtime has to match the board's firmware: on an S600 it is a build for
+  another platform, which is how bcdl's packages returned shifted or NaN outputs there
+  ([bcdl#1](https://github.com/ruisv/bcdl/issues/1)) while nothing raised. Now `libbllm`
+  links against the board's SDK and keeps `/usr/hobot/lib` on its rpath; the SDK headers
+  are the same across the S-series and BLLM calls only the stable hbDNN / hbUCP C API, so
+  one package serves S100, S100P and S600 and survives an OS upgrade. Upgrading an existing
+  environment removes `hobot-dnn` from it. On S100P the published 0.8.0 binary generates the
+  same text and perplexity, bit for bit, once `hobot-dnn` is removed from its environment.
+- **`bllm-s600` / `libbllm-s600` are discontinued.** They were the `bllm` binaries
+  depending on `hobot-dnn-s600` (the S100 `libdnn` / `libhbucp` plus an HBRT 4.10.1
+  `libhbrt4`). On an S600, replace them:
+  `conda remove bllm-s600 libbllm-s600 hobot-dnn-s600`, then `conda install bllm` as on any
+  board. A nash-p `.hbm` now has to come from a toolchain the board's own runtime loads; a
+  build that is too new fails at load with "libhbrt4.so needs to be updated".
+- The S600 server image (`docker/Dockerfile.s600`) stages the S600 board's runtime, as the
+  S100 image always did, instead of installing `bllm-s600`. Both images pin bllm 0.9.0
+  (they were still at 0.1.6).
+- Strides the runtime leaves to the caller (`-1`) are resolved at 64-byte row alignment,
+  which the S600 requires, instead of 32; 64 satisfies the S100/S100P too
+  ([bcdl#2](https://github.com/ruisv/bcdl/issues/2) is the same fix). No graph we know of
+  has one — across the 33 graphs on our S100P, ours and the official packages alike, every
+  stride is compiled in and reported as-is — so nothing changes for them.
+
+### Added
+- **`bllm.runtime_info()` / `bllm::runtimeInfo()`** — which hobot runtime the process
+  actually loaded: the DNN and UCP versions, the SoC name, and the file libdnn was resolved
+  from. Normally that file is under `/usr/hobot/lib`; anywhere else means another copy of
+  the SDK is shadowing the board's, which is invisible from the results alone. Include it
+  in bug reports.
+
 ## [0.8.0] — 2026-11-13
 
 The OpenAI server does tool calls and `reasoning_content` the way each model's own chat
@@ -866,7 +906,8 @@ driving compiled `.hbm` graphs natively on the BPU (hbDNN / hbUCP), no extra LLM
 - **Packaging** — conda packages (`bllm`, `libbllm`, `tokenizers-cpp`) for linux-aarch64;
   `find_package(bllm)` for C++ consumers.
 
-[Unreleased]: https://github.com/ruisv/bllm/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/ruisv/bllm/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/ruisv/bllm/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/ruisv/bllm/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/ruisv/bllm/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ruisv/bllm/compare/v0.5.2...v0.6.0
