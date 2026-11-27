@@ -10,7 +10,7 @@ A *device-coupled* container (the NVIDIA model), not an isolated app:
 | Layer | Where it lives | Why |
 |-------|----------------|-----|
 | ubuntu:22.04 + py3.12 + `bllm`/`libbllm`/`tokenizers-cpp` (conda) + our server | **baked in** | our stack, weakly coupled to board OS |
-| BPU userspace `.so` closure (`libdnn`/`libhbucp`/… → `/usr/hobot/lib`) | **baked in** (staged from the board at build) | self-contained; mirrors the board path so RPATH resolves |
+| BPU userspace `.so` closure (`libdnn`/`libhbucp`/… → `/usr/hobot/lib`) | **baked in** (staged from the board at build) | self-contained; mirrors the board path so RPATH resolves. The conda packages carry no hobot runtime, so this is the only copy in the image, and it is the board's own |
 | kernel BPU driver + `/dev/{bpu,ion,…}` nodes | **mapped from the board** (`--device`) | driver is in the host kernel; must match the running board |
 | `.hbm` model + tokenizer/`model.json` | **volume mounted** (`-v …:/models`) | GB-scale, per-deploy choice |
 

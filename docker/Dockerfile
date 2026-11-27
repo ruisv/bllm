@@ -7,6 +7,8 @@
 #
 # What is baked in : ubuntu22.04 + python3.12 + our stack (bllm/libbllm/
 #                    tokenizers-cpp via conda) + the BPU userspace .so closure.
+#                    The conda packages carry no hobot runtime (0.9.0+), so the
+#                    closure staged from the board is the only one in the image.
 # What is NOT baked : the kernel BPU driver + /dev nodes (mapped from the board
 #                     at run time) and the .hbm model (mounted as a volume).
 #
@@ -27,7 +29,7 @@ ARG BLLM_CHANNEL=https://mirrors.ruis.ai/conda
 # Pinned so this layer is not silently reused with a stale runtime: the
 # install line is otherwise identical across releases, so Docker would cache
 # it and the image would keep shipping whatever bllm it first resolved.
-ARG BLLM_VERSION=0.1.6
+ARG BLLM_VERSION=0.9.0
 ENV MAMBA_ROOT_PREFIX=/opt/conda
 ENV PATH=/opt/conda/bin:$PATH
 # Everything in one layer: extract micromamba to /tmp (thrown away here, not
