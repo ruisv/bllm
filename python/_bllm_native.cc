@@ -513,7 +513,8 @@ NB_MODULE(_bllm_native, m) {
       .def(
           "transcribe",
           [](bllm::NativeAsr& asr, nb::handle audio, const std::string& language,
-             const std::string& context, int max_new, double chunk_seconds, nb::object on_text) {
+             const std::string& context, int max_new, double chunk_seconds, nb::object on_text,
+             bool rescue_empty) {
             bllm::OwnedAudio owned;
             if (nb::isinstance<nb::str>(audio)) {
               owned = bllm::loadAudio16k(nb::cast<std::string>(audio));
@@ -526,6 +527,7 @@ NB_MODULE(_bllm_native, m) {
             o.context = context;
             o.max_new = max_new;
             o.chunk_seconds = chunk_seconds;
+            o.rescue_empty = rescue_empty;
             std::function<void(const std::string&)> cb;
             if (!on_text.is_none())
               cb = [&on_text](const std::string& s) { nb::gil_scoped_acquire g; on_text(s); };
@@ -548,10 +550,11 @@ NB_MODULE(_bllm_native, m) {
             return d;
           },
           "audio"_a, "language"_a = "", "context"_a = "", "max_new"_a = 0,
-          "chunk_seconds"_a = 0.0, "on_text"_a = nb::none(),
+          "chunk_seconds"_a = 0.0, "on_text"_a = nb::none(), "rescue_empty"_a = true,
           "Transcribe a wav path or 16 kHz mono float32 PCM. language='' lets the model "
-          "name it; on_text(str) streams the transcript. Returns a dict (text, language, "
-          "chunks, ntok, audio_seconds, e2e_ms, ttft_ms, decode_tps, rtf).")
+          "name it; on_text(str) streams the transcript; rescue_empty=False takes an empty "
+          "reply as given. Returns a dict (text, language, chunks, ntok, audio_seconds, "
+          "e2e_ms, ttft_ms, decode_tps, rtf).")
       .def_prop_ro("default_chunk_seconds", &bllm::NativeAsr::default_chunk_seconds)
       .def_prop_ro("name", [](bllm::NativeAsr& a) { return a.config().name; });
 #endif

@@ -351,6 +351,7 @@ std::printf("\n[%s] %.0f ms / %.1f s 音频（RTF %.2f）\n", r.language.c_str()
 | `AsrOptions::language` | `""` 自动识别；名称或代码则强制（提示里带上 `language X<asr_text>`） |
 | `AsrOptions::context` | 模型可以参考的文字（人名、术语），即模板的 system 轮 |
 | `AsrOptions::max_new` / `chunk_seconds` | 每块的生成预算（0：缓存剩多少用多少）/ 长音频切块的最长长度（0：`default_chunk_seconds()`） |
+| `AsrOptions::rescue_empty` | 默认 `true`：空回答越过停止符再解码一次，是一句有把握的话才保留（静音、噪声仍为空）；`false` 与官方一样原样返回 |
 | `AsrResult` | `text`、`language`、`raw`、`chunks`、`ntok`、`audio_seconds`、`e2e_ms`、`ttft_ms`、`decode_tps`、`rtf()` |
 
 前端是 Whisper 的 log-mel（128 个 Slaney 频带，由代码算出——官方包不带滤波器文件），双精度计算、

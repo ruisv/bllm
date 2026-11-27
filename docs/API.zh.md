@@ -211,7 +211,7 @@ int16，单声道或 `[n, channels]`，采样率由 `sample_rate` 指定（默�
 
 | 方法 | 说明 |
 |---|---|
-| `transcribe(audio, language=None, context="", *, sample_rate=16000, max_new=0, chunk_seconds=0, on_text=None) -> dict` | 转写。`language` 是名称（`"Chinese"`）或代码（`"zh"`）；`None` 由模型自己说出语言。`context` 是模型可以参考的文字——人名、术语。`on_text(str)` 流式输出。 |
+| `transcribe(audio, language=None, context="", *, sample_rate=16000, max_new=0, chunk_seconds=0, on_text=None, rescue_empty=True) -> dict` | 转写。`language` 是名称（`"Chinese"`）或代码（`"zh"`）；`None` 由模型自己说出语言。`context` 是模型可以参考的文字——人名、术语。`on_text(str)` 流式输出。`rescue_empty` 见下文。 |
 | `stream_transcribe(audio, language=None, context="", ...) -> Iterator[str]` | 边解码边输出转写；完整结果在 `last_result`。 |
 
 返回值：`text`、`language`（强制的、模型识别出的——长音频跨块时如 `"Chinese,English"`——或模型
@@ -221,6 +221,11 @@ int16，单声道或 `[n, channels]`，采样率由 `sample_rate` 指定（默�
 
 一次放不进解码器缓存的长音频（`default_chunk_seconds`，1024 token 的包为 40 s）会在安静处切开
 ——每个切点 ±5 s 内能量最低的 100 ms，与上游 qwen-asr 相同——逐块独立转写后拼接。
+
+**空回答补救**（`rescue_empty`，默认开）：模型偶尔会在一句普通话的第一个字之前就停下，返回空。遇到空回答时，
+BLLM 越过这个停止符再解码一次，只有得到的是一句模型有把握的话（至少 6 个不同 token、平均对数概率不低于 −1、
+自己正常结束）才保留；静音、噪声、哼声、单音续出来的只是"嗯。""The."之类，照样丢掉、返回空。不影响非空回答，
+也只在回答为空时多花几步解码。`rescue_empty=False` 则与官方运行时一样，空回答原样返回。
 
 C++：`bllm::NativeAsr`（`bllm/native_asr.h`，见 [CPP_API.zh.md](CPP_API.zh.md)）。
 

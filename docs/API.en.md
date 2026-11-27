@@ -209,7 +209,7 @@ resampled).
 
 | Method | Description |
 |---|---|
-| `transcribe(audio, language=None, context="", *, sample_rate=16000, max_new=0, chunk_seconds=0, on_text=None) -> dict` | Transcribe. `language` is a name (`"Chinese"`) or code (`"zh"`); `None` lets the model name it. `context` is text the model may lean on — names, terms. `on_text(str)` streams. |
+| `transcribe(audio, language=None, context="", *, sample_rate=16000, max_new=0, chunk_seconds=0, on_text=None, rescue_empty=True) -> dict` | Transcribe. `language` is a name (`"Chinese"`) or code (`"zh"`); `None` lets the model name it. `context` is text the model may lean on — names, terms. `on_text(str)` streams. `rescue_empty`: see below. |
 | `stream_transcribe(audio, language=None, context="", ...) -> Iterator[str]` | The transcript as it is decoded; the full result lands in `last_result`. |
 
 The result: `text`, `language` (forced, detected — `"Chinese,English"` across chunks of a
@@ -220,6 +220,14 @@ long clip — or `""` when the model named none), `raw` (what the model wrote, i
 A clip longer than the decoder's cache allows in one pass (`default_chunk_seconds`, 40 s on
 the 1024-token packages) is cut at quiet points — the quietest 100 ms within ±5 s of each
 cut, as upstream qwen-asr does — and the pieces are transcribed independently and joined.
+
+**Empty replies** (`rescue_empty`, on by default): now and then the model stops before the first
+word of plain speech and returns nothing. On an empty reply BLLM decodes once more past that stop
+and keeps the result only if it is a sentence the model is sure of (6+ distinct tokens, a mean
+log-probability of −1 or better, a stop of its own); continued past silence, noise, hum or a tone
+the model writes a filler ("嗯。", "The."), which is thrown away and the reply stays empty. A
+non-empty reply is never touched, and only an empty one costs the few extra decode steps.
+`rescue_empty=False` returns every empty reply as given, as the official runtime does.
 
 C++: `bllm::NativeAsr` (`bllm/native_asr.h`, see [CPP_API.en.md](CPP_API.en.md)).
 

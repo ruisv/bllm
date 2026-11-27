@@ -6,6 +6,23 @@ All notable changes to BLLM are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **Speech: an empty reply to plain speech is recovered.** Now and then Qwen3-ASR stops before
+  the first word of a clearly spoken sentence and returns nothing (5 of 2400 AISHELL-1 decodes;
+  the official runtime does it too). How sure the model was of that stop does not separate it
+  from silence, but what comes after it does: decoded past the stop, a skipped sentence comes
+  back whole and confident, while silence, noise, hum and tones give only a filler ("嗯。",
+  "The."). So an empty reply is decoded once more and kept only if it reads as a confident
+  sentence (6+ distinct tokens, mean log-probability −1 or better, a stop of its own). All 5
+  came back; the other 2395 transcripts are unchanged; none of 96 decodes of silence, noise,
+  room tone, hum and tones gained text. AISHELL-1 CER: clean 4.11% → 3.92% and noisy 7.48% →
+  7.41% with Chinese forced, noisy 7.76% → 7.32% with the language detected. On by default;
+  `rescue_empty=False` (C++ `AsrOptions::rescue_empty`) returns empty replies as given.
+  The other early stops seen on AISHELL-1 — a sentence cut off after a few characters, the same
+  in the official runtime and the 1.7B package — turned out to be the test audio: those clips
+  hold only that much speech (Paraformer stops at the same place; the rest is room noise or
+  low-frequency hum), so there is nothing to recover.
+
 ## [0.10.0] — 2026-11-26
 
 Speech in: the official Qwen3-ASR packages load as unzipped, as accurate as the official

@@ -378,6 +378,7 @@ std::printf("\n[%s] %.0f ms for %.1f s (RTF %.2f)\n", r.language.c_str(), r.e2e_
 | `AsrOptions::language` | `""` detects; a name or code forces (`language X<asr_text>` is then in the prompt) |
 | `AsrOptions::context` | text the model may lean on (names, terms) — the template's system turn |
 | `AsrOptions::max_new` / `chunk_seconds` | per-chunk budget (0: what the cache has left) / longest piece of a long clip (0: `default_chunk_seconds()`) |
+| `AsrOptions::rescue_empty` | default `true`: an empty reply is decoded once more past its stop and kept only if it is a confident sentence (silence and noise stay empty); `false` returns it as given, as the official runtime does |
 | `AsrResult` | `text`, `language`, `raw`, `chunks`, `ntok`, `audio_seconds`, `e2e_ms`, `ttft_ms`, `decode_tps`, `rtf()` |
 
 The front end is Whisper's log-mel (128 Slaney bins, computed — the package ships no filter

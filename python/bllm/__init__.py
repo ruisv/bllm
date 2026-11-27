@@ -712,6 +712,11 @@ if _HAVE_ASR:
         ``context`` is text the model may lean on — names, terms. A clip longer than the
         decoder's cache allows (about 40 s) is cut at quiet points and transcribed piece by
         piece. Files other than .wav are decoded with ffmpeg.
+
+        Now and then the model stops before the first word of plain speech. An empty reply
+        is therefore decoded once more past that stop, and the result kept only if it is a
+        sentence the model is sure of — silence and noise stay empty. ``rescue_empty=False``
+        takes every empty reply as given, as the official runtime does.
         """
 
         def __init__(self, model_dir: str) -> None:
@@ -730,24 +735,26 @@ if _HAVE_ASR:
         def transcribe(self, audio, language: "Optional[str]" = None, context: str = "",
                        *, sample_rate: int = 16000, max_new: int = 0,
                        chunk_seconds: float = 0.0,
-                       on_text: "Optional[Callable[[str], None]]" = None) -> dict:
+                       on_text: "Optional[Callable[[str], None]]" = None,
+                       rescue_empty: bool = True) -> dict:
             """Transcribe a file path or an array (16 kHz unless ``sample_rate`` says
             otherwise). Returns ``{'text', 'language', 'chunks', 'ntok', 'audio_seconds',
             'e2e_ms', 'ttft_ms', 'decode_tps', 'rtf'}``; ``on_text`` streams the text."""
             r = self._asr.transcribe(_asr_audio(audio, sample_rate), language or "", context,
-                                     max_new, chunk_seconds, on_text)
+                                     max_new, chunk_seconds, on_text, rescue_empty)
             self.last_result = r
             return r
 
         def stream_transcribe(self, audio, language: "Optional[str]" = None, context: str = "",
                               *, sample_rate: int = 16000, max_new: int = 0,
-                              chunk_seconds: float = 0.0) -> "Iterator[str]":
+                              chunk_seconds: float = 0.0,
+                              rescue_empty: bool = True) -> "Iterator[str]":
             """The transcript as it is decoded; the full result lands in ``last_result``."""
             pcm = _asr_audio(audio, sample_rate)
 
             def run(cb):
                 self.last_result = self._asr.transcribe(pcm, language or "", context, max_new,
-                                                        chunk_seconds, cb)
+                                                        chunk_seconds, cb, rescue_empty)
                 return self.last_result["text"]
             return _stream(run)
 

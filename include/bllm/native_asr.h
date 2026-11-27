@@ -25,6 +25,10 @@
 // and decodes the transcript as if that language had been forced. (The official runtime appends
 // `language <asr_text>` with an EMPTY name, never learns the language, and loses ~1 clip in
 // 10 to an empty reply; the forced-language prompts are the same in all three.)
+// Even with the language settled the model now and then stops before the first word of
+// plain speech (about 1 clip in 500 on AISHELL-1, the official runtime too). An empty
+// reply is decoded once more past that stop and kept only if it reads as a confident
+// sentence — rescueEmpty() below; silence and noise stay empty.
 //
 // The decoder's cache is short (1024 tokens at ~13 audio tokens a second), so a long clip
 // is cut at quiet points into chunks that each fit, transcribed independently and joined
@@ -161,6 +165,11 @@ struct AsrOptions {
   std::string context;       // optional text the model may lean on (names, terms)
   int max_new = 0;           // per chunk; 0 = whatever the cache has left
   double chunk_seconds = 0;  // longest piece of a long clip; 0 = the session default
+  // An empty reply is not always silence: now and then the model stops before the first
+  // word of plain speech. Such a reply is decoded once more past that stop and kept only
+  // if what comes out is a sentence the model is sure of (see NativeAsr::rescueEmpty).
+  // false = take every empty reply as given, as the official runtime does.
+  bool rescue_empty = true;
 };
 
 struct AsrResult {
@@ -218,6 +227,12 @@ class NativeAsr {
       langBias_[ids[0]] = 1e4f;
     }
     if (cfg_.eos.empty()) cfg_.eos = {imEnd_, tk_.token_to_id("<|endoftext|>")};
+    // Qwen's special and added tokens all sit above <|endoftext|>: none belongs in a
+    // transcript, so stepping past a stop must not land on one either.
+    const int firstSpecial = tk_.token_to_id("<|endoftext|>");
+    if (firstSpecial > 0)
+      for (int id = firstSpecial; id < text_->vocab(); ++id) noSpecial_[id] = -1e4f;
+    for (int id : cfg_.eos) noSpecial_[id] = -1e4f;
     // Budget per chunk: the cache less the prompt (~18 tokens) and room for the reply at a
     // fast talker's ~7 tokens a second next to the audio's 13.
     const int cache = text_->context_left();
@@ -378,8 +393,13 @@ class NativeAsr {
     const int room = text_->context_left();
     sp.max_new = opt.max_new > 0 ? std::min(opt.max_new, room) : room;
     text_->generate(sp, on_token);
-    if (r.chunks == 0) r.ttft_ms = text_->ttft_ms();
-    r.decode_tps = text_->decode_tps();
+    double ttft = text_->ttft_ms(), tps = text_->decode_tps();
+    if (body.empty() && opt.rescue_empty && sp.max_new > 1) {
+      const std::vector<int> kept = rescueEmpty(sp, ttft, tps);
+      for (int id : kept) on_token(id);
+    }
+    if (r.chunks == 0) r.ttft_ms = ttft;
+    r.decode_tps = tps;
     r.ntok += (int)body.size();
 
     const std::string text = tk_.decode(body);
@@ -392,6 +412,46 @@ class NativeAsr {
     return asr_detail::trim(asr_detail::fixRepetitions(text));
   }
 
+  // The reply stopped before its first token. Step past that stop once: the most likely
+  // token that is neither a stop nor special, then greedy to the next stop. Keep it only
+  // if it reads as a sentence the model is sure of: kRescueDistinct or more distinct
+  // tokens, a mean log-probability of at least kRescueMeanLp after the forced first one,
+  // and a stop of its own at the end. How sure the model was of the first stop does not
+  // tell the two apart (speech it skipped: p(stop) 0.21–0.999; silence and noise: 0.05–1.0).
+  // What follows does: a skipped sentence comes back whole and confident, silence, noise,
+  // hum and tones give a filler ("嗯。", "The."), a code fence, a chant of one token, or a
+  // hesitant hallucination (mean log-probability -1.6 and below). Measured: 2400 AISHELL-1
+  // decodes (clean/noisy, forced/detected) left 5 replies empty and all 5 came back; 96 of
+  // silence, noise, room tone, hum and tones left 76 empty and none came back.
+  // On the way out ttft/tps describe the kept tokens; on a refusal they are left as given.
+  std::vector<int> rescueEmpty(const NativeSamplingParams& sp, double& ttft, double& tps) {
+    static constexpr int kRescueDistinct = 6;
+    static constexpr float kRescueMeanLp = -1.0f;
+    NativeSamplingParams s1 = sp;
+    s1.max_new = 1;
+    s1.eos.clear();
+    s1.logit_bias = noSpecial_;
+    const std::vector<int> first = text_->generate(s1, [](int) { return false; });  // fed
+    if (first.empty()) return {};
+    const double t1 = text_->ttft_ms();
+    NativeSamplingParams s2 = sp;
+    s2.max_new = std::min(sp.max_new - 1, text_->context_left());
+    s2.logprobs = 0;
+    const std::vector<int> rest = text_->generate(s2, [](int) { return false; });
+    if (rest.empty() || (int)rest.size() >= s2.max_new) return {};   // no stop of its own
+    double sum = 0;
+    for (const TokenLogprobs& t : text_->raw().last_logprobs()) sum += t.logprob;
+    std::vector<int> all = first;
+    all.insert(all.end(), rest.begin(), rest.end());
+    std::vector<int> distinct = all;
+    std::sort(distinct.begin(), distinct.end());
+    const auto nDistinct = std::unique(distinct.begin(), distinct.end()) - distinct.begin();
+    if (nDistinct < kRescueDistinct || sum / rest.size() < kRescueMeanLp) return {};
+    ttft = t1;
+    tps = text_->decode_tps();
+    return all;
+  }
+
   int hidden() const { return text_->hidden(); }
   void embedAt(int i, int id) {
     text_->embed(id, rows_.data() + (size_t)i * hidden());
@@ -401,11 +461,12 @@ class NativeAsr {
 
   ModelConfig cfg_;
   Tokenizer tk_;
-  std::unique_ptr<TextEngine> text_;
+  std::unique_ptr<DenseTextEngine> text_;
   std::unique_ptr<Qwen3AsrTower> tower_;
   int imStart_ = -1, imEnd_ = -1, audioStart_ = -1, audioEnd_ = -1, asrText_ = -1;
   std::unordered_map<int, std::pair<std::string, std::vector<int>>> langByFirst_;
   std::unordered_map<int, float> langBias_;
+  std::unordered_map<int, float> noSpecial_;     // bans every stop and special token
   double defaultChunkSec_ = 30;
   std::vector<float> rows_;
   std::vector<Pos3> pos_;

@@ -4,6 +4,8 @@
     BLLM_TEST_ASR_AUDIO          a speech clip (wav, 16 kHz mono preferred)
     BLLM_TEST_ASR_TEXT           its reference transcript (optional; enables the CER check)
     BLLM_TEST_ASR_LANGUAGE       the clip's language as the model names it (default Chinese)
+    BLLM_TEST_ASR_EMPTY_AUDIO    optional: speech the model leaves empty unless rescued (with
+                                 the 0.6B package, AISHELL-1 test a02993 forced to Chinese)
 
 Transcripts are compared by character error rate, not for identity with the official runtime:
 the package's audio encoder is so sensitive that a 1-LSB change in a single input value moves
@@ -25,6 +27,7 @@ PKG = os.environ.get("BLLM_TEST_OFFICIAL_ASR_DIR", "")
 AUDIO = os.environ.get("BLLM_TEST_ASR_AUDIO", "")
 REF = os.environ.get("BLLM_TEST_ASR_TEXT", "")
 LANG = os.environ.get("BLLM_TEST_ASR_LANGUAGE", "Chinese")
+EMPTY = os.environ.get("BLLM_TEST_ASR_EMPTY_AUDIO", "")
 
 pytestmark = [
     pytest.mark.skipif(not getattr(bllm, "_HAVE_ASR", False), reason="native ASR not built"),
@@ -130,6 +133,46 @@ def test_long_audio_is_cut_and_joined(asr):
     assert r["chunks"] >= 2
     n = len(_norm(one))
     assert abs(len(_norm(r["text"])) - reps * n) <= max(4, 0.2 * reps * n)
+
+
+def _noise(seconds: float, db: float, seed: int = 0) -> np.ndarray:
+    x = np.random.default_rng(seed).normal(size=int(seconds * 16000))
+    return (x / np.sqrt((x ** 2).mean()) * 10 ** (db / 20)).astype(np.float32)
+
+
+@pytest.mark.parametrize("language", [LANG, None], ids=["forced", "detected"])
+def test_no_speech_stays_empty(asr, language):
+    """An empty reply is decoded once more past its stop. On audio with nothing said, what
+    comes out of that is filler ("嗯。", "The.") and must be thrown away."""
+    cases = {"silence 1 s": np.zeros(16000, np.float32), "silence 3 s": np.zeros(48000, np.float32),
+             "white -55 dB": _noise(4, -55), "white -40 dB": _noise(4, -40),
+             "white -28 dB": _noise(4, -28)}
+    for name, pcm in cases.items():
+        off = asr.transcribe(pcm, language=language, rescue_empty=False)
+        on = asr.transcribe(pcm, language=language)
+        print(name, repr(off["text"]), repr(on["text"]))
+        assert on["text"] == off["text"], name
+        if name.startswith("silence"):
+            assert on["text"] == "" and on["ttft_ms"] == 0, (name, on)
+            if language is None:
+                assert on["language"] == "", (name, on)
+
+
+def test_rescue_leaves_a_reply_alone(asr):
+    a = asr.transcribe(AUDIO, language=LANG, rescue_empty=False)
+    b = asr.transcribe(AUDIO, language=LANG)
+    assert a["text"] == b["text"] and a["ntok"] == b["ntok"]
+
+
+@pytest.mark.skipif(not EMPTY or not os.path.isfile(EMPTY), reason="set BLLM_TEST_ASR_EMPTY_AUDIO")
+def test_speech_left_empty_is_rescued(asr):
+    off = asr.transcribe(EMPTY, language=LANG, rescue_empty=False)
+    assert off["text"] == "", "this clip is not left empty here; pick another"
+    on = asr.transcribe(EMPTY, language=LANG)
+    print(on)
+    assert len(_norm(on["text"])) >= 5 and on["ttft_ms"] > 0
+    pieces = list(asr.stream_transcribe(EMPTY, language=LANG))
+    assert "".join(pieces).strip() == asr.last_result["text"] == on["text"]
 
 
 def test_a_chat_session_refuses_it():
