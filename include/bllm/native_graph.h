@@ -32,7 +32,11 @@ namespace native_detail {
 void check(int32_t e, const char* what);
 #define BLLM_NATIVE_CK(expr) ::bllm::native_detail::check((expr), #expr)
 
-constexpr int64_t kAlign = 32;
+// Row alignment for a stride the runtime leaves to us (-1, "dense, compute it yourself").
+// The S600 runtime requires 64 bytes, and S100/S100P accept 32; 64 satisfies both, so
+// there is no per-SoC branch. Every graph we ship has compiled-in strides, which the
+// runtime reports as-is and which this never touches; it only decides a -1.
+constexpr int64_t kAlign = 64;
 inline int64_t alignUp(int64_t v, int64_t a) { return (v + (a - 1)) & ~(a - 1); }
 
 // Graphs from the OpenExplorer pi0 pipeline carry fp16 at every boundary. The
@@ -193,8 +197,9 @@ struct Graph {
   int64_t outStride(int i, int dim) const { return out[i].properties.stride[dim]; }
   int64_t inStride(int i, int dim) const { return in[i].properties.stride[dim]; }
 
-  // Rows are padded up to kAlign, so a dense [rows, cols] buffer is only safe to
-  // memcpy when cols*sizeof(float) already lands on that boundary. It usually
+  // The compiler pads rows (to 32 bytes in our S100/S100P graphs), so a dense
+  // [rows, cols] buffer is only safe to memcpy when cols*sizeof(float) already
+  // lands on that boundary. It usually
   // does (Qwen2.5-Omni's 1176-float patch row is 4704 bytes), which is exactly
   // why writing dense and hoping goes unnoticed until a tower whose row is not —
   // InternViT's 588 floats are 2352 bytes, 16 short of the next multiple of 32,

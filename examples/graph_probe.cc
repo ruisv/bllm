@@ -82,7 +82,7 @@ int main(int argc, char** argv) {
     const auto& s = g.inShape(i);
     const size_t want = elems(s);
     const int64_t cols = s.numDimensions ? s.dimensionSize[s.numDimensions - 1] : 1;
-    // Rows may be padded up to kAlign, so zero the whole padded buffer and write
+    // Rows may be padded, so zero the whole padded buffer and write
     // through writeRowsF32 rather than assuming the layout is dense.
     std::memset(g.inPtr(i), 0, (size_t)(g.inStride(i, 0) * s.dimensionSize[0]));
     if (i >= (int)ins.size() || ins[i] == "-") continue;
@@ -114,8 +114,8 @@ int main(int argc, char** argv) {
     const int nd = os.numDimensions;
     const int64_t cols = nd ? os.dimensionSize[nd - 1] : 1;
     const int64_t rows = cols ? (int64_t)(n / (size_t)cols) : 0;
-    // The last dim is contiguous and the axis above it is padded up to kAlign;
-    // [16,257,257] pads, because 257 floats is 1028 bytes.
+    // The last dim is contiguous and the axis above it may be padded (32 bytes on
+    // S100/S100P); [16,257,257] pads, because 257 floats is 1028 bytes.
     const int64_t pitch = g.outRowPitch(i, cols);
     std::vector<float> v(n);
     (void)pitch;

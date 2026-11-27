@@ -412,7 +412,7 @@ class VisionTower {
   // Two consecutive video frames (same size) -> one temporal grid step of tokens.
   const float* encode_pair(const uint8_t* rgb0, const uint8_t* rgb1, int w, int h) {
     // Patchify densely, then hand it to writeRowsF32: the graph's rows may be
-    // padded up to kAlign and writing straight into inPtr assumes they are not.
+    // padded and writing straight into inPtr assumes they are not.
     patches_.resize((size_t)nPatch_ * rowLen_);
     preprocessToPlanar(rgb0, w, h, spec_, chw0_);
     if (rgb1 == rgb0) {
@@ -455,7 +455,7 @@ class VisionTower {
     const auto* base = (const uint8_t*)g_.outPtr(0);
     const size_t n = (size_t)nToken_ * hidden_;
     // Only hand back the raw pointer when the rows really are contiguous; a
-    // hidden size whose byte length misses kAlign is padded, and reading it as
+    // hidden size whose byte length misses the row alignment is padded, and reading it as
     // dense silently shifts every row but the first.
     if (outType_ == HB_DNN_TENSOR_TYPE_F32 && pitch == (int64_t)hidden_ * 4)
       return (const float*)base;
