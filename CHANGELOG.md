@@ -6,6 +6,46 @@ All notable changes to BLLM are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-11-26
+
+Speech in: the official Qwen3-ASR packages load as unzipped, as accurate as the official
+runtime and a little faster, and a recording can go straight on to Qwen3.5.
+
+### Added
+- **Speech recognition: the official Qwen3-ASR packages load as unzipped.** `bllm.load()` on an
+  official LLM 2.0 package with an `*_audio_*.hbm` (Qwen3-ASR-0.6B / 1.7B, S100P) returns a
+  `NativeAsrSession` — `transcribe(audio, language=None, context="")` and
+  `stream_transcribe(...)`; C++ `bllm::NativeAsr` (`bllm/native_asr.h`). Audio is a file
+  (WAV in-process, other formats through ffmpeg) or an array (float32 / int16, any sample
+  rate). The language is forced (a name or a code) or named by the model; `context` passes
+  names and terms. A recording longer than one pass of the 1024-token cache (about 40 s) is
+  cut at quiet points, upstream qwen-asr's rule, and the pieces are transcribed and joined.
+  On AISHELL-1 (600 clean + 600 noisy utterances), with Chinese forced, the character error
+  rate is 4.11% / 7.48% against the official runtime's 4.63% / 7.62%, and an 11.4 s clip
+  takes 1499 ms end to end against its 1537 ms (1.7B: 2658 against 2853). The transcripts
+  are not word-for-word the official ones: the package's audio encoder is so sensitive that
+  a 1-LSB change in any single input value changes nearly every output value (row cosine
+  down to 0.81), and the two front ends differ in the last bit of a handful of values.
+- **Detecting the language does not lose the transcript.** Asked to name the language
+  itself, this compiled model answers "no speech" for about one Mandarin utterance in six
+  and writes nothing (AISHELL-1: 16% CER); the official runtime, which gives it an empty
+  name, loses one in ten (10.0% / 15.9%) and never learns the language. BLLM has the model
+  pick among the 30 languages it knows, then transcribes as if that one were forced: 4.57% /
+  7.76%, Mandarin named for 574 / 588 of 600, silence and noise still empty.
+- **Talk to Qwen3.5**: `examples/voice_chat.py` takes a recording (or the microphone),
+  transcribes it with Qwen3-ASR, streams Qwen3.5's answer and, with bcdl installed, speaks it
+  with bcdl's Matcha-TTS. `examples/asr_native.cc` is the C++ transcription CLI.
+- **`/v1/audio/transcriptions` on bllm-serve** (OpenAI's API: `language`, `prompt`,
+  `response_format` json / text / verbose_json, `stream`), from an ASR package named by
+  `BLLM_ASR_MODEL` — next to the chat model or on its own.
+
+### Changed
+- **The log-mel front end is an FFT in double, 9x faster.** The direct 400-term float sum it
+  replaces lost the quiet bins to cancellation — against the official Qwen3-ASR runtime's
+  features it was off by up to 21 LSB of the encoder's int16 input — and took 199 ms of an
+  11.4 s clip; the mixed-radix FFT (400 = 4·4·5·5) over sparse mel bands takes 22 ms.
+  Qwen2.5-Omni's audio path shares it.
+
 ## [0.9.0] — 2026-11-26
 
 One conda package for the whole S-series: the packages stop bundling the hobot runtime and
@@ -906,7 +946,8 @@ driving compiled `.hbm` graphs natively on the BPU (hbDNN / hbUCP), no extra LLM
 - **Packaging** — conda packages (`bllm`, `libbllm`, `tokenizers-cpp`) for linux-aarch64;
   `find_package(bllm)` for C++ consumers.
 
-[Unreleased]: https://github.com/ruisv/bllm/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/ruisv/bllm/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/ruisv/bllm/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/ruisv/bllm/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/ruisv/bllm/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/ruisv/bllm/compare/v0.6.0...v0.7.0
